@@ -3,88 +3,130 @@ from __future__ import annotations
 
 import json
 import time
-from typing import List, Dict
-from urllib.parse import urlencode
+from typing import Dict, List, Tuple
+from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 
 import requests
 
-from law_dataset.utils.extractor import extract_links_from_list_html
+from law_dataset.utils.extractor import extract_links_from_result_html
+
 
 # =========================
 # ====== CONFIG ===========
 # =========================
 
+# ✅ Dán đúng URL bạn lấy từ Network (mình để y nguyên theo bạn gửi)
+SEARCH_URL = (
+    "https://vbpl.vn/VBQPPL_UserControls/Publishing/TimKiem/pKetQuaTimKiem.aspx"
+    "?dvid=315&IsVietNamese=True&&type=1&stemp=1&TimTrong1=VBPQFulltext&TimTrong1=Title"
+    "&order=VBPQNgayBanHanh&TypeOfOrder=False"
+    "&LoaiVanBan=15,16,17,19,2,18,3,20,21,22,23,24"
+    "&CoQuanBanHanh=274"
+    "&TrangThaiHieuLuc=7,6,5,4,3,2,1"
+    "&Page"
+)
+
 BASE_URL = "https://vbpl.vn"
-OUT_PATH = "law_dataset/data/raw_links.json"
 
 TYPE_VALUE = "luat_giao_thong"
 MINISTRY_TAG = "GTVT"
 
-# Endpoint danh sách kết quả tìm kiếm (có phân trang)
-RESULT_ENDPOINT = f"{BASE_URL}/VBQPPL_UserControls/Publishing/TimKiem/pKetQuaTimKiem.aspx"
-
-# Filter cơ bản (bạn mở dần sau)
-BASE_PARAMS = {
-    "dvid": "315",
-    "IsVietNamese": "True",
-    # Nếu muốn chỉ “còn hiệu lực” thì mở comment:
-    # "TrangThaiHieuLuc": "2",
-    # Nếu muốn chỉ Luật/Thông tư thì mở comment:
-    # "LoaiVanBan": "17",  # Luật
-    # "LoaiVanBan": "22",  # Thông tư
-}
-
-# Thử các key phân trang hay gặp
-PAGE_KEYS_CANDIDATES = ["PageIndex", "page", "Page", "CurrentPage", "p"]
+OUT_PATH = "law_dataset/data/raw_links.json"
 
 MAX_PAGES = 500
-SLEEP_EACH_PAGE = 0.4
-STOP_AFTER_EMPTY_PAGES = 3  # dừng khi 3 trang liên tiếp không có link mới
+SLEEP_EACH_PAGE = 0.35
+STOP_AFTER_EMPTY_PAGES = 3  # 3 trang liên tiếp không có link mới thì stop
+
+# VBPL có thể dùng các key phân trang khác nhau -> thử lần lượt
+PAGE_KEYS_CANDIDATES = ["Page", "PageIndex", "page", "CurrentPage", "p"]
 
 # =========================
 
 
-def build_url(params: dict) -> str:
-    return RESULT_ENDPOINT + "?" + urlencode(params, doseq=True)
+def parse_search_url(url: str) -> Tuple[str, Dict[str, str], List[Tuple[str, str]]]:
+    """
+    Parse SEARCH_URL thành:
+      - base_endpoint (scheme+host+path)
+      - params dict (giữ param cuối cùng nếu trùng key)
+      - params_list (giữ thứ tự & giữ cả key trùng như TimTrong1=... nhiều lần)
+    """
+    u = urlparse(url)
+
+    # giữ nguyên tất cả query pairs kể cả key trùng
+    pairs = parse_qsl(u.query, keep_blank_values=True)
+
+    # VBPL đôi khi có '&Page' (không '=') => parse_qsl sẽ ra ('Page','')
+    # mình giữ y như vậy để lát override thành Page=1,2,3...
+
+    endpoint = urlunparse((u.scheme, u.netloc, u.path, "", "", ""))
+
+    # dict chỉ để tiện xem, không dùng để build url (vì trùng key)
+    params_dict = {}
+    for k, v in pairs:
+        params_dict[k] = v
+
+    return endpoint, params_dict, pairs
 
 
-def fetch_html(session: requests.Session, params: dict) -> str:
-    url = build_url(params)
+def build_url(endpoint: str, pairs: List[Tuple[str, str]]) -> str:
+    query = urlencode(pairs, doseq=True)
+    return endpoint + "?" + query
+
+
+def override_page_param(
+    pairs: List[Tuple[str, str]],
+    page_key: str,
+    page_value: int,
+) -> List[Tuple[str, str]]:
+    """
+    Trả về list pairs mới:
+      - xóa hết các page keys candidate cũ
+      - set page_key=page_value
+    """
+    filtered = [(k, v) for (k, v) in pairs if k not in PAGE_KEYS_CANDIDATES]
+    filtered.append((page_key, str(page_value)))
+    return filtered
+
+
+def fetch_html(session: requests.Session, url: str) -> str:
     r = session.get(url, timeout=30)
     r.raise_for_status()
     return r.text
 
 
-def detect_pagination_key(session: requests.Session) -> str:
+def detect_page_key(
+    session: requests.Session,
+    endpoint: str,
+    base_pairs: List[Tuple[str, str]],
+) -> str:
     """
-    Thử từng key phân trang, key nào trả ra listLaw (có link) thì dùng.
+    Thử từng page_key xem cái nào cho ra listLaw.
     """
     for key in PAGE_KEYS_CANDIDATES:
         try:
-            params = dict(BASE_PARAMS)
-            params[key] = "1"
-            html = fetch_html(session, params)
-            items = extract_links_from_list_html(
+            pairs = override_page_param(base_pairs, key, 1)
+            url = build_url(endpoint, pairs)
+            html = fetch_html(session, url)
+            items = extract_links_from_result_html(
                 html=html,
                 base_url=BASE_URL,
                 type_value=TYPE_VALUE,
                 ministry=MINISTRY_TAG,
-                include_most_viewed=False,
             )
             if items:
-                print(f"✅ Detected pagination key: {key} (page1 items={len(items)})")
+                print(f"✅ Detected page param: {key} (page1 items={len(items)})")
                 return key
         except Exception:
             continue
 
-    raise RuntimeError(
-        "❌ Không detect được param phân trang. "
-        "Hãy mở F12 → Network, bấm chuyển trang, tìm request pKetQuaTimKiem.aspx "
-        "rồi xem nó dùng param gì (vd PageIndex=2...)."
-    )
+    # Nếu không detect được thì vẫn thử dùng Page (hay gặp nhất)
+    print("⚠️ Could not auto-detect page key, fallback to 'Page'")
+    return "Page"
 
 
 def main():
+    endpoint, _, base_pairs = parse_search_url(SEARCH_URL)
+
     session = requests.Session()
     session.headers.update(
         {
@@ -93,24 +135,22 @@ def main():
         }
     )
 
-    page_key = detect_pagination_key(session)
+    page_key = detect_page_key(session, endpoint, base_pairs)
 
-    all_items: List[Dict] = []
+    all_items: List[dict] = []
     seen_urls = set()
     empty_streak = 0
 
     for page in range(1, MAX_PAGES + 1):
-        params = dict(BASE_PARAMS)
-        params[page_key] = str(page)
+        pairs = override_page_param(base_pairs, page_key, page)
+        url = build_url(endpoint, pairs)
 
-        html = fetch_html(session, params)
-
-        items = extract_links_from_list_html(
+        html = fetch_html(session, url)
+        items = extract_links_from_result_html(
             html=html,
             base_url=BASE_URL,
             type_value=TYPE_VALUE,
             ministry=MINISTRY_TAG,
-            include_most_viewed=False,
         )
 
         new_count = 0

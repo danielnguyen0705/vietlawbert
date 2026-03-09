@@ -1,0 +1,4 @@
+# Bỏ qua folder docs nằm trong law_dataset/data
+law_dataset/data/docs/
+# Bỏ qua file .DS_Store (nếu có)
+.DS_Store
