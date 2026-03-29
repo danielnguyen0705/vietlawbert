@@ -1,0 +1,29 @@
+services:
+  mongodb:
+    image: mongo:8
+    container_name: vietlawbert-mongodb
+    restart: always
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+    volumes:
+      - mongo_data:/data/db
+
+  app:
+    build: .
+    container_name: vietlawbert-app
+    restart: always
+    depends_on:
+      - mongodb
+    env_file:
+      - .env
+    ports:
+      - "${APP_PORT}:8000"
+    volumes:
+      - .:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+volumes:
+  mongo_data:
