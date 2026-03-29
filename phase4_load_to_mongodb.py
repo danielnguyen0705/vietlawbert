@@ -9,6 +9,7 @@ DATA_DIR = Path("law_dataset/data")
 RAW_LINKS_FILE = DATA_DIR / "raw_links.json"
 RAW_DOCUMENTS_FILE = DATA_DIR / "raw_documents.jsonl"
 CLEANED_DOCUMENTS_FILE = DATA_DIR / "cleaned_documents.jsonl"
+DOCUMENTS_FILE = DATA_DIR / "documents.jsonl"
 CHUNKS_FILE = DATA_DIR / "chunks.jsonl"
 
 
@@ -193,6 +194,8 @@ def main():
     raw_documents = load_jsonl(CLEANED_DOCUMENTS_FILE)
     if not raw_documents:
         raw_documents = load_jsonl(RAW_DOCUMENTS_FILE)
+    if not raw_documents:
+        raw_documents = load_jsonl(DOCUMENTS_FILE)
 
     raw_chunks = load_jsonl(CHUNKS_FILE)
 
