@@ -1,4 +1,41 @@
-# Bỏ qua folder docs nằm trong law_dataset/data
-law_dataset/data/docs/
-# Bỏ qua file .DS_Store (nếu có)
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+.venv/
+
+# Environment variables
+.env
+
+# Editor / IDE
+.vscode/
+.idea/
+
+# OS files
 .DS_Store
+Thumbs.db
+
+# Test / cache
+.pytest_cache/
+.mypy_cache/
+
+# Logs
+*.log
+
+# Generated data artifacts
+law_dataset/data/raw_links.json
+law_dataset/data/raw_documents.jsonl
+law_dataset/data/cleaned_documents.jsonl
+law_dataset/data/documents.jsonl
+law_dataset/data/chunks.jsonl
+law_dataset/data/parse_errors.jsonl
+law_dataset/data/chunk_errors.jsonl
+
+# Generated folders
+law_dataset/data/docs/
+law_dataset/data/chunks/
+law_dataset/data/logs/
