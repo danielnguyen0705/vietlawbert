@@ -260,3 +260,66 @@ Lưu ý:
 - nếu chưa có `chunks.jsonl` thì collection `chunks` sẽ chưa có dữ liệu
 - khi đó endpoint `/documents/{document_id}/chunks` và `/search` có thể không có kết quả
 - nếu muốn tạo dữ liệu đầy đủ từ đầu, hãy chạy `docker compose exec app python run_full_pipeline.py`
+
+## 13. Cấu trúc dữ liệu MongoDB
+
+Database hiện tại là `vietlawbert` với các collection chính: `source_links`, `documents`, `chunks`, `pipeline_logs`.
+
+### Collection: `source_links`
+
+| Field | Type | Mô tả |
+|---|---|---|
+| `_id` | `ObjectId` | Khóa chính do MongoDB tự tạo |
+| `source_url` | `string` | URL nguồn của văn bản |
+| `source_site` | `string` | Tên website hoặc domain nguồn |
+| `crawl_status` | `string` | Trạng thái crawl của link, hiện tại thường là `discovered` |
+| `updated_at` | `string` | Thời gian cập nhật bản ghi, đang lưu dưới dạng ISO datetime string |
+
+### Collection: `documents`
+
+| Field | Type | Mô tả |
+|---|---|---|
+| `_id` | `ObjectId` | Khóa chính do MongoDB tự tạo |
+| `external_id` | `string \| null` | ID gốc từ nguồn dữ liệu ban đầu, có thể không có |
+| `source_url` | `string` | URL nguồn của văn bản |
+| `title` | `string \| null` | Tiêu đề văn bản pháp luật |
+| `document_type` | `string \| null` | Loại văn bản, ví dụ luật, nghị định, thông tư |
+| `document_number` | `string \| null` | Số hiệu văn bản |
+| `issuer` | `string \| null` | Cơ quan ban hành chính |
+| `issuer_codes` | `array[string]` | Danh sách mã cơ quan ban hành |
+| `issuers` | `array[string]` | Danh sách đầy đủ các cơ quan ban hành |
+| `raw_text` | `string \| null` | Nội dung thô của văn bản |
+| `cleaned_text` | `string \| null` | Nội dung văn bản sau khi làm sạch |
+| `parse_status` | `string` | Trạng thái parse dữ liệu, hiện tại thường là `success` |
+| `created_at` | `string` | Thời gian tạo document, đang lưu dưới dạng ISO datetime string |
+| `updated_at` | `string` | Thời gian cập nhật document, đang lưu dưới dạng ISO datetime string |
+| `pipeline_version` | `string` | Phiên bản pipeline tạo ra dữ liệu |
+| `document_key` | `string` | Khóa định danh logic được băm từ một số trường chính |
+
+### Collection: `chunks`
+
+| Field | Type | Mô tả |
+|---|---|---|
+| `_id` | `ObjectId` | Khóa chính do MongoDB tự tạo |
+| `document_id` | `ObjectId` | Tham chiếu tới `_id` của collection `documents` |
+| `chunk_index` | `int` | Số thứ tự chunk trong một document |
+| `section_header` | `string \| null` | Tiêu đề mục hoặc phần chứa chunk |
+| `chapter` | `string \| null` | Thông tin chương của chunk |
+| `article` | `string \| null` | Thông tin điều của chunk |
+| `clause` | `string \| null` | Thông tin khoản của chunk |
+| `chunk_text` | `string \| null` | Nội dung text của chunk |
+| `char_count` | `int \| null` | Số lượng ký tự của chunk |
+| `embedding_status` | `string` | Trạng thái embedding, hiện tại thường là `pending` |
+| `created_at` | `string` | Thời gian tạo chunk, đang lưu dưới dạng ISO datetime string |
+
+### Collection: `pipeline_logs`
+
+| Field | Type | Mô tả |
+|---|---|---|
+| `_id` | `ObjectId` | Khóa chính do MongoDB tự tạo |
+| `phase` | `string` | Tên giai đoạn pipeline ghi log |
+| `status` | `string` | Trạng thái của lần chạy |
+| `document_count` | `int` | Số lượng document được xử lý hoặc load |
+| `chunk_count` | `int` | Số lượng chunk được xử lý hoặc load |
+| `message` | `string` | Nội dung mô tả ngắn về kết quả chạy |
+| `timestamp` | `string` | Thời điểm ghi log, đang lưu dưới dạng ISO datetime string |
