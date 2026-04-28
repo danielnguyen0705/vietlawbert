@@ -1,183 +1,353 @@
-# phase1_collect_links.py
 from __future__ import annotations
 
 import json
-import time
-from typing import Dict, List, Tuple
-from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
+import re
+from pathlib import Path
 
-import requests
-
-from law_dataset.utils.extractor import extract_links_from_result_html
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import sync_playwright
 
 
-# =========================
-# ====== CONFIG ===========
-# =========================
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "law_dataset" / "data"
+OUT_PATH = DATA_DIR / "raw_links.json"
+DEBUG_DIR = DATA_DIR / "debug"
 
-# ✅ Dán đúng URL bạn lấy từ Network (mình để y nguyên theo bạn gửi)
-SEARCH_URL = (
-    "https://vbpl.vn/VBQPPL_UserControls/Publishing/TimKiem/pKetQuaTimKiem.aspx"
-    "?dvid=315&IsVietNamese=True&&type=1&stemp=1&TimTrong1=VBPQFulltext&TimTrong1=Title"
-    "&order=VBPQNgayBanHanh&TypeOfOrder=False"
-    "&LoaiVanBan=15,16,17,19,2,18,3,20,21,22,23,24"
-    "&CoQuanBanHanh=274"
-    "&TrangThaiHieuLuc=7,6,5,4,3,2,1"
-    "&Page"
-)
+BASE_URL = "https://vbpl.vn/"
+SEARCH_KEYWORD = "luật giao thông đường bộ"
 
-BASE_URL = "https://vbpl.vn"
+TYPE_VALUE = "traffic_law"
+SOURCE_SITE = "vbpl.vn"
 
-TYPE_VALUE = "luat_giao_thong"
-MINISTRY_TAG = "GTVT"
-
-OUT_PATH = "law_dataset/data/raw_links.json"
-
-MAX_PAGES = 500
-SLEEP_EACH_PAGE = 0.35
-STOP_AFTER_EMPTY_PAGES = 3  # 3 trang liên tiếp không có link mới thì stop
-
-# VBPL có thể dùng các key phân trang khác nhau -> thử lần lượt
-PAGE_KEYS_CANDIDATES = ["Page", "PageIndex", "page", "CurrentPage", "p"]
-
-# =========================
+MAX_RESULT_PAGES = 3
+MAX_ITEMS_PER_PAGE = 10
 
 
-def parse_search_url(url: str) -> Tuple[str, Dict[str, str], List[Tuple[str, str]]]:
+def clean_text(text: str) -> str:
+    text = str(text or "").replace("\xa0", " ").replace("\u200b", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def normalize_title(text: str) -> str:
+    text = clean_text(text)
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def make_safe_id(text: str, index: int) -> str:
     """
-    Parse SEARCH_URL thành:
-      - base_endpoint (scheme+host+path)
-      - params dict (giữ param cuối cùng nếu trùng key)
-      - params_list (giữ thứ tự & giữ cả key trùng như TimTrong1=... nhiều lần)
+    Tạm tạo ID logic từ title vì giao diện mới không expose detail URL trong DOM.
     """
-    u = urlparse(url)
-
-    # giữ nguyên tất cả query pairs kể cả key trùng
-    pairs = parse_qsl(u.query, keep_blank_values=True)
-
-    # VBPL đôi khi có '&Page' (không '=') => parse_qsl sẽ ra ('Page','')
-    # mình giữ y như vậy để lát override thành Page=1,2,3...
-
-    endpoint = urlunparse((u.scheme, u.netloc, u.path, "", "", ""))
-
-    # dict chỉ để tiện xem, không dùng để build url (vì trùng key)
-    params_dict = {}
-    for k, v in pairs:
-        params_dict[k] = v
-
-    return endpoint, params_dict, pairs
+    text = clean_text(text).lower()
+    text = re.sub(r"[^\w\s/-]+", "", text, flags=re.UNICODE)
+    text = re.sub(r"\s+", "-", text)
+    text = text[:120].strip("-")
+    return f"vbpl_card_{index:04d}_{text}" if text else f"vbpl_card_{index:04d}"
 
 
-def build_url(endpoint: str, pairs: List[Tuple[str, str]]) -> str:
-    query = urlencode(pairs, doseq=True)
-    return endpoint + "?" + query
+def fill_search_keyword(page, keyword: str) -> None:
+    inputs = page.locator("input")
+    count = inputs.count()
 
-
-def override_page_param(
-    pairs: List[Tuple[str, str]],
-    page_key: str,
-    page_value: int,
-) -> List[Tuple[str, str]]:
-    """
-    Trả về list pairs mới:
-      - xóa hết các page keys candidate cũ
-      - set page_key=page_value
-    """
-    filtered = [(k, v) for (k, v) in pairs if k not in PAGE_KEYS_CANDIDATES]
-    filtered.append((page_key, str(page_value)))
-    return filtered
-
-
-def fetch_html(session: requests.Session, url: str) -> str:
-    r = session.get(url, timeout=30)
-    r.raise_for_status()
-    return r.text
-
-
-def detect_page_key(
-    session: requests.Session,
-    endpoint: str,
-    base_pairs: List[Tuple[str, str]],
-) -> str:
-    """
-    Thử từng page_key xem cái nào cho ra listLaw.
-    """
-    for key in PAGE_KEYS_CANDIDATES:
+    for i in range(count):
+        item = inputs.nth(i)
         try:
-            pairs = override_page_param(base_pairs, key, 1)
-            url = build_url(endpoint, pairs)
-            html = fetch_html(session, url)
-            items = extract_links_from_result_html(
-                html=html,
-                base_url=BASE_URL,
-                type_value=TYPE_VALUE,
-                ministry=MINISTRY_TAG,
-            )
-            if items:
-                print(f"✅ Detected page param: {key} (page1 items={len(items)})")
-                return key
+            if not item.is_visible(timeout=1000):
+                continue
+
+            item.click(timeout=3000)
+            item.fill(keyword, timeout=3000)
+            return
         except Exception:
             continue
 
-    # Nếu không detect được thì vẫn thử dùng Page (hay gặp nhất)
-    print("⚠️ Could not auto-detect page key, fallback to 'Page'")
-    return "Page"
+    raise RuntimeError("Cannot find visible search input")
 
 
-def main():
-    endpoint, _, base_pairs = parse_search_url(SEARCH_URL)
+def choose_title_search_if_possible(page) -> None:
+    candidates = [
+        "text=Tiêu đề văn bản",
+        "label:has-text('Tiêu đề văn bản')",
+    ]
 
-    session = requests.Session()
-    session.headers.update(
-        {
-            "User-Agent": "Mozilla/5.0",
-            "Accept-Language": "vi,en;q=0.9",
-        }
-    )
+    for selector in candidates:
+        try:
+            page.locator(selector).first.click(timeout=2000)
+            page.wait_for_timeout(500)
+            return
+        except Exception:
+            continue
 
-    page_key = detect_page_key(session, endpoint, base_pairs)
 
-    all_items: List[dict] = []
-    seen_urls = set()
-    empty_streak = 0
+def click_search(page) -> None:
+    candidates = [
+        "button:has-text('Tìm kiếm')",
+        "text=Tìm kiếm",
+    ]
 
-    for page in range(1, MAX_PAGES + 1):
-        pairs = override_page_param(base_pairs, page_key, page)
-        url = build_url(endpoint, pairs)
+    for selector in candidates:
+        try:
+            page.locator(selector).first.click(timeout=3000)
+            return
+        except Exception:
+            continue
 
-        html = fetch_html(session, url)
-        items = extract_links_from_result_html(
-            html=html,
-            base_url=BASE_URL,
-            type_value=TYPE_VALUE,
-            ministry=MINISTRY_TAG,
+    raise RuntimeError("Cannot find search button")
+
+
+def wait_for_results(page) -> None:
+    try:
+        page.wait_for_selector("[class*='DocumentCard_documentTitle']", timeout=20000)
+        return
+    except PlaywrightTimeoutError:
+        pass
+
+    raise RuntimeError("Cannot find document result cards after search.")
+
+
+def get_card_locators(page):
+    return page.locator("li.ant-list-item")
+
+
+def extract_label_value(card, label: str) -> str:
+    """
+    Card text có dạng:
+    Trạng thái: Còn hiệu lực
+    Ngày ban hành: 12/02/2026
+    Ngày hiệu lực: 28/02/2026
+    """
+    try:
+        text = clean_text(card.inner_text(timeout=2000))
+    except Exception:
+        return ""
+
+    pattern = rf"{re.escape(label)}\s*:\s*([^:]+?)(?=\s+Trạng thái:|\s+Ngày ban hành:|\s+Ngày hiệu lực:|$)"
+    match = re.search(pattern, text, flags=re.IGNORECASE)
+
+    if match:
+        return clean_text(match.group(1))
+
+    return ""
+
+
+def extract_card_title(card) -> str:
+    try:
+        title = card.locator("[class*='DocumentCard_documentTitle']").first.inner_text(timeout=2000)
+        return normalize_title(title)
+    except Exception:
+        pass
+
+    try:
+        text = clean_text(card.inner_text(timeout=2000))
+    except Exception:
+        return ""
+
+    # Cắt trước các nút và metadata
+    cut_markers = ["PDF", "Lược đồ", "Tải về", "Trạng thái:", "Ngày ban hành:", "Ngày hiệu lực:"]
+    for marker in cut_markers:
+        if marker in text:
+            text = text.split(marker)[0]
+
+    return normalize_title(text)
+
+
+def collect_cards_from_current_page(page, global_start_index: int) -> list[dict]:
+    cards = get_card_locators(page)
+    count = min(cards.count(), MAX_ITEMS_PER_PAGE)
+
+    print(f"Detected {cards.count()} cards. Will collect {count} cards.")
+
+    items = []
+
+    for i in range(count):
+        card = cards.nth(i)
+        title = extract_card_title(card)
+
+        if not title:
+            continue
+
+        status = extract_label_value(card, "Trạng thái")
+        issued_date = extract_label_value(card, "Ngày ban hành")
+        effective_date = extract_label_value(card, "Ngày hiệu lực")
+
+        record_index = global_start_index + i + 1
+
+        items.append(
+            {
+                "type": TYPE_VALUE,
+                "doc_id": title,
+                "document_id": make_safe_id(title, record_index),
+                "url": "",
+                "source_site": SOURCE_SITE,
+                "url_schema": "vbpl_search_card",
+                "search_keyword": SEARCH_KEYWORD,
+                "status": status,
+                "issued_date": issued_date,
+                "effective_date": effective_date,
+                "ministry": "",
+            }
         )
 
-        new_count = 0
-        for it in items:
-            if it["url"] in seen_urls:
+        print(f"[CARD {record_index}] {title[:100]}")
+
+    return items
+
+
+def go_to_next_page(page) -> bool:
+    candidates = [
+        "text=Sau",
+        "button:has-text('Sau')",
+        "a:has-text('Sau')",
+        "li.ant-pagination-next",
+        ".ant-pagination-next",
+    ]
+
+    before_titles = []
+    try:
+        before_titles = [
+            clean_text(t)
+            for t in page.locator("[class*='DocumentCard_documentTitle']").all_inner_texts()
+        ]
+    except Exception:
+        pass
+
+    before_first = before_titles[0] if before_titles else ""
+
+    for selector in candidates:
+        try:
+            locator = page.locator(selector).last
+
+            if locator.count() == 0:
                 continue
-            seen_urls.add(it["url"])
-            all_items.append(it)
-            new_count += 1
 
-        print(f"[PAGE {page:03d}] found={len(items)} new={new_count} total={len(all_items)}")
+            if not locator.is_visible(timeout=1000):
+                continue
 
-        if new_count == 0:
-            empty_streak += 1
-        else:
-            empty_streak = 0
+            locator.click(timeout=5000)
+            page.wait_for_timeout(3000)
+            wait_for_results(page)
 
-        if empty_streak >= STOP_AFTER_EMPTY_PAGES:
-            print(f"[STOP] {STOP_AFTER_EMPTY_PAGES} pages in a row have no new links.")
-            break
+            after_titles = [
+                clean_text(t)
+                for t in page.locator("[class*='DocumentCard_documentTitle']").all_inner_texts()
+            ]
+            after_first = after_titles[0] if after_titles else ""
 
-        time.sleep(SLEEP_EACH_PAGE)
+            if after_first and after_first != before_first:
+                return True
 
-    with open(OUT_PATH, "w", encoding="utf-8") as f:
+            return True
+
+        except Exception:
+            continue
+
+    return False
+
+
+def dump_debug(page, name: str) -> None:
+    DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+
+    html_path = DEBUG_DIR / f"{name}.html"
+    png_path = DEBUG_DIR / f"{name}.png"
+
+    try:
+        html_path.write_text(page.content(), encoding="utf-8")
+        print(f"[DEBUG] Saved HTML -> {html_path}")
+    except Exception as exc:
+        print(f"[DEBUG] Cannot save HTML: {exc}")
+
+    try:
+        page.screenshot(path=str(png_path), full_page=True)
+        print(f"[DEBUG] Saved screenshot -> {png_path}")
+    except Exception as exc:
+        print(f"[DEBUG] Cannot save screenshot: {exc}")
+
+
+def main() -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+
+    all_items: list[dict] = []
+    seen_titles: set[str] = set()
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ],
+        )
+
+        context = browser.new_context(
+            viewport={"width": 1600, "height": 1200},
+            locale="vi-VN",
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            ),
+        )
+
+        page = context.new_page()
+
+        print(f"Opening {BASE_URL}")
+        page.goto(BASE_URL, wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(3000)
+
+        print(f"Searching keyword: {SEARCH_KEYWORD}")
+        fill_search_keyword(page, SEARCH_KEYWORD)
+        choose_title_search_if_possible(page)
+        click_search(page)
+
+        try:
+            page.wait_for_load_state("networkidle", timeout=30000)
+        except PlaywrightTimeoutError:
+            pass
+
+        page.wait_for_timeout(3000)
+        wait_for_results(page)
+
+        for result_page in range(1, MAX_RESULT_PAGES + 1):
+            print(f"\n=== Result page {result_page} ===")
+
+            page_items = collect_cards_from_current_page(page, len(all_items))
+
+            new_items = []
+            for item in page_items:
+                key = item["doc_id"]
+                if key in seen_titles:
+                    continue
+
+                seen_titles.add(key)
+                new_items.append(item)
+
+            all_items.extend(new_items)
+
+            print(f"Collected on page {result_page}: {len(new_items)}")
+            print(f"Total collected: {len(all_items)}")
+
+            if result_page >= MAX_RESULT_PAGES:
+                break
+
+            if not go_to_next_page(page):
+                print("No next page found. Stop pagination.")
+                break
+
+        if not all_items:
+            dump_debug(page, "phase1_no_cards")
+
+        context.close()
+        browser.close()
+
+    with OUT_PATH.open("w", encoding="utf-8") as f:
         json.dump(all_items, f, ensure_ascii=False, indent=2)
 
-    print(f"\n✅ Saved {len(all_items)} links -> {OUT_PATH}")
+    print(f"\n✅ Saved {len(all_items)} records -> {OUT_PATH}")
+
+    if not all_items:
+        raise RuntimeError("No search cards collected.")
 
 
 if __name__ == "__main__":

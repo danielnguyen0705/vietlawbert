@@ -1,0 +1,17 @@
+{
+  "domain_id": "traffic_law",
+  "domain_name": "Luật giao thông đường bộ",
+  "total_documents": 29,
+  "relevant_documents": 26,
+  "need_review_documents": 0,
+  "ignored_documents": 3,
+  "exported_documents": 26,
+  "exported_chunks": 26,
+  "include_review": false,
+  "outputs": {
+    "documents": "law_dataset/data/domain_datasets/traffic_law/documents.jsonl",
+    "chunks": "law_dataset/data/domain_datasets/traffic_law/chunks.jsonl",
+    "need_review_documents": "law_dataset/data/domain_datasets/traffic_law/need_review_documents.jsonl",
+    "summary": "law_dataset/data/domain_datasets/traffic_law/summary.json"
+  }
+}
