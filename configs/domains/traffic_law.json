@@ -1,0 +1,79 @@
+{
+  "domain_id": "traffic_law",
+  "domain_name": "Luật giao thông đường bộ",
+  "description": "Dataset văn bản pháp luật liên quan đến giao thông đường bộ, đường bộ, phương tiện, giấy phép lái xe, xử phạt vi phạm giao thông, trật tự an toàn giao thông đường bộ.",
+  "priority_keywords": [
+    "giao thông đường bộ",
+    "trật tự, an toàn giao thông đường bộ",
+    "đường bộ",
+    "xử phạt vi phạm hành chính trong lĩnh vực giao thông",
+    "vi phạm giao thông",
+    "giấy phép lái xe",
+    "xe cơ giới",
+    "người điều khiển phương tiện",
+    "nồng độ cồn",
+    "tốc độ",
+    "biển báo hiệu đường bộ",
+    "vạch kẻ đường",
+    "đăng kiểm"
+  ],
+  "secondary_keywords": [
+    "ô tô",
+    "xe ô tô",
+    "xe máy",
+    "mô tô",
+    "xe gắn máy",
+    "làn đường",
+    "phần đường",
+    "dừng xe",
+    "đỗ xe",
+    "vượt xe",
+    "chuyển hướng",
+    "đăng ký xe",
+    "phù hiệu",
+    "vận tải đường bộ",
+    "người lái xe",
+    "chủ phương tiện",
+    "phương tiện giao thông",
+    "tai nạn giao thông",
+    "an toàn giao thông"
+  ],
+  "document_types": [
+    "Luật",
+    "Bộ luật",
+    "Nghị định",
+    "Thông tư",
+    "Thông tư liên tịch",
+    "Quy chuẩn kỹ thuật quốc gia",
+    "Quyết định"
+  ],
+  "include_title_patterns": [
+    "giao thông đường bộ",
+    "trật tự, an toàn giao thông đường bộ",
+    "đường bộ",
+    "xử phạt vi phạm hành chính.*giao thông",
+    "vi phạm giao thông",
+    "giấy phép lái xe",
+    "đào tạo, sát hạch",
+    "báo hiệu đường bộ",
+    "đăng kiểm",
+    "vận tải đường bộ"
+  ],
+  "exclude_title_patterns": [
+    "đường thủy",
+    "đường sắt",
+    "hàng không",
+    "hàng hải",
+    "đường biển"
+  ],
+  "field_boost_keywords": [
+    "giao thông vận tải",
+    "đường bộ",
+    "an toàn giao thông"
+  ],
+  "min_relevance_score": 8,
+  "review_score_range": {
+    "min": 4,
+    "max": 7
+  }
+}

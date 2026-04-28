@@ -34,6 +34,9 @@ def print_data_state() -> None:
         DATA_DIR / "cleaned_documents.jsonl",
         DATA_DIR / "documents.jsonl",
         DATA_DIR / "chunks.jsonl",
+        DATA_DIR / "domain_datasets" / "traffic_law" / "documents.jsonl",
+        DATA_DIR / "domain_datasets" / "traffic_law" / "chunks.jsonl",
+        DATA_DIR / "domain_datasets" / "traffic_law" / "summary.json",
     ]
 
     print("\nCurrent data state:")
@@ -60,6 +63,15 @@ def main() -> None:
         ("Phase 3 - Chunk Documents", [python_exec, "phase3_chunk_documents.py"]),
         ("Init MongoDB Indexes", [python_exec, "-m", "app.db.init_indexes"]),
         ("Phase 4 - Load to MongoDB", [python_exec, "phase4_load_to_mongodb.py"]),
+        (
+            "Phase 5 - Build Traffic Law Dataset",
+            [
+            python_exec,
+            "phase5_build_domain_dataset.py",
+            "--domain-config",
+            "configs/domains/traffic_law.json",
+            ],
+        ),
     ]
 
     for step_name, cmd in steps:
