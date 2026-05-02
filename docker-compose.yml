@@ -1,0 +1,25 @@
+services:
+  # Service 1: Ứng dụng VietLawBERT của bạn
+  app:
+    build: .
+    container_name: vietlawbert_container
+    volumes:
+      - .:/app  # <--- ĐÂY LÀ BIND MOUNT: Bạn sửa code ở máy thật, Docker nhận luôn
+    environment:
+      - MONGO_URI=mongodb://db:27017/
+    depends_on:
+      - db
+    stdin_open: true # Để bạn có thể vào terminal debug
+    tty: true
+
+  # Service 2: Database MongoDB (Thầy bạn yêu cầu lưu NoSQL)
+  db:
+    image: mongo:latest
+    container_name: mongodb_vietlaw
+    ports:
+      - "27017:27017" # Để bạn dùng MongoDB Compass ở máy thật kết nối vào xem data
+    volumes:
+      - vietlaw_data:/data/db # <--- ĐÂY LÀ VOLUME: Xóa container thì dữ liệu luật vẫn còn
+
+volumes:
+  vietlaw_data: # Khai báo volume độc lập để lưu trữ bền vững

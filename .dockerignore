@@ -1,0 +1,9 @@
+.venv/
+venv/
+.env
+__pycache__/
+*.pdf
+*.doc
+*.docx
+*.jsonl
+.git/

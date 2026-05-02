@@ -1,0 +1,35 @@
+# --- CRAWLING & WEB SCRAPING ---
+scrapy          # Framework cào dữ liệu chính (Phase 1)
+requests        # Gửi request HTTP bổ trợ
+beautifulsoup4  # Hỗ trợ parse HTML nhanh nếu cần
+
+# --- PDF & DATA PROCESSING ---
+pymupdf         # Trích xuất text từ file PDF cực tốt (import fitz)
+python-docx     # Xử lý file DOCX nếu có
+pywin32        # Tương tác với COM để xử lý file DOCX trên Windows (nếu cần)
+pandas          # Xử lý dữ liệu bảng và quản lý metadata
+python-dotenv   # Quản lý biến môi trường (.env) cho DB_URI, API_KEY
+pytesseract     
+pdf2image 
+
+# --- DATABASE (NoSQL) ---
+pymongo         # Kết nối ứng dụng Python với MongoDB trong Docker
+
+# --- VIETNAMESE NLP (TIỀN XỬ LÝ TIẾNG VIỆT) ---
+pyvi            # Tokenizer tiếng Việt (tách từ cực chuẩn cho văn bản Luật)
+underthesea     # Hỗ trợ phân tích cú pháp và gán nhãn thực thể tiếng Việt
+
+# --- AI & MACHINE LEARNING (VietLawBERT Core) ---
+--find-links https://download.pytorch.org/whl/cpu/torch_stable.html
+torch           # Thư viện nền tảng cho mô hình Deep Learning
+transformers    # Load mô hình BERT, PhoBERT và VNLawBERT
+sentence-transformers # Tạo Embeddings cho hệ thống RAG
+huggingface_hub # Tải model từ Hugging Face nhanh chóng
+
+# --- VECTOR DATABASE & RAG ---
+faiss-cpu       # Thư viện lưu trữ vector và tìm kiếm nhanh (cho RAG)
+numpy           # Tính toán ma trận cho các vector embedding
+
+# --- WEB FRAMEWORK (NẾU BẠN LÀM GIAO DIỆN CHATBOT) ---
+fastapi         # Tạo API cho chatbot
+uvicorn         # Server chạy ứng dụng FastAPI
