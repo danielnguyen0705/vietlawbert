@@ -4,35 +4,32 @@ import json
 import time
 import logging
 from dotenv import load_dotenv
-from langchain_text_splitters import MarkdownHeaderTextSplitter
+from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from google import genai
 from google.genai import types
 
 # ==========================================
 # 1. CẤU HÌNH ĐƯỜNG DẪN & LOGGING
 # ==========================================
-# Lấy đường dẫn thư mục 'law_dataset'
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 MD_FOLDER = os.path.join(BASE_DIR, "data", "processed")
 OUTPUT_DIR = os.path.join(BASE_DIR, "json")
 OUTPUT_FILE = os.path.join(OUTPUT_DIR, "final_contextual_chunks.jsonl")
+METADATA_FILE = os.path.join(OUTPUT_DIR, "metadata.jsonl") # Nguồn chứa metadata
 
-# Cấu hình thư mục Log
 LOG_DIR = os.path.join(BASE_DIR, "data", "log")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 
-# Lấy tên file hiện tại (bỏ đuôi .py) để đặt tên log
 current_filename = os.path.basename(__file__).split('.')[0]
 log_filepath = os.path.join(LOG_DIR, f"log_{current_filename}.log")
 
-# Thiết lập bộ ghi log (Vừa ghi ra file, vừa in ra Terminal)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler(log_filepath, encoding="utf-8", mode="a"), # Ghi nối đuôi vào file
-        logging.StreamHandler(sys.stdout) # In ra màn hình Terminal
+        logging.FileHandler(log_filepath, encoding="utf-8", mode="a"),
+        logging.StreamHandler(sys.stdout)
     ]
 )
 logger = logging.getLogger(__name__)
@@ -49,13 +46,11 @@ if not api_key:
     load_dotenv(parent_env)
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        logger.error(f"Không tìm thấy GEMINI_API_KEY trong file .env ở cả {env_path} và {parent_env}")
+        logger.error("Không tìm thấy GEMINI_API_KEY.")
         raise ValueError("Thiếu API Key.")
 
-# Khởi tạo Client bằng SDK mới
 client = genai.Client(api_key=api_key)
-# Nhớ kiểm tra lại tên model cho đúng nhé 
-MODEL_ID = 'gemini-3.1-pro' 
+MODEL_ID = 'gemini-2.5-flash' 
 
 # ==========================================
 # 3. CẤU HÌNH BỘ CẮT MARKDOWN
@@ -69,66 +64,97 @@ headers_to_split_on = [
 ]
 markdown_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_to_split_on)
 
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=1500,     # Chiều dài lý tưởng cho LLM đọc
+    chunk_overlap=150,   # Giữ lại 150 ký tự gối đầu để không đứt ngữ nghĩa
+    separators=["\n\n", "\n", ".", " ", ""]
+)
+
 def generate_context(chunk_content, document_title):
-    """Gọi Gemini bằng SDK mới để sinh ngữ cảnh"""
     prompt = f"""
     Bạn là một chuyên gia pháp lý. Hãy viết 1 câu ngữ cảnh giải thích ngắn gọn cho đoạn văn bản luật sau.
-    Tên văn bản gốc: {document_title}
+    Tên/Số hiệu văn bản: {document_title}
     Nội dung đoạn trích: {chunk_content}
     Yêu cầu: Viết đúng 1 câu duy nhất, bắt đầu bằng 'Đây là quy định về... nằm trong {document_title}...'.
     Không có lời bình luận nào khác.
     """
     try:
-        response = client.models.generate_content(
-            model=MODEL_ID,
-            contents=prompt,
-        )
+        response = client.models.generate_content(model=MODEL_ID, contents=prompt)
         return response.text.strip()
     except Exception as e:
-        logger.error(f"Lỗi API Gemini khi xử lý file {document_title}: {e}")
+        logger.error(f"Lỗi API Gemini: {e}")
         return ""
 
 def process_and_save():
-    logger.info(f"Bắt đầu quá trình Contextualize dữ liệu bằng Gemini (Model: {MODEL_ID})...")
+    logger.info(f"Bắt đầu quá trình Contextualize dữ liệu bằng Gemini...")
     
+    # ĐỌC METADATA ĐỂ LÀM TỪ ĐIỂN (LOOKUP)
+    meta_lookup = {}
+    if os.path.exists(METADATA_FILE):
+        with open(METADATA_FILE, 'r', encoding='utf-8') as f:
+            for line in f:
+                if line.strip():
+                    data = json.loads(line)
+                    # Lấy doc_number và effFrom (Ngày hiệu lực)
+                    meta_lookup[data['item_id']] = {
+                        "doc_number": data.get("doc_number", data['item_id']),
+                        "effFrom": data.get("metadata_api", {}).get("effFrom", "Chưa xác định")
+                    }
+        logger.info(f"Đã tải thành công {len(meta_lookup)} records từ metadata.jsonl")
+    else:
+        logger.warning("Không tìm thấy metadata.jsonl. Dữ liệu sẽ thiếu doc_number và ngày hiệu lực!")
+
     total_chunks = 0
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f_out:
-        
-        # Sắp xếp file theo tên để dễ theo dõi
         md_files = sorted([f for f in os.listdir(MD_FOLDER) if f.endswith('.md')])
         
         for filename in md_files:
             file_path = os.path.join(MD_FOLDER, filename)
-            document_title = filename.replace(".md", "") 
-            logger.info(f"Đang đọc file: {filename}")
+            doc_id = filename.replace(".md", "") 
+            
+            # Tra cứu lấy Số hiệu và Ngày hiệu lực thật
+            doc_meta = meta_lookup.get(doc_id, {"doc_number": doc_id, "effFrom": "Chưa xác định"})
+            real_doc_number = doc_meta["doc_number"]
+            real_eff_date = doc_meta["effFrom"]
+            
+            logger.info(f"Đang xử lý: {real_doc_number} (ID: {doc_id})")
             
             with open(file_path, "r", encoding="utf-8") as f_in:
                 md_content = f_in.read()
             
-            # Cắt Markdown thành các chunks
             md_chunks = markdown_splitter.split_text(md_content)
-            logger.info(f"Đã cắt thành {len(md_chunks)} chunks.")
             
-            for i, chunk in enumerate(md_chunks):
-                original_text = chunk.page_content.strip()
+            final_chunks = []
+            for chunk in md_chunks:
+                if len(chunk.page_content) > 1500:
+                    # Nếu băm theo Điều/Khoản rồi mà vẫn quá dài -> Băm nhỏ tiếp theo đoạn văn
+                    sub_texts = text_splitter.split_text(chunk.page_content)
+                    for sub in sub_texts:
+                        final_chunks.append({"text": sub, "metadata": chunk.metadata})
+                else:
+                    final_chunks.append({"text": chunk.page_content, "metadata": chunk.metadata})
+            
+            # Thay vì lặp md_chunks, giờ ta lặp final_chunks đã được bảo vệ
+            for i, chunk_data in enumerate(final_chunks):
+                original_text = chunk_data["text"].strip()
                 if not original_text:
                     continue
                     
-                structure_metadata = chunk.metadata
+                structure_metadata = chunk_data["metadata"]
                 
-                logger.info(f"Đang sinh ngữ cảnh cho chunk {i+1}/{len(md_chunks)}...")
-                added_context = generate_context(original_text, document_title)
-                
-                # NGHỈ 4 GIÂY ĐỂ TRÁNH RATE LIMIT
-                time.sleep(4) 
+                # Gọi API với Số hiệu thật để AI hiểu rõ ngữ cảnh hơn
+                added_context = generate_context(original_text, real_doc_number)
+                time.sleep(4) # Chống Rate Limit
                 
                 contextualized_text = f"{added_context}\n\nNội dung chi tiết:\n{original_text}" if added_context else original_text
                 
-                # Đóng gói JSONL
+                # ĐÓNG GÓI JSONL VỚI ĐẦY ĐỦ METADATA CẦN THIẾT
                 final_record = {
-                    "chunk_id": f"{document_title}_chunk_{i+1}",
+                    "chunk_id": f"{doc_id}_chunk_{i+1}",
                     "metadata": {
-                        "source_doc": document_title,
+                        "doc_id": doc_id,
+                        "doc_number": real_doc_number,
+                        "effective_date": real_eff_date, # Đã chuẩn hóa đúng key
                         "hierarchy": structure_metadata
                     },
                     "original_text": original_text,
@@ -138,7 +164,7 @@ def process_and_save():
                 f_out.write(json.dumps(final_record, ensure_ascii=False) + "\n")
                 total_chunks += 1
                 
-    logger.info(f"Đã xử lý xong! Tổng cộng: {total_chunks} chunks.")
+    logger.info(f"Hoàn tất! Đã xử lý {total_chunks} chunks.")
     logger.info(f"File lưu tại: {OUTPUT_FILE}")
     logger.info(f"Log được lưu tại: {log_filepath}")
 

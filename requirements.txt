@@ -1,35 +1,46 @@
-# --- CRAWLING & WEB SCRAPING ---
-scrapy          # Framework cào dữ liệu chính (Phase 1)
-requests        # Gửi request HTTP bổ trợ
-beautifulsoup4  # Hỗ trợ parse HTML nhanh nếu cần
+# ==========================================
+# 1. CRAWLING & WEB SCRAPING (Lấy dữ liệu)
+# ==========================================
+scrapy==2.11.1
+requests==2.31.0
+beautifulsoup4==4.12.3
 
-# --- PDF & DATA PROCESSING ---
-pymupdf         # Trích xuất text từ file PDF cực tốt (import fitz)
-python-docx     # Xử lý file DOCX nếu có
-pywin32        # Tương tác với COM để xử lý file DOCX trên Windows (nếu cần)
-pandas          # Xử lý dữ liệu bảng và quản lý metadata
-python-dotenv   # Quản lý biến môi trường (.env) cho DB_URI, API_KEY
-pytesseract     
-pdf2image 
+# ==========================================
+# 2. DATA PROCESSING & UTILS (Xử lý dữ liệu)
+# ==========================================
+pandas==2.2.1
+python-dotenv==1.0.1
 
-# --- DATABASE (NoSQL) ---
-pymongo         # Kết nối ứng dụng Python với MongoDB trong Docker
+# ==========================================
+# 3. DATABASES (Bộ 3 quyền lực)
+# ==========================================
+pymongo==4.6.2       # Document DB (Lưu JSON/Metadata raw)
+pymilvus==2.4.0      # Vector DB (Thay thế hoàn toàn cho faiss-cpu)
+neo4j==5.19.0        # Graph DB (Lưu trữ Knowledge Graph - Entities & Relationships)
+# ĐÃ XÓA: faiss-cpu (Vì chúng ta đã nâng cấp lên Milvus xịn hơn)
 
-# --- VIETNAMESE NLP (TIỀN XỬ LÝ TIẾNG VIỆT) ---
-pyvi            # Tokenizer tiếng Việt (tách từ cực chuẩn cho văn bản Luật)
-underthesea     # Hỗ trợ phân tích cú pháp và gán nhãn thực thể tiếng Việt
+# ==========================================
+# 4. VIETNAMESE NLP (Tiền xử lý tiếng Việt)
+# ==========================================
+pyvi==0.1.1
+underthesea==6.8.0
 
-# --- AI & MACHINE LEARNING (VietLawBERT Core) ---
---find-links https://download.pytorch.org/whl/cpu/torch_stable.html
-torch           # Thư viện nền tảng cho mô hình Deep Learning
-transformers    # Load mô hình BERT, PhoBERT và VNLawBERT
-sentence-transformers # Tạo Embeddings cho hệ thống RAG
-huggingface_hub # Tải model từ Hugging Face nhanh chóng
+# ==========================================
+# 5. AI, LLM & EMBEDDINGS (Core VietLawBERT)
+# ==========================================
+anthropic==0.23.0    # THÊM MỚI: Thư viện chính thức để gọi API Claude 3 Haiku
 
-# --- VECTOR DATABASE & RAG ---
-faiss-cpu       # Thư viện lưu trữ vector và tìm kiếm nhanh (cho RAG)
-numpy           # Tính toán ma trận cho các vector embedding
+# Ép tải PyTorch bản CPU để Docker không bị nặng hàng chục GB (rất quan trọng)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.2.1+cpu 
 
-# --- WEB FRAMEWORK (NẾU BẠN LÀM GIAO DIỆN CHATBOT) ---
-fastapi         # Tạo API cho chatbot
-uvicorn         # Server chạy ứng dụng FastAPI
+transformers==4.39.1
+sentence-transformers==2.6.0  # Dùng để chạy model BGE-M3 hoặc VNLawBERT
+huggingface_hub==0.22.0
+numpy==1.26.4
+
+# ==========================================
+# 6. WEB FRAMEWORK (API & Chatbot)
+# ==========================================
+fastapi==0.110.0
+uvicorn==0.29.0

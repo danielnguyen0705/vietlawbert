@@ -1,41 +1,62 @@
 import scrapy
 import json
 import os
+from datetime import datetime
 from scrapy import signals
+
+# ==========================================
+# CẤU HÌNH ĐƯỜNG DẪN & LOGGING ĐỘNG (GIỐNG NHỆN CHÍNH)
+# ==========================================
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.abspath(os.path.join(CURRENT_DIR, "../../../"))
+
+JSON_DIR = os.path.join(BASE_DIR, "json")
+os.makedirs(JSON_DIR, exist_ok=True)
+METADATA_FILE = os.path.join(JSON_DIR, 'metadata.jsonl')
+FAILED_FILE = os.path.join(JSON_DIR, 'failed_links.jsonl')
+
+TODAY_STR = datetime.now().strftime("%Y-%m-%d")
+LOG_DIR = os.path.join(BASE_DIR, "data", "logs", TODAY_STR)
+os.makedirs(LOG_DIR, exist_ok=True)
+
+CURRENT_FILENAME = os.path.basename(__file__).split('.')[0]
+LOG_FILE_PATH = os.path.join(LOG_DIR, f"log_{CURRENT_FILENAME}.log")
+
 
 class RescueSpider(scrapy.Spider):
     name = "rescue_spider"
     allowed_domains = ["vbpl.vn", "moj.gov.vn", "vbpl-bientap-gateway.moj.gov.vn"]
 
-    # ==========================================
-    # CẤU HÌNH TỰ ĐỘNG XUẤT FILE METADATA
-    # (Sử dụng chung đường dẫn với nhện chính)
-    # ==========================================
     custom_settings = {
         'FEEDS': {
-            'D:/Daniel_Nguyen/nckh_project/law_dataset/json/metadata.jsonl': { 
+            METADATA_FILE: { 
                 'format': 'jsonlines',
                 'encoding': 'utf8',
                 'store_empty': False,
-                'overwrite': False, # Chế độ Append nối tiếp vào file cũ
+                'overwrite': False, 
             },
-        }
+        },
+        'LOG_FILE': LOG_FILE_PATH,
+        'LOG_LEVEL': 'INFO',
+        'LOG_STDOUT': True,
+        
+        # Nhện cứu hộ đi siêu chậm để không làm sập web người ta
+        'DOWNLOAD_DELAY': 30.0, 
+        'CONCURRENT_REQUESTS_PER_DOMAIN': 1, 
+        'COOKIES_ENABLED': False,
+        'USER_AGENT': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
 
     def __init__(self, *args, **kwargs):
         super(RescueSpider, self).__init__(*args, **kwargs)
         
-        # Đường dẫn tuyệt đối trỏ thẳng vào thư mục chứa file lỗi
-        self.data_dir = r"D:\Daniel_Nguyen\nckh_project\law_dataset\json"
-        self.failed_file = os.path.join(self.data_dir, 'failed_links.jsonl')
-        
+        self.failed_file = FAILED_FILE
         self.successful_ids = set()
         self.failed_items = {}
 
     @classmethod
     def from_crawler(cls, crawler, *args, **kwargs):
         spider = super(RescueSpider, cls).from_crawler(crawler, *args, **kwargs)
-        # Bắt mạch thời điểm nhện đóng cửa để dọn dẹp file
         crawler.signals.connect(spider.spider_closed, signal=signals.spider_closed)
         return spider
 
@@ -46,7 +67,6 @@ class RescueSpider(scrapy.Spider):
             self.logger.info("Khong tim thay file failed_links.jsonl. He thong da sach bong loi!")
             return
 
-        # Đọc từng dòng trong file jsonl
         with open(self.failed_file, 'r', encoding='utf-8') as f:
             for line in f:
                 if line.strip():
@@ -58,7 +78,6 @@ class RescueSpider(scrapy.Spider):
                             self.failed_items[doc_id] = item
                             diagram_url = f"https://vbpl-bientap-gateway.moj.gov.vn/api/qtdc/public/doc/{doc_id}/diagram"
                             
-                            # Khởi tạo request lấy Lược đồ (Diagram)
                             yield scrapy.Request(
                                 url=diagram_url,
                                 method="GET",
@@ -66,7 +85,7 @@ class RescueSpider(scrapy.Spider):
                                 callback=self.parse_diagram,
                                 errback=self.handle_error,
                                 cb_kwargs={'item': item},
-                                dont_filter=True # Không lọc trùng vì ta chủ động cào lại các link đã rớt
+                                dont_filter=True 
                             )
                     except json.JSONDecodeError:
                         pass
@@ -81,7 +100,6 @@ class RescueSpider(scrapy.Spider):
         doc_id = item['item_id']
         html_url = f"https://vbpl-bientap-gateway.moj.gov.vn/api/qtdc/public/doc/minio/buckets/vbpl/{doc_id}/{doc_id}_content_origin.html/download"
         
-        # Tiếp tục lấy file HTML
         yield scrapy.Request(
             url=html_url,
             method="GET",
@@ -98,8 +116,6 @@ class RescueSpider(scrapy.Spider):
 
         self.successful_ids.add(doc_id)
         self.logger.info(f"[CUU THANH CONG] Du lieu cua van ban: {item.get('doc_number')}")
-        
-        # Bắn dữ liệu về pipeline để lưu y như nhện chính (sẽ tự chui vào metadata.jsonl)
         yield item
 
     def handle_error(self, failure):
@@ -108,26 +124,20 @@ class RescueSpider(scrapy.Spider):
         doc_id = item.get('item_id') if item else "Unknown"
         self.logger.error(f"[THAT BAI] Server van tu choi ket noi voi ID: {doc_id}")
 
-    # ==========================================
-    # CƠ CHẾ DỌN DẸP SỔ ĐEN
-    # ==========================================
     def spider_closed(self, spider):
         self.logger.info("[DONG BO] Dang cap nhat lai danh sach loi...")
         
-        # Tìm những ID vẫn chưa cứu được (nằm trong file failed ban đầu nhưng không có trong successful_ids)
         remaining_failures = []
         for doc_id, item in self.failed_items.items():
             if doc_id not in self.successful_ids:
                 remaining_failures.append(item)
 
-        # Ghi đè lại file failed_links.jsonl bằng danh sách những thằng ngoan cố nhất
         if remaining_failures:
             with open(self.failed_file, 'w', encoding='utf-8') as f:
                 for item in remaining_failures:
                     f.write(json.dumps(item, ensure_ascii=False) + '\n')
-            self.logger.info(f"[THONG KE] Con {len(remaining_failures)} link cung dau. Hay thu chay lai cuoc giai cuu vao luc khac.")
+            self.logger.info(f"[THONG KE] Con {len(remaining_failures)} link cung dau. Hay thu chay lai sau.")
         else:
-            # Xóa sổ đen nếu cứu thành công 100%
             if os.path.exists(self.failed_file):
                 os.remove(self.failed_file)
             self.logger.info("DA CUU XONG TOAN BO LINK LOI! Khong con van ban nao bi sot.")

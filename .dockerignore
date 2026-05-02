@@ -6,4 +6,6 @@ __pycache__/
 *.doc
 *.docx
 *.jsonl
+*.log
+*.html
 .git/
