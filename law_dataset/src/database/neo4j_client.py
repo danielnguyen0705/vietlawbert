@@ -2,24 +2,37 @@ import os
 import sys
 import json
 import logging
+from datetime import datetime
 from neo4j import GraphDatabase
 
 # ==========================================
-# 1. CẤU HÌNH ĐƯỜNG DẪN & LOGGING
+# 1. CẤU HÌNH ĐƯỜNG DẪN & LOGGING ĐỘNG
 # ==========================================
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Tự động xác định BASE_DIR (về law_dataset/)
+# Giả sử file nằm ở: law_dataset/src/database/neo4j_client.py
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.abspath(os.path.join(CURRENT_DIR, "../../../"))
+
+# Đường dẫn file input (Dữ liệu chunks đã có ngữ cảnh)
 INPUT_FILE = os.path.join(BASE_DIR, "json", "final_contextual_chunks.jsonl")
-LOG_DIR = os.path.join(BASE_DIR, "data", "logs")
+
+# Cấu hình Thư mục Log theo ngày (Y-m-d)
+TODAY_STR = datetime.now().strftime("%Y-%m-%d")
+LOG_DIR = os.path.join(BASE_DIR, "data", "logs", TODAY_STR)
 os.makedirs(LOG_DIR, exist_ok=True)
 
-current_filename = os.path.basename(__file__).split('.')[0]
-log_filepath = os.path.join(LOG_DIR, f"log_{current_filename}.log")
+# Tự động lấy tên file làm tên log (log_neo4j_client.log)
+CURRENT_FILENAME = os.path.basename(__file__).split('.')[0]
+LOG_FILE_PATH = os.path.join(LOG_DIR, f"log_{CURRENT_FILENAME}.log")
 
+# Thiết lập logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler(log_filepath, encoding="utf-8", mode="a"),
+        # mode="a" để append dữ liệu log, không xóa cái cũ trong ngày
+        logging.FileHandler(LOG_FILE_PATH, encoding="utf-8", mode="a"),
         logging.StreamHandler(sys.stdout)
     ]
 )

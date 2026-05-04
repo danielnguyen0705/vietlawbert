@@ -1,32 +1,25 @@
 import scrapy
 import json
-import logging
 import copy
 import os
 from datetime import datetime
 from scrapy import signals
-from scrapy.exceptions import DontCloseSpider
 
 # ==========================================
 # 1. CẤU HÌNH ĐƯỜNG DẪN & LOGGING ĐỘNG
 # ==========================================
-# Tự động lui về thư mục gốc (law_dataset) dựa trên vị trí file hiện tại
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-# Giả sử file nằm ở src/crawler/spiders/ -> lui 3 cấp để về law_dataset/
 BASE_DIR = os.path.abspath(os.path.join(CURRENT_DIR, "../../../"))
 
-# Cấu hình thư mục JSON
 JSON_DIR = os.path.join(BASE_DIR, "json")
 os.makedirs(JSON_DIR, exist_ok=True)
 METADATA_FILE = os.path.join(JSON_DIR, 'metadata.jsonl')
 FAILED_FILE = os.path.join(JSON_DIR, 'failed_links.jsonl')
 
-# Cấu hình Thư mục Log theo ngày
 TODAY_STR = datetime.now().strftime("%Y-%m-%d")
 LOG_DIR = os.path.join(BASE_DIR, "data", "logs", TODAY_STR)
 os.makedirs(LOG_DIR, exist_ok=True)
 
-# Lấy tên file tự động để đặt tên log
 CURRENT_FILENAME = os.path.basename(__file__).split('.')[0]
 LOG_FILE_PATH = os.path.join(LOG_DIR, f"log_{CURRENT_FILENAME}.log")
 
@@ -45,19 +38,26 @@ class LawSpider(scrapy.Spider):
                 'format': 'jsonlines',
                 'encoding': 'utf8',
                 'store_empty': False,
-                'overwrite': False, # Chế độ Append
+                'overwrite': False, 
             },
         },
-        # Đẩy toàn bộ log của Scrapy vào file theo ngày
         'LOG_FILE': LOG_FILE_PATH,
         'LOG_LEVEL': 'INFO',
         'LOG_STDOUT': True,
         
-        # --- CẤU HÌNH CHỐNG LỖI 500 TỪ SERVER VBPL ---
-        'DOWNLOAD_DELAY': 3.0, # Nghỉ 3s sau mỗi request (Quan trọng nhất)
-        'CONCURRENT_REQUESTS_PER_DOMAIN': 2, # Chỉ gửi tối đa 2 request cùng lúc
-        'COOKIES_ENABLED': False,
-        'USER_AGENT': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        # --- CẤU HÌNH CHỐNG LỖI 500 & WAF ---
+        'DOWNLOAD_DELAY': 3.0, 
+        'CONCURRENT_REQUESTS_PER_DOMAIN': 2,
+        'COOKIES_ENABLED': True, # [QUAN TRỌNG BẬC NHẤT] Bật Cookie để lưu phiên WAF
+        'USER_AGENT': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
+        
+        # Thiết lập header mặc định cho mọi request
+        'DEFAULT_REQUEST_HEADERS': {
+            'Accept-Language': 'vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5',
+            'sec-ch-ua': '"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
+        }
     }
 
     def __init__(self, *args, **kwargs):
@@ -69,9 +69,8 @@ class LawSpider(scrapy.Spider):
         self.successful_ids = set()
         self.current_failed_items = {}
         self.existing_metadata_ids = set()
-        self.rescue_round_done = False 
 
-        # Đọc dữ liệu cũ để chống trùng lặp
+        # Nạp dữ liệu cũ để tránh cào lại
         if os.path.exists(self.metadata_file):
             with open(self.metadata_file, 'r', encoding='utf-8') as f:
                 for line in f:
@@ -85,12 +84,30 @@ class LawSpider(scrapy.Spider):
     @classmethod
     def from_crawler(cls, crawler, *args, **kwargs):
         spider = super(LawSpider, cls).from_crawler(crawler, *args, **kwargs)
-        crawler.signals.connect(spider.spider_idle, signal=signals.spider_idle)
+        # BỎ spider_idle ĐỂ TRÁNH LỖI TREO NHỆN VĨNH VIỄN
         crawler.signals.connect(spider.spider_closed, signal=signals.spider_closed)
         return spider
 
     def start_requests(self):
-        self.logger.info("[BAT DAU] Chien dich Smart Crawling VietLawBERT")
+        """ BƯỚC 1: Vào trang chủ vbpl.vn để hệ thống cấp Cookie WAF """
+        self.logger.info("[BAT DAU] Truy cap trang chu de xin Cookie WAF...")
+        yield scrapy.Request(
+            url="https://vbpl.vn/",
+            method="GET",
+            headers={
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Upgrade-Insecure-Requests': '1'
+            },
+            callback=self.init_api_search,
+            dont_filter=True
+        )
+
+    def init_api_search(self, response):
+        """ BƯỚC 2: Gọi API tìm kiếm """
+        self.logger.info("[THANH CONG] Da lay duoc Cookie! Tien hanh goi API Tim Kiem...")
         
         payload = {
             "pageNumber": 1,
@@ -114,7 +131,12 @@ class LawSpider(scrapy.Spider):
             url=self.SEARCH_API_URL,
             method="POST",
             body=json.dumps(payload),
-            headers={'Content-Type': 'application/json', 'Accept': 'application/json', 'Origin': 'https://vbpl.vn'},
+            headers={
+                'Content-Type': 'application/json', 
+                'Accept': 'application/json', 
+                'Origin': 'https://vbpl.vn',
+                'Referer': 'https://vbpl.vn/'
+            },
             callback=self.parse_search_results,
             errback=self.handle_error, 
             cb_kwargs={'payload': payload, 'item': None} 
@@ -131,6 +153,10 @@ class LawSpider(scrapy.Spider):
         for doc in documents:
             doc_id = str(doc.get('id', ''))
             
+            # Bỏ qua nếu đã cào thành công trước đó
+            if doc_id in self.existing_metadata_ids:
+                continue
+                
             new_item = {
                 'item_id': doc_id,
                 'doc_number': doc.get('docNum', 'Unknown'),
@@ -142,7 +168,7 @@ class LawSpider(scrapy.Spider):
             yield scrapy.Request(
                 url=diagram_url,
                 method="GET",
-                headers={'Origin': 'https://vbpl.vn', 'Referer': 'https://vbpl.vn/'},
+                headers={'Origin': 'https://vbpl.vn', 'Referer': 'https://vbpl.vn/', 'Accept': 'application/json'},
                 callback=self.parse_diagram,
                 errback=self.handle_error,
                 cb_kwargs={'item': new_item}
@@ -162,7 +188,12 @@ class LawSpider(scrapy.Spider):
                 url=self.SEARCH_API_URL,
                 method="POST",
                 body=json.dumps(next_payload),
-                headers={'Content-Type': 'application/json', 'Accept': 'application/json', 'Origin': 'https://vbpl.vn'},
+                headers={
+                    'Content-Type': 'application/json', 
+                    'Accept': 'application/json', 
+                    'Origin': 'https://vbpl.vn',
+                    'Referer': 'https://vbpl.vn/'
+                },
                 callback=self.parse_search_results,
                 errback=self.handle_error,
                 cb_kwargs={'payload': next_payload, 'item': None}
@@ -181,7 +212,11 @@ class LawSpider(scrapy.Spider):
         yield scrapy.Request(
             url=html_url,
             method="GET",
-            headers={'Origin': 'https://vbpl.vn', 'Referer': 'https://vbpl.vn/', 'Accept': 'application/json'},
+            headers={
+                'Origin': 'https://vbpl.vn', 
+                'Referer': 'https://vbpl.vn/', 
+                'Accept': '*/*'
+            },
             callback=self.parse_html,
             errback=self.handle_error,
             cb_kwargs={'item': item}
@@ -210,30 +245,6 @@ class LawSpider(scrapy.Spider):
             with open(self.failed_file, 'a', encoding='utf-8') as f:
                 f.write(json.dumps(item, ensure_ascii=False) + '\n')
 
-    def spider_idle(self, spider):
-        pending_failures = [doc_id for doc_id in self.current_failed_items if doc_id not in self.successful_ids]
-        
-        if pending_failures and not self.rescue_round_done:
-            self.rescue_round_done = True 
-            self.logger.info("\n" + "="*60)
-            self.logger.info(f"KICH HOAT VONG GIAI CUU: TU DONG CAO LAI {len(pending_failures)} LINK LOI!")
-            self.logger.info("="*60 + "\n")
-            
-            for doc_id in pending_failures:
-                item = self.current_failed_items[doc_id]
-                diagram_url = f"https://vbpl-bientap-gateway.moj.gov.vn/api/qtdc/public/doc/{doc_id}/diagram"
-                
-                yield scrapy.Request(
-                    url=diagram_url,
-                    method="GET",
-                    headers={'Origin': 'https://vbpl.vn', 'Referer': 'https://vbpl.vn/'},
-                    callback=self.parse_diagram,
-                    errback=self.handle_error,
-                    cb_kwargs={'item': item},
-                    dont_filter=True 
-                )
-            raise DontCloseSpider("Chưa xong đâu nhện ơi, còn link lỗi kìa!")
-
     def spider_closed(self, spider):
         self.logger.info("[DONG BO] Nhon dang tong ve sinh file failed_links.jsonl...")
         existing_failures = {}
@@ -257,7 +268,7 @@ class LawSpider(scrapy.Spider):
             with open(self.failed_file, 'w', encoding='utf-8') as f:
                 for failed_item in existing_failures.values():
                     f.write(json.dumps(failed_item, ensure_ascii=False) + '\n')
-            self.logger.info(f"[THONG KE] Con lai {len(existing_failures)} ca chua cuu duoc.")
+            self.logger.info(f"[THONG KE] Con lai {len(existing_failures)} ca chua cuu duoc. Hay chay nhien rescue_spider!")
         else:
             if os.path.exists(self.failed_file):
                 os.remove(self.failed_file)

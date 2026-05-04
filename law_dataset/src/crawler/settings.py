@@ -32,12 +32,17 @@ AUTOTHROTTLE_MAX_DELAY = 60.0
 AUTOTHROTTLE_TARGET_CONCURRENCY = 1.0
 
 # ==========================================
-# CẤU HÌNH THỬ LẠI (RETRY) VÀ CACHE
+# CẤU HÌNH THỬ LẠI (RETRY), TIMEOUT VÀ CACHE
 # ==========================================
 
-DOWNLOAD_TIMEOUT = 60  
-# Tăng số lần thử lại lên 5 lần thay vì 3
-RETRY_TIMES = 5 
+# [THÊM MỚI] Trị bệnh "chết lâm sàng": Quá 30s server không rep là cắt luôn, báo lỗi rồi đi tiếp!
+DOWNLOAD_TIMEOUT = 30  
+
+# [THÊM MỚI] Nới rộng hồ chứa luồng xử lý ngầm để Pipeline không bị nghẽn lúc ghi file JSONL
+REACTOR_THREADPOOL_MAXSIZE = 20
+
+# [ĐIỀU CHỈNH] Giảm số lần thử lại xuống 3. (Nếu để 5 lần x 30s timeout = kẹt 2.5 phút/link là quá lâu)
+RETRY_TIMES = 3 
 # Chỉ định rõ các mã lỗi cần thử lại (Đặc trị lỗi 500)
 RETRY_HTTP_CODES = [500, 502, 503, 504, 522, 524, 408, 429]
 
@@ -62,6 +67,8 @@ os.makedirs(LOG_DIR, exist_ok=True)
 
 LOG_FILE = os.path.join(LOG_DIR, 'scrapy_spider.log')
 LOG_FILE_APPEND = False
-LOG_LEVEL = 'DEBUG'
+
+# [ĐIỀU CHỈNH] Đổi từ DEBUG sang INFO để file log sạch sẽ, dễ đọc, chỉ hiển thị thông báo chính
+LOG_LEVEL = 'INFO' 
 
 logging.getLogger('urllib3').setLevel(logging.WARNING)

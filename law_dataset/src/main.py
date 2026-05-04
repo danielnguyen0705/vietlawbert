@@ -17,22 +17,25 @@ if sys.stdout.encoding != 'utf-8':
         pass
 
 # ==========================================
-# 1. CAU HINH MASTER LOGGER & ĐƯỜNG DẪN ĐỘNG
+# 1. CẤU HÌNH MASTER LOGGER & ĐƯỜNG DẪN ĐỘNG
 # ==========================================
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-LOG_DIR = os.path.join(BASE_DIR, 'data', 'logs')
-JSON_DIR = os.path.join(BASE_DIR, 'json')
-os.makedirs(LOG_DIR, exist_ok=True)
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.abspath(os.path.join(CURRENT_DIR, ".."))
+
+JSON_DIR = os.path.join(BASE_DIR, "json")
 os.makedirs(JSON_DIR, exist_ok=True)
 
-today_str = datetime.now().strftime("%Y-%m-%d")
-MASTER_LOG_FILE = os.path.join(LOG_DIR, f'master_{today_str}.log')
+TODAY_STR = datetime.now().strftime("%Y-%m-%d")
+LOG_DIR = os.path.join(BASE_DIR, "data", "logs", TODAY_STR)
+os.makedirs(LOG_DIR, exist_ok=True)
+
+LOG_FILE_PATH = os.path.join(LOG_DIR, "log_master.log")
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | [%(levelname)s] | %(message)s',
     handlers=[
-        logging.FileHandler(MASTER_LOG_FILE, encoding='utf-8'),
+        logging.FileHandler(LOG_FILE_PATH, encoding='utf-8', mode="a"),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -47,8 +50,8 @@ def run_command(command, description):
     logger.info(f"[LENH] {command}")
     
     try:
-        # Riêng cái chatbot (app) thì không capture output để nó tương tác được trên Terminal
         if "app" in command or "generator" in command:
+            # Streamlit/App chạy tương tác nên không capture output
             result = subprocess.run(command, shell=True)
             return result.returncode == 0
             
@@ -85,11 +88,14 @@ def run_rescue_auto():
     MAX_RETRIES = 3 
     round_count = 1
     
-    logger.info("[KIEM TRA] Dang check file failed_links.jsonl...")
-    
+    if not os.path.exists(failed_file_path):
+        logger.info("[KIEM TRA] Khong co link loi nao can giai cuu.")
+        return True
+
     while os.path.exists(failed_file_path) and round_count <= MAX_RETRIES:
         with open(failed_file_path, 'r', encoding='utf-8') as f:
-            error_count = sum(1 for line in f if line.strip())
+            lines = [line for line in f if line.strip()]
+            error_count = len(lines)
             
         if error_count == 0:
             break
@@ -98,14 +104,7 @@ def run_rescue_auto():
         run_command("scrapy crawl rescue_spider", f"CHAY RESCUE SPIDER (VONG {round_count})")
         round_count += 1
         
-    if os.path.exists(failed_file_path):
-        with open(failed_file_path, 'r', encoding='utf-8') as f:
-            remaining_errors = sum(1 for line in f if line.strip())
-        if remaining_errors > 0:
-            logger.warning(f"[BAO CAO] Van con {remaining_errors} link chua the cuu sau {MAX_RETRIES} vong.")
-            return False 
-    
-    logger.info("[BAO CAO] Da don sach 100% link loi!")
+    logger.info("[BAO CAO] Da hoan tat cac vong giai cuu!")
     return True
 
 # ==========================================
@@ -116,67 +115,73 @@ def main():
     
     while True:
         print("\n" + "="*65)
-        print("     VIETLAWBERT - TRINH DIEU PHOI DU LIEU THONG MINH     ")
+        print("      VIETLAWBERT - TRINH DIEU PHOI DU LIEU THONG MINH     ")
         print("="*65)
+        print(" 0. Bat dau He thong Docker (Milvus, Neo4j, MongoDB)")
         print(" 1. Cao du lieu (Metadata + Luoc do + HTML)")
-        print(" 2. Giai cuu link loi (Chay rieng Rescue Spider)")
+        print(" 2. Giai cuu link loi (Rescue Spider)")
         print(" 3. Chuyen doi HTML sang Markdown")
-        print(" 4. Bam Chunk & Sinh Ngu Canh (Contextualizer bang Gemini)")
+        print(" 4. Bam Chunk & Sinh Ngu Canh (Gemini Contextualizer)")
         print(" 5. Nap du lieu vao DB (Milvus & Neo4j)")
         print(" 6. CHAY TOAN BO QUY TRINH (Auto tu A-Z, XONG MO CHAT LUON)")
-        print(" 7. Khoi dong Chatbot (Chi bat giao dien Chat)")
+        print(" 7. Khoi dong Chatbot (Giao dien App)")
         print(" q. Thoat")
         
         choice = input("\nDaniel chon buoc nao? ").strip().lower()
 
-        if choice == '1':
+        if choice == '0':
+            run_command("docker-compose up -d", "KHOI DONG DOCKER CONTAINERS")
+            logger.info("Vui long doi 10-15s de cac Database san sang...")
+
+        elif choice == '1':
             run_command("scrapy crawl law_spider", "GIAI DOAN 1: Cao du lieu")
+
         elif choice == '2':
             run_rescue_auto()
+
         elif choice == '3':
             run_command("python -X utf8 -m preprocess.html_to_md", "GIAI DOAN 2: Chuyen doi Markdown")
+
         elif choice == '4':
             run_command("python -X utf8 -m preprocess.contextualizer", "GIAI DOAN 3: Bam Chunk & Contextualize")
+
         elif choice == '5':
-            logger.info("[NAP DU LIEU] Dang nhoi du lieu vao he thong Databases...")
-            success_milvus = run_command("python -X utf8 -m database.milvus_client", "NAP MILVUS (Vector DB)")
-            success_neo4j = run_command("python -X utf8 -m database.neo4j_client", "NAP NEO4J (Graph DB)")
-            if success_milvus and success_neo4j:
-                logger.info("✅ NAP DU LIEU THANH CONG!")
+            run_command("python -X utf8 -m database.milvus_client", "NAP MILVUS")
+            run_command("python -X utf8 -m database.neo4j_client", "NAP NEO4J")
         
         elif choice == '6':
             logger.info("\n" + "*"*50)
             logger.info("[AUTO] BAT DAU PIPELINE TU DONG HOAN TOAN")
-            logger.info("Ong cu di ngu di, de may moc lo! 🚀")
             logger.info("*"*50 + "\n")
             
+            # Buoc 0: Dam bao Docker da chay
+            run_command("docker-compose up -d", "BUOC 0: Dam bao Docker Infrastructure dang chay")
+            
+            # Buoc 1 & 2: Crawl & Rescue
             run_command("scrapy crawl law_spider", "BUOC 1: Cao du lieu ban dau")
             run_rescue_auto()
             
+            # Buoc 3: Chuyen doi Markdown
             if run_command("python -X utf8 -m preprocess.html_to_md", "BUOC 3: Chuyen Markdown"):
+                # Buoc 4: Contextualize
                 if run_command("python -X utf8 -m preprocess.contextualizer", "BUOC 4: Bam Chunk & Contextualize"):
+                    # Buoc 5: Ingestion
                     run_command("python -X utf8 -m database.milvus_client", "BUOC 5A: Nap vao Milvus")
                     run_command("python -X utf8 -m database.neo4j_client", "BUOC 5B: Nap vao Neo4j")
                     
                     logger.info("\n🎉 [THANH CONG] DU LIEU DA SAN SANG! DANG MO CHATBOT...\n")
-                    
-                    # BUOC CUOI: TU DONG MO CHATBOT NAY!
                     run_command("python -X utf8 app.py", "BUOC 6: KHOI DONG GIAO DIEN CHATBOT")
                 else:
-                    logger.error("⛔ [DUNG PIPELINE] Buoc 4 Contextualize bi loi.")
+                    logger.error("⛔ [DUNG] Loi tai buoc Contextualize.")
             else:
-                logger.error("⛔ [DUNG PIPELINE] Buoc 3 Markdown bi loi.")
+                logger.error("⛔ [DUNG] Loi tai buoc Markdown.")
 
         elif choice == '7':
-            logger.info("🚀 KHOI DONG CHATBOT...")
-            # Sửa 'app.py' thành tên file UI chính xác của ông nếu cần (ví dụ: src/rag/app.py)
-            run_command("python -X utf8 app.py", "KHOI DONG GIAO DIEN CHATBOT")
+            run_command("python -X utf8 app.py", "KHOI DONG CHATBOT")
 
         elif choice == 'q':
-            logger.info("Tat he thong. Tam biet Daniel!")
+            logger.info("Tam biet Daniel!")
             break
-        else:
-            print("Lua chon khong hop le.")
 
 if __name__ == "__main__":
     main()

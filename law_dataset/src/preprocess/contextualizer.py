@@ -3,32 +3,46 @@ import sys
 import json
 import time
 import logging
+from datetime import datetime
 from dotenv import load_dotenv
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from google import genai
 from google.genai import types
 
 # ==========================================
-# 1. CẤU HÌNH ĐƯỜNG DẪN & LOGGING
+# 1. CẤU HÌNH ĐƯỜNG DẪN & LOGGING ĐỘNG
 # ==========================================
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-MD_FOLDER = os.path.join(BASE_DIR, "data", "processed")
-OUTPUT_DIR = os.path.join(BASE_DIR, "json")
-OUTPUT_FILE = os.path.join(OUTPUT_DIR, "final_contextual_chunks.jsonl")
-METADATA_FILE = os.path.join(OUTPUT_DIR, "metadata.jsonl") # Nguồn chứa metadata
 
-LOG_DIR = os.path.join(BASE_DIR, "data", "log")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# Tự động xác định BASE_DIR (law_dataset/)
+# Giả sử file nằm ở: law_dataset/src/preprocess/contextualizer.py
+# Cấp 1: preprocess/, Cấp 2: src/, Cấp 3: law_dataset/
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.abspath(os.path.join(CURRENT_DIR, "../../../"))
+
+# Cấu hình thư mục dữ liệu
+MD_FOLDER = os.path.join(BASE_DIR, "data", "processed")
+JSON_DIR = os.path.join(BASE_DIR, "json")
+os.makedirs(JSON_DIR, exist_ok=True)
+
+OUTPUT_FILE = os.path.join(JSON_DIR, "final_contextual_chunks.jsonl")
+METADATA_FILE = os.path.join(JSON_DIR, "metadata.jsonl")
+
+# Cấu hình Thư mục Log theo ngày (Y-m-d)
+TODAY_STR = datetime.now().strftime("%Y-%m-%d")
+LOG_DIR = os.path.join(BASE_DIR, "data", "logs", TODAY_STR)
 os.makedirs(LOG_DIR, exist_ok=True)
 
-current_filename = os.path.basename(__file__).split('.')[0]
-log_filepath = os.path.join(LOG_DIR, f"log_{current_filename}.log")
+# Tự động lấy tên file (contextualizer) làm tên log
+CURRENT_FILENAME = os.path.basename(__file__).split('.')[0]
+LOG_FILE_PATH = os.path.join(LOG_DIR, f"log_{CURRENT_FILENAME}.log")
 
+# Thiết lập logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler(log_filepath, encoding="utf-8", mode="a"),
+        # mode="a" đảm bảo chạy nhiều lần trong ngày sẽ append nối tiếp vào file cũ
+        logging.FileHandler(LOG_FILE_PATH, encoding="utf-8", mode="a"),
         logging.StreamHandler(sys.stdout)
     ]
 )

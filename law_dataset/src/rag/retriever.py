@@ -1,33 +1,45 @@
 import os
 import sys
 import logging
+from datetime import datetime
 from pymilvus import connections, Collection
 from sentence_transformers import SentenceTransformer
 from neo4j import GraphDatabase
 from dotenv import load_dotenv
 
 # ==========================================
-# CẤU HÌNH ĐƯỜNG DẪN & LOGGING TỰ ĐỘNG
+# 1. CẤU HÌNH ĐƯỜNG DẪN & LOGGING ĐỘNG
 # ==========================================
-current_file_name = os.path.splitext(os.path.basename(__file__))[0]
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Tự động xác định BASE_DIR (về law_dataset/)
+# Giả sử file nằm ở: law_dataset/src/rag/retriever.py
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.abspath(os.path.join(CURRENT_DIR, "../../../"))
+
+# Load cấu hình từ file .env (chứa API Key, DB URI...)
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 
-LOG_DIR = os.path.join(BASE_DIR, "data", "logs")
+# Cấu hình Thư mục Log theo ngày (Y-m-d)
+TODAY_STR = datetime.now().strftime("%Y-%m-%d")
+LOG_DIR = os.path.join(BASE_DIR, "data", "logs", TODAY_STR)
 os.makedirs(LOG_DIR, exist_ok=True)
 
-log_filepath = os.path.join(LOG_DIR, f"log_{current_file_name}.log")
+# Tự động lấy tên file làm tên log (ví dụ: log_retriever.log)
+CURRENT_FILENAME = os.path.basename(__file__).split('.')[0]
+LOG_FILE_PATH = os.path.join(LOG_DIR, f"log_{CURRENT_FILENAME}.log")
 
+# Thiết lập logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler(log_filepath, encoding="utf-8"),
+        # mode="a" rất quan trọng để lưu lịch sử truy vấn của người dùng
+        logging.FileHandler(LOG_FILE_PATH, encoding="utf-8", mode="a"),
         logging.StreamHandler(sys.stdout)
     ]
 )
-logger = logging.getLogger(current_file_name.capitalize())
+# Đặt tên logger theo tên file (viết hoa chữ đầu)
+logger = logging.getLogger(CURRENT_FILENAME.capitalize())
 
 class LegalRetriever:
     def __init__(self):

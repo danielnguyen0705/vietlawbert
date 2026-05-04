@@ -40,11 +40,19 @@ class RescueSpider(scrapy.Spider):
         'LOG_LEVEL': 'INFO',
         'LOG_STDOUT': True,
         
-        # Nhện cứu hộ đi siêu chậm để không làm sập web người ta
-        'DOWNLOAD_DELAY': 30.0, 
+        # ==========================================
+        # CHIẾN THUẬT MỚI: ĐIỀU TỐC THÔNG MINH
+        # ==========================================
+        'RETRY_TIMES': 2, # Chỉ thử lại 2 lần thôi, lỗi 500 cứng đầu quá thì bỏ qua để tránh kẹt
+        'DOWNLOAD_DELAY': 2.0, # Delay cơ bản thấp xuống
+        'AUTOTHROTTLE_ENABLED': True, # Bật tự động điều chỉnh tốc độ
+        'AUTOTHROTTLE_START_DELAY': 5.0,
+        'AUTOTHROTTLE_MAX_DELAY': 60.0, # Nếu server mệt, tự động giãn cách lên tới 60s
+        'AUTOTHROTTLE_TARGET_CONCURRENCY': 1.0, 
+        
         'CONCURRENT_REQUESTS_PER_DOMAIN': 1, 
         'COOKIES_ENABLED': False,
-        'USER_AGENT': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'USER_AGENT': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
     }
 
     def __init__(self, *args, **kwargs):
@@ -122,7 +130,7 @@ class RescueSpider(scrapy.Spider):
         request = failure.request
         item = request.cb_kwargs.get('item')
         doc_id = item.get('item_id') if item else "Unknown"
-        self.logger.error(f"[THAT BAI] Server van tu choi ket noi voi ID: {doc_id}")
+        self.logger.error(f"[THAT BAI] Bo qua ID {doc_id} sau khi retry. Server van tu choi!")
 
     def spider_closed(self, spider):
         self.logger.info("[DONG BO] Dang cap nhat lai danh sach loi...")
