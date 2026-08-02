@@ -1,13 +1,36 @@
 import scrapy
+from enum import Enum
+
+
+class HTMLStatus(str, Enum):
+    VALID = "VALID"
+    EMPTY = "EMPTY"
+    NOT_FOUND = "NOT_FOUND"
+
+
+class PDFStatus(str, Enum):
+    NOT_FOUND = "NOT_FOUND"
+    DIGITAL_TEXT = "DIGITAL_TEXT"
+    SCANNED_OR_CORRUPTED = "SCANNED_OR_CORRUPTED"
+
 
 class VietLawItem(scrapy.Item):
-    # --- Định danh cơ bản ---
-    item_id = scrapy.Field()      # ID nội bộ của hệ thống VBPL (vd: 187505)
-    doc_number = scrapy.Field()   # Số hiệu văn bản (vd: 80/2026/NĐ-CP)
-    
-    # --- Dữ liệu thô (Raw Data) ---
-    full_text_html = scrapy.Field()  # Toàn bộ mã nguồn HTML của trang nội dung
-    diagram_json = scrapy.Field()    # Dữ liệu JSON từ API Lược đồ (dành cho GraphRAG)
-    
-    # --- Siêu dữ liệu (Metadata) ---
-    metadata_api = scrapy.Field()    # Lưu trọn bộ thông tin mà API tìm kiếm trả về (ngày ban hành, hiệu lực, cơ quan...)
+    item_id = scrapy.Field()
+    doc_number = scrapy.Field()
+
+    html_status = scrapy.Field()
+    html_raw = scrapy.Field()
+    html_path = scrapy.Field()
+    pdf_status = scrapy.Field()
+    pdf_path = scrapy.Field()
+    pdf_local_path = scrapy.Field()
+
+    diagram_json = scrapy.Field()
+    html_dom = scrapy.Field()
+
+    metadata_api = scrapy.Field()
+    metadata_detail = scrapy.Field()
+
+    relationships = scrapy.Field()
+    diagram_status = scrapy.Field()
+    diagram_unresolved_keys = scrapy.Field()

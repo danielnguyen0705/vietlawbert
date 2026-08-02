@@ -1,46 +1,39 @@
 # ==========================================
 # 1. CRAWLING & WEB SCRAPING (Lấy dữ liệu)
 # ==========================================
-scrapy==2.11.1
-requests==2.31.0
-beautifulsoup4==4.12.3
+scrapy
+requests
+beautifulsoup4
 
 # ==========================================
 # 2. DATA PROCESSING & UTILS (Xử lý dữ liệu)
 # ==========================================
-pandas==2.2.1
-python-dotenv==1.0.1
+python-dotenv
+html2text
+cssselect
+lxml
 
 # ==========================================
 # 3. DATABASES (Bộ 3 quyền lực)
 # ==========================================
-pymongo==4.6.2       # Document DB (Lưu JSON/Metadata raw)
-pymilvus==2.4.0      # Vector DB (Thay thế hoàn toàn cho faiss-cpu)
-neo4j==5.19.0        # Graph DB (Lưu trữ Knowledge Graph - Entities & Relationships)
-# ĐÃ XÓA: faiss-cpu (Vì chúng ta đã nâng cấp lên Milvus xịn hơn)
-
-# ==========================================
-# 4. VIETNAMESE NLP (Tiền xử lý tiếng Việt)
-# ==========================================
-pyvi==0.1.1
-underthesea==6.8.0
+pymilvus      # Vector DB (Thay thế hoàn toàn cho faiss-cpu)
+neo4j         # Graph DB (Lưu trữ Knowledge Graph - Entities & Relationships)
 
 # ==========================================
 # 5. AI, LLM & EMBEDDINGS (Core VietLawBERT)
 # ==========================================
-anthropic==0.23.0    # THÊM MỚI: Thư viện chính thức để gọi API Claude 3 Haiku
-
-# Ép tải PyTorch bản CPU để Docker không bị nặng hàng chục GB (rất quan trọng)
+# PyTorch CPU-only build
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.2.1+cpu 
+torch
+rank_bm25                    # Lexical Filtering cho GG-SLM
 
-transformers==4.39.1
-sentence-transformers==2.6.0  # Dùng để chạy model BGE-M3 hoặc VNLawBERT
-huggingface_hub==0.22.0
-numpy==1.26.4
+transformers
+sentence-transformers # Dùng để chạy model BGE-M3 hoặc VNLawBERT
+openai              # OpenAI-compatible API cho Groq/GitHub Models
+langchain-text-splitters  # Chunking cho contextualizer
+
 
 # ==========================================
-# 6. WEB FRAMEWORK (API & Chatbot)
+# 7. WEB FRAMEWORK (API & Chatbot)
 # ==========================================
-fastapi==0.110.0
-uvicorn==0.29.0
+chainlit         # Giao diện chat chuyên dụng cho LLM (Thay thế Streamlit)

@@ -1,4 +1,33 @@
 services:
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: vietlaw_vllm_server
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - D:/UIT-HK7/models:/root/.cache/huggingface
+    command: >
+      --model Qwen/Qwen2.5-7B-Instruct
+      --enable-prefix-caching
+      --port 8000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 120s
+    networks:
+      - vietlaw_net
+
   # ==========================================
   # 1. BỘ NÃO XỬ LÝ & DỮ LIỆU THÔ (CORE)
   # ==========================================
@@ -7,18 +36,27 @@ services:
     container_name: vietlawbert_container
     volumes:
       - .:/app  # BIND MOUNT: Sửa code máy thật, Docker cập nhật ngay
+    working_dir: /app/law_dataset
     environment:
-      # Cấu hình để code Python trong App biết đường tìm đến các DB
       - MONGO_URI=mongodb://db:27017/
       - NEO4J_URI=bolt://neo4j:7687
       - NEO4J_USER=neo4j
       - NEO4J_PASSWORD=vietlawbert
       - MILVUS_HOST=milvus-standalone
       - MILVUS_PORT=19530
+      - LLM_API_BASE=http://vllm:8000/v1
+      - LLM_API_KEY=EMPTY
+      - CONTEXTUALIZER_MODEL=Qwen/Qwen2.5-7B-Instruct
+      - GENERATOR_MODEL=Qwen/Qwen2.5-7B-Instruct
     depends_on:
-      - db
-      - neo4j
-      - milvus-standalone
+      db:
+        condition: service_started
+      neo4j:
+        condition: service_started
+      milvus-standalone:
+        condition: service_started
+      vllm:
+        condition: service_healthy
     stdin_open: true 
     tty: true
     networks:
@@ -103,6 +141,34 @@ services:
     networks:
       - vietlaw_net
 
+  # ==========================================
+  # 3. KAFKA MESSAGE BROKER (EVENT-DRIVEN BIG DATA)
+  # ==========================================
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v23.2.28
+    container_name: redpanda_vietlaw
+    command:
+      - redpanda
+      - start
+      - --smp
+      - '1'
+      - --reserve-memory
+      - 0M
+      - --overprovisioned
+      - --node-id
+      - '0'
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
+    ports:
+      - "9092:9092"
+      - "9644:9644"
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    networks:
+      - vietlaw_net
+
 # Khai báo các Volume chuyên biệt để không bao giờ mất dữ liệu
 volumes:
   vietlaw_data:
@@ -110,6 +176,7 @@ volumes:
   etcd_data:
   minio_data:
   milvus_data:
+  redpanda_data:
 
 # Tạo mạng LAN ảo cho hệ thống
 networks:

@@ -1,9 +1,11 @@
 law_dataset/data
+law_dataset/logs
 law_dataset/.env
 law_dataset/.streamlit
 law_dataset/src/.scrapy
 # Bỏ qua file .DS_Store (nếu có)
 .DS_Store
-venv/
+.venv/
 __pycache__/
 .vscode/
+.scrapy

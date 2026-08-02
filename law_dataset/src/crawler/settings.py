@@ -1,5 +1,6 @@
 import os
 import logging
+from datetime import datetime
 
 BOT_NAME = 'vietlaw_crawler'
 
@@ -55,17 +56,16 @@ HTTPCACHE_IGNORE_HTTP_CODES = [500, 503, 404, 403] # Không cache các trang b�
 COOKIES_ENABLED = True
 
 ITEM_PIPELINES = {
-    'crawler.pipelines.VietLawDataPipeline': 300, 
+    'crawler.pipelines.LegalOntologyMappingPipeline': 300,
 }
 
 # ==========================================
 # CẤU HÌNH GHI LOG CHO SCRAPY (HỘP ĐEN)
 # ==========================================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LOG_DIR = os.path.join(BASE_DIR, '../../data/logs')
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+LOG_DIR = os.path.join(BASE_DIR, "logs", datetime.now().strftime("%Y-%m-%d"))
 os.makedirs(LOG_DIR, exist_ok=True)
-
-LOG_FILE = os.path.join(LOG_DIR, 'scrapy_spider.log')
+LOG_FILE = os.path.join(LOG_DIR, "log_crawler.log")
 LOG_FILE_APPEND = False
 
 # [ĐIỀU CHỈNH] Đổi từ DEBUG sang INFO để file log sạch sẽ, dễ đọc, chỉ hiển thị thông báo chính

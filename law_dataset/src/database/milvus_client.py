@@ -1,145 +1,153 @@
+"""
+milvus_client.py - Nap chunks vao Milvus (Vector RAG)
+
+Embedding model: BAAI/bge-m3 (1024 dim)
+Dung transformers + torch truc tiep de tranh DLL conflict cua scipy/sklearn.
+"""
+
 import os
 import sys
 import json
 import logging
-from datetime import datetime
-from pymilvus import connections, FieldSchema, CollectionSchema, DataType, Collection, utility
-from sentence_transformers import SentenceTransformer
+import torch
+from transformers import AutoTokenizer, AutoModel
+from pymilvus import MilvusClient, DataType
 
-# ==========================================
-# 1. CẤU HÌNH ĐƯỜNG DẪN & LOGGING ĐỘNG
-# ==========================================
+from paths import get_log_path, CONTEXTUAL_CHUNKS_FILE, BASE_DIR
 
-# Xác định thư mục gốc law_dataset/
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-BASE_DIR = os.path.abspath(os.path.join(CURRENT_DIR, "../../../"))
-
-# Đường dẫn file input (Dữ liệu từ bước Contextualizer)
-INPUT_FILE = os.path.join(BASE_DIR, "json", "final_contextual_chunks.jsonl")
-
-# Cấu hình Thư mục Log theo ngày (Y-m-d)
-TODAY_STR = datetime.now().strftime("%Y-%m-%d")
-LOG_DIR = os.path.join(BASE_DIR, "data", "logs", TODAY_STR)
-os.makedirs(LOG_DIR, exist_ok=True)
-
-# Tự động lấy tên file hiện tại làm tên file log
 CURRENT_FILENAME = os.path.basename(__file__).split('.')[0]
-LOG_FILE_PATH = os.path.join(LOG_DIR, f"log_{CURRENT_FILENAME}.log")
+LOG_FILE_PATH = get_log_path(CURRENT_FILENAME)
 
-# Thiết lập logging
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
+    format="%(asctime)s | [%(levelname)s] | %(message)s",
     handlers=[
-        # mode="a" để ghi nối tiếp nếu chạy nhiều lần trong ngày
         logging.FileHandler(LOG_FILE_PATH, encoding="utf-8", mode="a"),
         logging.StreamHandler(sys.stdout)
     ]
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(CURRENT_FILENAME.capitalize())
 
-# ==========================================
-# 2. KHỞI TẠO EMBEDDING MODEL (BGE-M3)
-# ==========================================
-logger.info("Đang tải mô hình BAAI/bge-m3 (Lần đầu có thể mất vài phút)...")
-model = SentenceTransformer('BAAI/bge-m3')
-VECTOR_DIM = 1024 
-
-# ==========================================
-# 3. KẾT NỐI MILVUS & TẠO COLLECTION
-# ==========================================
+MODEL_NAME = "BAAI/bge-m3"
+VECTOR_DIM = 1024
 COLLECTION_NAME = "vietlaw_chunks"
+EMBED_BATCH_SIZE = 8
+INSERT_BATCH_SIZE = 32
 
-def setup_milvus():
-    logger.info("Đang kết nối tới Milvus Docker (localhost:19530)...")
-    connections.connect("default", host="localhost", port="19530")
 
-    if utility.has_collection(COLLECTION_NAME):
-        logger.warning(f"Collection '{COLLECTION_NAME}' đã tồn tại. Xóa để tạo mới với Schema nâng cấp...")
-        utility.drop_collection(COLLECTION_NAME)
+def load_encoder():
+    logger.info(f"Dang tai mo hinh {MODEL_NAME}...")
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = AutoModel.from_pretrained(MODEL_NAME)
+    model.eval()
+    return tokenizer, model
 
-    # ĐÃ THÊM CÁC TRƯỜNG METADATA MỚI VÀO ĐÂY
-    fields = [
-        FieldSchema(name="chunk_id", dtype=DataType.VARCHAR, max_length=200, is_primary=True),
-        FieldSchema(name="doc_id", dtype=DataType.VARCHAR, max_length=100),
-        FieldSchema(name="doc_number", dtype=DataType.VARCHAR, max_length=100),
-        FieldSchema(name="effective_date", dtype=DataType.VARCHAR, max_length=100),
-        FieldSchema(name="source_doc", dtype=DataType.VARCHAR, max_length=200),
-        FieldSchema(name="hierarchy", dtype=DataType.VARCHAR, max_length=500),
-        FieldSchema(name="original_text", dtype=DataType.VARCHAR, max_length=65535),
-        FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=VECTOR_DIM)
-    ]
-    
-    schema = CollectionSchema(fields, "Kho chứa Vector Luật Giao Thông")
-    collection = Collection(COLLECTION_NAME, schema)
-    
-    index_params = {
-        "metric_type": "COSINE",
-        "index_type": "HNSW",
-        "params": {"M": 8, "efConstruction": 64}
-    }
-    collection.create_index(field_name="embedding", index_params=index_params)
-    logger.info(f"✅ Đã tạo thành công Collection '{COLLECTION_NAME}' và Index.")
-    return collection
 
-# ==========================================
-# 4. CHẠY PIPELINE NHỒI DỮ LIỆU
-# ==========================================
+def encode_texts(tokenizer, model, texts: list[str]) -> list[list[float]]:
+    all_embeddings = []
+    for i in range(0, len(texts), EMBED_BATCH_SIZE):
+        batch = texts[i: i + EMBED_BATCH_SIZE]
+        encoded = tokenizer(batch, padding=True, truncation=True, max_length=512, return_tensors="pt")
+        with torch.no_grad():
+            output = model(**encoded)
+        # CLS token embedding
+        embeddings = output.last_hidden_state[:, 0, :]
+        # L2 normalize
+        embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+        all_embeddings.extend(embeddings.tolist())
+    return all_embeddings
+
+
+def setup_milvus() -> MilvusClient:
+    logger.info("Ket noi Milvus Docker (localhost:19530)...")
+    client = MilvusClient(uri="http://localhost:19530")
+
+    if client.has_collection(collection_name=COLLECTION_NAME):
+        logger.warning(f"Collection '{COLLECTION_NAME}' ton tai. Xoa de tao moi...")
+        client.drop_collection(collection_name=COLLECTION_NAME)
+
+    # Dung schema explicit de tranh conflict voi auto-generated 'id' field cua MilvusClient v3
+    schema = client.create_schema(auto_id=False, enable_dynamic_field=False)
+    schema.add_field("chunk_id",      DataType.VARCHAR, max_length=256, is_primary=True)
+    schema.add_field("doc_id",        DataType.VARCHAR, max_length=128)
+    schema.add_field("doc_number",    DataType.VARCHAR, max_length=128)
+    schema.add_field("effective_date",DataType.VARCHAR, max_length=64)
+    schema.add_field("source_doc",    DataType.VARCHAR, max_length=256)
+    schema.add_field("hierarchy",     DataType.VARCHAR, max_length=512)
+    schema.add_field("original_text", DataType.VARCHAR, max_length=65535)
+    schema.add_field("embedding",     DataType.FLOAT_VECTOR, dim=VECTOR_DIM)
+
+    index_params = client.prepare_index_params()
+    index_params.add_index("embedding", metric_type="COSINE", index_type="HNSW",
+                           params={"M": 16, "efConstruction": 256})
+
+    client.create_collection(
+        collection_name=COLLECTION_NAME,
+        schema=schema,
+        index_params=index_params,
+    )
+    logger.info(f"Da tao Collection '{COLLECTION_NAME}'.")
+    return client
+
+
 def ingest_data():
-    collection = setup_milvus()
-    logger.info(f"Bắt đầu đọc dữ liệu từ: {INPUT_FILE}")
-    
-    batch_size = 5 
-    data_batch = {
-        "chunk_id": [], "doc_id": [], "doc_number": [], "effective_date": [],
-        "source_doc": [], "hierarchy": [], "original_text": [], "texts_to_embed": []
-    }
-    
+    tokenizer, model = load_encoder()
+    client = setup_milvus()
+
+    if not os.path.exists(CONTEXTUAL_CHUNKS_FILE):
+        logger.error(f"Khong tim thay file input: {CONTEXTUAL_CHUNKS_FILE}")
+        return
+
+    logger.info(f"Doc du lieu tu: {CONTEXTUAL_CHUNKS_FILE}")
+
+    pending_texts: list[str] = []
+    pending_rows: list[dict] = []
     total_inserted = 0
 
-    with open(INPUT_FILE, "r", encoding="utf-8") as f:
+    def flush_batch():
+        nonlocal total_inserted
+        if not pending_rows:
+            return
+        try:
+            vectors = encode_texts(tokenizer, model, pending_texts)
+            data = []
+            for row, vec in zip(pending_rows, vectors):
+                row["embedding"] = vec
+                data.append(row)
+            client.insert(collection_name=COLLECTION_NAME, data=data)
+            total_inserted += len(data)
+            logger.info(f"Da nhoi {total_inserted} chunks...")
+        except Exception as e:
+            logger.error(f"Loi nhoi vector: {e}")
+        finally:
+            pending_texts.clear()
+            pending_rows.clear()
+
+    with open(CONTEXTUAL_CHUNKS_FILE, "r", encoding="utf-8") as f:
         for line in f:
+            if not line.strip():
+                continue
             record = json.loads(line)
             meta = record.get("metadata", {})
-            
-            data_batch["chunk_id"].append(record.get("chunk_id", ""))
-            data_batch["doc_id"].append(meta.get("doc_id", ""))
-            data_batch["doc_number"].append(meta.get("doc_number", "N/A"))
-            data_batch["effective_date"].append(meta.get("effective_date", "Chưa xác định"))
-            data_batch["source_doc"].append(meta.get("source_doc", ""))
-            data_batch["hierarchy"].append(json.dumps(meta.get("hierarchy", {}), ensure_ascii=False))
-            data_batch["original_text"].append(record.get("original_text", ""))
-            data_batch["texts_to_embed"].append(record.get("contextualized_text", ""))
-            
-            if len(data_batch["chunk_id"]) == batch_size:
-                try:
-                    embeddings = model.encode(data_batch["texts_to_embed"], batch_size=2, show_progress_bar=False)
-                    collection.insert([
-                        data_batch["chunk_id"], data_batch["doc_id"], data_batch["doc_number"], 
-                        data_batch["effective_date"], data_batch["source_doc"], 
-                        data_batch["hierarchy"], data_batch["original_text"], embeddings.tolist()
-                    ])
-                    total_inserted += batch_size
-                    logger.info(f"   Đã nhồi thành công {total_inserted} chunks vào Milvus...")
-                except Exception as e:
-                    logger.error(f"❌ Lỗi khi nhúng vector: {e}")
-                data_batch = {k: [] for k in data_batch}
+            hierarchy = meta.get("hierarchy_path", {})
 
-    if len(data_batch["chunk_id"]) > 0:
-        try:
-            embeddings = model.encode(data_batch["texts_to_embed"], batch_size=2, show_progress_bar=False)
-            collection.insert([
-                data_batch["chunk_id"], data_batch["doc_id"], data_batch["doc_number"], 
-                data_batch["effective_date"], data_batch["source_doc"], 
-                data_batch["hierarchy"], data_batch["original_text"], embeddings.tolist()
-            ])
-            total_inserted += len(data_batch["chunk_id"])
-            logger.info(f"   Đã nhồi thành công nốt {len(data_batch['chunk_id'])} chunks cuối...")
-        except Exception as e:
-            logger.error(f"❌ Lỗi khi nhúng vector ở đợt cuối: {e}")
-        
-    collection.flush()
-    logger.info(f"🎉 HOÀN TẤT! Tổng cộng {total_inserted} chunks đã nằm an toàn trong Milvus.")
+            pending_rows.append({
+                "chunk_id": record.get("chunk_id", ""),
+                "doc_id": meta.get("doc_id", ""),
+                "doc_number": meta.get("doc_number", "N/A"),
+                "effective_date": meta.get("effective_date", "Chua xac dinh"),
+                "source_doc": meta.get("doc_type", "") + " " + meta.get("doc_number", ""),
+                "hierarchy": json.dumps(hierarchy, ensure_ascii=False)[:500],
+                "original_text": record.get("original_text", "")[:65000],
+            })
+            pending_texts.append(record.get("contextualized_text") or record.get("original_text", ""))
+
+            if len(pending_rows) >= INSERT_BATCH_SIZE:
+                flush_batch()
+
+    flush_batch()
+    logger.info(f"HOAN TAT! {total_inserted} chunks trong Milvus.")
+
 
 if __name__ == "__main__":
     ingest_data()
