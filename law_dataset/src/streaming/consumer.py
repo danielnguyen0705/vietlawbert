@@ -22,11 +22,13 @@ from database.neo4j_client import Neo4jManager
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | [%(levelname)s] | %(message)s")
 logger = logging.getLogger("KafkaConsumer")
 
+KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9092")
+
 
 class LawEventConsumer:
-    BATCH_SIZE = 100  # Kích thước batch để bulk insert
+    BATCH_SIZE = 200  # Tăng batch size để tận dụng Bulk Insert
 
-    def __init__(self, bootstrap_servers="localhost:9092"):
+    def __init__(self, bootstrap_servers=KAFKA_BROKER):
         conf = {
             'bootstrap.servers': bootstrap_servers,
             'group.id': "vietlawbert-consumers",
@@ -45,20 +47,67 @@ class LawEventConsumer:
         self.pending_milvus_rows = []
         self.pending_milvus_texts = []
         self.pending_neo_batch = []
+        self.pending_relations_batch = []
 
     def process_message(self, data):
-        item_id = data["item_id"]
-        doc_number = data["doc_number"]
+        # Hỗ trợ 2 dạng message: từ contextualizer (đã có chunk) hoặc từ crawler (HTML thô)
+        if "chunk_id" in data and "contextualized_text" in data:
+            self._process_chunk_record(data)
+        else:
+            self._process_raw_document(data)
+
+        if len(self.pending_milvus_rows) >= self.BATCH_SIZE:
+            self._flush_batch()
+
+    def _process_chunk_record(self, data):
+        """Xử lý record đã được contextualize (từ contextualizer.py)."""
+        chunk_id = data["chunk_id"]
+        meta = data.get("metadata", {})
+        hierarchy = meta.get("hierarchy_path", {})
+        contextualized_text = data.get("contextualized_text") or data.get("original_text", "")
+        original_text = data.get("original_text", "")
+        doc_id = meta.get("doc_id", "")
+        doc_number = meta.get("doc_number", "N/A")
+        doc_type = meta.get("doc_type", "")
+        effective_date = meta.get("effective_date", "Chua xac dinh")
+
+        logger.info(f"[CHUNK] {chunk_id} - Doc: {doc_number}")
+
+        row = {
+            "chunk_id": chunk_id,
+            "doc_id": doc_id,
+            "doc_number": doc_number,
+            "effective_date": effective_date,
+            "source_doc": f"{doc_type} {doc_number}",
+            "hierarchy": json.dumps(hierarchy, ensure_ascii=False),
+            "original_text": original_text,
+        }
+        self.pending_milvus_rows.append(row)
+        self.pending_milvus_texts.append(contextualized_text)
+
+        self.pending_neo_batch.append({
+            "chunk_id": chunk_id,
+            "original_text": original_text,
+            "doc_id": doc_id,
+            "doc_number": doc_number,
+            "effective_date": effective_date,
+            "source_doc": f"{doc_type} {doc_number}",
+            "chuong": hierarchy.get("chương") or "Chương N/A",
+            "dieu": hierarchy.get("điều") or "Điều N/A"
+        })
+
+    def _process_raw_document(self, data):
+        """Xử lý document thô từ crawler (HTML). Giữ backward-compatible."""
+        item_id = data.get("item_id", "")
+        doc_number = data.get("doc_number", item_id)
         html_raw = data.get("html_raw", "")
         meta_api = data.get("metadata_api", {})
 
-        logger.info(f"[XỬ LÝ] Văn bản mới nhận được: {doc_number} (ID: {item_id})")
+        logger.info(f"[DOC] {doc_number} (ID: {item_id})")
 
         if not html_raw:
-            logger.warning(f"[SKIP] Văn bản {doc_number} không có HTML.")
             return
 
-        # 1. Trích xuất text & md (Trực tiếp trong memory, không ghi JSONL)
         from bs4 import BeautifulSoup
         import html2text
         soup = BeautifulSoup(html_raw, 'html.parser')
@@ -73,12 +122,10 @@ class LawEventConsumer:
         h2t.body_width = 0
         raw_md = h2t.handle(cleaned_html)
 
-        # 2. Extract Metadata
         doc_type = extract_doc_type(raw_md)
         doc_num = extract_doc_number(raw_md) or doc_number
         effective_date = extract_effective_date(raw_md) or meta_api.get('effFrom', 'Chua xac dinh')
 
-        # 3. Clean & Chunker
         cleaned_md = clean_boilerplate(raw_md)
         chunks = chunk_legal_document(cleaned_md, item_id)
 
@@ -88,25 +135,23 @@ class LawEventConsumer:
             if len(chunk.text.strip()) < 50:
                 continue
 
-            # 4. Contextualize
             prompt = build_prompt(chunk, doc_num, doc_type, effective_date)
             context = call_ollama(prompt, max_tokens=150)
             contextualized_text = f"Context: {context}\n\nContent:\n{chunk.text}" if context else chunk.text
 
+            hierarchy_dict = chunk.hierarchy.to_dict()
             row = {
                 "chunk_id": chunk.chunk_id,
                 "doc_id": item_id,
                 "doc_number": doc_num,
                 "effective_date": effective_date,
                 "source_doc": f"{doc_type} {doc_num}",
-                "hierarchy": json.dumps(chunk.hierarchy.to_dict(), ensure_ascii=False),
+                "hierarchy": json.dumps(hierarchy_dict, ensure_ascii=False),
                 "original_text": chunk.text,
             }
-
             self.pending_milvus_rows.append(row)
             self.pending_milvus_texts.append(contextualized_text)
 
-            hierarchy_dict = json.loads(row["hierarchy"])
             self.pending_neo_batch.append({
                 "chunk_id": row["chunk_id"],
                 "original_text": row["original_text"],
@@ -118,17 +163,21 @@ class LawEventConsumer:
                 "dieu": hierarchy_dict.get("điều") or "Điều N/A"
             })
 
-        # 5. Flush batch nếu đầy (Bulk Insert)
-        if len(self.pending_milvus_rows) >= self.BATCH_SIZE:
-            self._flush_batch()
+        # Gom quan hệ đồ thị ngữ nghĩa từ pipeline crawler
+        if data.get("relationships"):
+            self.pending_relations_batch.append({
+                "item_id": item_id,
+                "doc_number": doc_number,
+                "metadata_api": meta_api,
+                "relationships": data["relationships"],
+            })
 
     def _flush_batch(self):
-        """Bulk insert dữ liệu vào Milvus và Neo4j."""
+        """Bulk insert dữ liệu vào Milvus, Neo4j và quan hệ ngữ nghĩa."""
         if not self.pending_milvus_rows:
             return
 
         try:
-            # Bulk Insert Milvus
             vectors = encode_texts(self.tokenizer, self.model, self.pending_milvus_texts)
             milvus_data = []
             for row, vec in zip(self.pending_milvus_rows, vectors):
@@ -137,9 +186,12 @@ class LawEventConsumer:
             self.milvus_client.insert(collection_name="vietlaw_chunks", data=milvus_data)
             logger.info(f"[BULK MILVUS] Đã nạp {len(milvus_data)} chunks.")
 
-            # Bulk Insert Neo4j
             self.neo_manager._insert_structural_batch(self.pending_neo_batch)
             logger.info(f"[BULK NEO4J] Đã nạp {len(self.pending_neo_batch)} nodes.")
+
+            if self.pending_relations_batch:
+                self.neo_manager.insert_semantic_relations_batch(self.pending_relations_batch)
+                logger.info(f"[BULK RELATIONS] Đã nạp {len(self.pending_relations_batch)} semantic relations.")
 
         except Exception as e:
             logger.error(f"[BULK INSERT ERROR] {e}")
@@ -147,6 +199,7 @@ class LawEventConsumer:
             self.pending_milvus_rows = []
             self.pending_milvus_texts = []
             self.pending_neo_batch = []
+            self.pending_relations_batch = []
 
     def run(self):
         logger.info("Kafka Consumer đang chờ tin nhắn từ topic 'law-documents'...")
@@ -168,7 +221,6 @@ class LawEventConsumer:
                 except Exception as e:
                     logger.error(f"Lỗi xử lý tin nhắn: {e}")
         finally:
-            # Flush remaining batch
             self._flush_batch()
             self.consumer.close()
             self.neo_manager.close()

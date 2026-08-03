@@ -4,36 +4,50 @@
 scrapy
 requests
 beautifulsoup4
+html2text
 
 # ==========================================
 # 2. DATA PROCESSING & UTILS (Xử lý dữ liệu)
 # ==========================================
 python-dotenv
-html2text
-cssselect
-lxml
+pymupdf           # fitz - Xử lý PDF
+pydantic          # Data validation
+tqdm              # Progress bars
+pandas            # Data manipulation
 
 # ==========================================
-# 3. DATABASES (Bộ 3 quyền lực)
+# 3. DATABASES (Hệ sinh thái lưu trữ)
 # ==========================================
-pymilvus      # Vector DB (Thay thế hoàn toàn cho faiss-cpu)
-neo4j         # Graph DB (Lưu trữ Knowledge Graph - Entities & Relationships)
+pymilvus          # Vector DB (Milvus)
+neo4j             # Graph DB (Neo4j)
+confluent-kafka   # Event Streaming (Xử lý song song)
 
 # ==========================================
-# 5. AI, LLM & EMBEDDINGS (Core VietLawBERT)
+# 4. AI, LLM & EMBEDDINGS (Core VietLawBERT)
 # ==========================================
-# PyTorch CPU-only build
---extra-index-url https://download.pytorch.org/whl/cpu
+# Cài đặt Torch trước khi cài các thư viện AI khác
+--extra-index-url https://download.pytorch.org/whl/cu121
 torch
-rank_bm25                    # Lexical Filtering cho GG-SLM
+torchvision
+torchaudio
 
 transformers
-sentence-transformers # Dùng để chạy model BGE-M3 hoặc VNLawBERT
-openai              # OpenAI-compatible API cho Groq/GitHub Models
-langchain-text-splitters  # Chunking cho contextualizer
+sentence-transformers
+openai            # Gọi vLLM/SGLang qua OpenAI API
+langchain-text-splitters
+rank_bm25         # Lexical Filtering cho GG-SLM
 
+# Serving & Inference
+vllm              # Chỉ chạy tốt trên Linux/WSL2
+sglang            # Alternative serving engine
 
 # ==========================================
-# 7. WEB FRAMEWORK (API & Chatbot)
+# 5. EVALUATION (Đánh giá chuẩn Q1)
 # ==========================================
-chainlit         # Giao diện chat chuyên dụng cho LLM (Thay thế Streamlit)
+ragas             # Đánh giá RAG (Faithfulness, Relevance)
+deepeval          # Framework đánh giá LLM chuyên sâu
+
+# ==========================================
+# 6. WEB FRAMEWORK (Giao diện)
+# ==========================================
+chainlit

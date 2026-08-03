@@ -9,3 +9,4 @@ law_dataset/src/.scrapy
 __pycache__/
 .vscode/
 .scrapy
+CLAUDE.md

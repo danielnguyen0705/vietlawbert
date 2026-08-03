@@ -1,5 +1,5 @@
 """
-contextualizer.py - Chunk & Sinh Ngữ Cảnh (Layer 3: Ingestion)
+contextualizer.py - Sinh Ngữ Cảnh cho Chunk và đẩy thẳng vào Kafka.
 
 Sử dụng vLLM serving engine với prefix caching thay cho Ollama.
 Tăng throughput lên ~20x so với Ollama batching đơn lẻ.
@@ -8,6 +8,9 @@ Khởi động vLLM server:
     vllm serve qwen2.5:7b-instruct --enable-prefix-caching --port 8000
 hoặc:
     vllm serve qwen2.5:14b-instruct --enable-prefix-caching --port 8000
+
+Khởi động Kafka:
+    docker compose up -d kafka redpanda
 """
 
 import os
@@ -15,13 +18,12 @@ import sys
 import json
 import time
 import logging
-import requests
-from datetime import datetime
 from dotenv import load_dotenv
+from confluent_kafka import Producer
+import socket
 
 from preprocess.text_cleaner import (
     clean_boilerplate,
-    extract_preamble,
     extract_doc_type,
     extract_doc_number,
     extract_effective_date
@@ -29,14 +31,12 @@ from preprocess.text_cleaner import (
 from preprocess.legal_chunker import (
     chunk_legal_document,
     extract_cross_references,
-    LegalChunk,
-    LegalLevel
+    LegalChunk
 )
 
-from paths import BASE_DIR, MD_DIR, JSON_DIR, METADATA_FILE, CONTEXTUAL_CHUNKS_FILE, get_log_path, ensure_dirs
+from paths import BASE_DIR, MD_DIR, get_log_path, ensure_dirs
 
 ensure_dirs()
-OUTPUT_FILE = CONTEXTUAL_CHUNKS_FILE
 LOG_FILE_PATH = get_log_path("contextualizer")
 
 logging.basicConfig(
@@ -58,10 +58,12 @@ load_dotenv(env_path)
 # ============================================================
 # CẤU HÌNH vLLM SERVER (Thay thế Ollama để tăng throughput ~20x)
 # ============================================================
-# Khởi động: vllm serve qwen2.5:7b-instruct --enable-prefix-caching --port 8000
 client = OpenAI(base_url=config.LLM_API_BASE, api_key=config.LLM_API_KEY)
-CONTEXTUALIZER_MODEL = config.CONTEXTEXTUALIZER_MODEL if hasattr(config, 'CONTEXTEXTUALIZER_MODEL') else config.CONTEXTUALIZER_MODEL
+CONTEXTUALIZER_MODEL = config.CONTEXTUALIZER_MODEL
 REQUEST_DELAY = float(os.getenv("CONTEXTUALIZER_DELAY", "0.05"))
+
+KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9092")
+KAFKA_TOPIC_CHUNKS = os.getenv("KAFKA_TOPIC_CHUNKS", "law-documents")
 
 
 SYSTEM_PROMPT = """Ban la chuyen gia NLP phap ly cao cap, chuyen phan tich van ban phap luat Viet Nam.
@@ -104,6 +106,8 @@ def call_ollama(prompt: str, model: str = None, max_tokens: int = 512) -> str:
     except Exception as e:
         logger.error(f"[vLLM ERROR] {e}")
         return ""
+
+
 def build_prompt(chunk: LegalChunk, doc_number: str, doc_type: str, effective_date: str) -> str:
     """Xay dung prompt cho chunk van ban phap luat."""
     hierarchy_str = []
@@ -140,91 +144,94 @@ DOAN TRICH:
 """
 
 
-def process_and_save():
-    logger.info(f"[BAT DAU] Contextualizer - Ollama model: {OLLAMA_MODEL}")
+def build_kafka_producer() -> Producer:
+    """Khởi tạo Kafka producer với cấu hình tối ưu throughput."""
+    conf = {
+        'bootstrap.servers': KAFKA_BROKER,
+        'client.id': socket.gethostname(),
+        'acks': 'all',
+        'linger.ms': 50,
+        'batch.size': 128 * 1024,
+        'compression.type': 'snappy',
+        'queue.buffering.max.messages': 100000,
+    }
+    return Producer(conf)
 
-    meta_lookup = {}
-    if os.path.exists(METADATA_FILE):
-        with open(METADATA_FILE, 'r', encoding='utf-8') as f:
-            for line in f:
-                if line.strip():
-                    try:
-                        data = json.loads(line)
-                        meta_lookup[data['item_id']] = {
-                            "doc_number": data.get("doc_number", data['item_id']),
-                            "effFrom": data.get("metadata_api", {}).get("effFrom", "Chua xac dinh")
-                        }
-                    except json.JSONDecodeError:
-                        pass
-        logger.info(f"[METADATA] Da tai {len(meta_lookup)} records")
 
+def process_and_push():
+    """
+    Đọc từ MD_DIR, sinh ngữ cảnh, đẩy thẳng vào Kafka.
+    KHÔNG ghi ra file JSONL trung gian.
+    """
+    logger.info(f"[BAT DAU] Contextualizer - Model: {CONTEXTUALIZER_MODEL}")
+
+    producer = build_kafka_producer()
     total_chunks = 0
     total_files = 0
 
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f_out:
-        md_files = sorted([f for f in os.listdir(MD_DIR) if f.endswith('.md')])
+    md_files = sorted([f for f in os.listdir(MD_DIR) if f.endswith('.md')])
+    logger.info(f"[INFO] Tìm thấy {len(md_files)} file markdown.")
 
-        for filename in md_files:
-            file_path = os.path.join(MD_DIR, filename)
-            doc_id = filename.replace(".md", "")
+    for filename in md_files:
+        file_path = os.path.join(MD_DIR, filename)
+        doc_id = filename.replace(".md", "")
 
-            doc_meta = meta_lookup.get(doc_id, {
-                "doc_number": doc_id,
-                "effFrom": "Chua xac dinh"
-            })
+        logger.info(f"[DANG XU LY] {doc_id}")
 
-            logger.info(f"[DANG XU LY] {doc_meta['doc_number']} (ID: {doc_id})")
+        with open(file_path, "r", encoding="utf-8") as f_in:
+            raw_md = f_in.read()
 
-            with open(file_path, "r", encoding="utf-8") as f_in:
-                raw_md = f_in.read()
+        doc_type = extract_doc_type(raw_md)
+        doc_number = extract_doc_number(raw_md) or doc_id
+        effective_date = extract_effective_date(raw_md) or "Chua xac dinh"
 
-            doc_type = extract_doc_type(raw_md)
-            doc_number = extract_doc_number(raw_md) or doc_meta['doc_number']
-            effective_date = extract_effective_date(raw_md) or doc_meta.get('effFrom', 'Chua xac dinh')
+        cleaned_md = clean_boilerplate(raw_md)
+        chunks = chunk_legal_document(cleaned_md, doc_id)
 
-            cleaned_md = clean_boilerplate(raw_md)
-            chunks = chunk_legal_document(cleaned_md, doc_id)
+        for chunk in chunks:
+            if chunk.metadata.get('type') == 'preamble':
+                continue
+            if len(chunk.text.strip()) < 50:
+                continue
 
-            for chunk in chunks:
-                if chunk.metadata.get('type') == 'preamble':
-                    continue
-                if len(chunk.text.strip()) < 50:
-                    continue
+            prompt = build_prompt(chunk, doc_number, doc_type, effective_date)
+            context = call_ollama(prompt, max_tokens=150)
 
-                prompt = build_prompt(chunk, doc_number, doc_type, effective_date)
-                context = call_ollama(prompt, max_tokens=150)
+            cross_refs = extract_cross_references(chunk.text)
+            contextualized_text = (
+                f"Context: {context}\n\nContent:\n{chunk.text}"
+                if context
+                else chunk.text
+            )
 
-                cross_refs = extract_cross_references(chunk.text)
+            record = {
+                "chunk_id": chunk.chunk_id,
+                "metadata": {
+                    "doc_id": doc_id,
+                    "doc_number": doc_number,
+                    "doc_type": doc_type,
+                    "effective_date": effective_date,
+                    "hierarchy_path": chunk.hierarchy.to_dict(),
+                    "cross_references": cross_refs[:5],
+                },
+                "original_text": chunk.text,
+                "contextualized_text": contextualized_text,
+            }
 
-                contextualized_text = (
-                    f"Context: {context}\n\nContent:\n{chunk.text}"
-                    if context
-                    else chunk.text
-                )
+            producer.produce(
+                KAFKA_TOPIC_CHUNKS,
+                value=json.dumps(record, ensure_ascii=False).encode('utf-8')
+            )
+            producer.poll(0)
+            total_chunks += 1
 
-                final_record = {
-                    "chunk_id": chunk.chunk_id,
-                    "metadata": {
-                        "doc_id": doc_id,
-                        "doc_number": doc_number,
-                        "doc_type": doc_type,
-                        "effective_date": effective_date,
-                        "hierarchy_path": chunk.hierarchy.to_dict(),
-                        "cross_references": cross_refs[:5],
-                    },
-                    "original_text": chunk.text,
-                    "contextualized_text": contextualized_text,
-                }
+        total_files += 1
+        logger.info(f"  -> {len(chunks)} chunks đã đẩy vào Kafka.")
 
-                f_out.write(json.dumps(final_record, ensure_ascii=False) + "\n")
-                total_chunks += 1
-
-            total_files += 1
-            logger.info(f"  -> {len(chunks)} chunks")
-
-    logger.info(f"[HOAN TAT] {total_files} files, {total_chunks} chunks")
-    logger.info(f"[OUTPUT] {OUTPUT_FILE}")
+    producer.flush(30)
+    logger.info(f"[HOAN TAT] {total_files} files, {total_chunks} chunks đã được đẩy vào Kafka.")
+    logger.info(f"[OUTPUT] Kafka topic: {KAFKA_TOPIC_CHUNKS}")
 
 
 if __name__ == "__main__":
-    process_and_save()
+    process_and_push()
