@@ -2,7 +2,7 @@
 neo4j_client.py - Nạp cấu trúc phân cấp và mối quan hệ liên kết đồ thị (Graph RAG) vào Neo4j.
 
 Định dạng các cạnh quan hệ ngữ nghĩa (CAN_CO_BAN_HANH, VAN_BAN_BI_BAI_BO,...) dựa trên API diagram.
-Đã refactor: dùng node label LawDocument, đọc relationships đã chuẩn hoá từ metadata.jsonl.
+Tuong thich: Ubuntu 22.04+, Docker Compose v2, Python 3.12
 """
 
 import os
@@ -12,10 +12,10 @@ import logging
 from collections import defaultdict
 from neo4j import GraphDatabase
 
-from paths import METADATA_FILE, get_log_path
+from paths import get_log_path
 
-INPUT_FILE = METADATA_FILE
-LOG_FILE_PATH = get_log_path("neo4j_client")
+CURRENT_FILENAME = os.path.basename(__file__).split('.')[0]
+LOG_FILE_PATH = get_log_path(CURRENT_FILENAME)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,13 +27,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("Neo4jClient")
 
+# Doc tu env de tuong thich Docker
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASS = os.getenv("NEO4J_PASSWORD", "vietlawbert")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "vietlawbert")
 
-# MA TRẬN ÁNH XẠ THỰC NGHIỆM (Semantic Mapping Matrix)
-# Dựa trên quan sát thực tế từ API vbpl-bientap-gateway.moj.gov.vn
-# Key: (group_name, raw_key) để tránh collision giữa 2 namespace
 MAP_RELATION = {
     "documentNamesByType": {
         "1": "NGHI_QUYET_HUONG_DAN_AP_DUNG",
@@ -58,17 +56,20 @@ MAP_RELATION = {
 
 
 class Neo4jManager:
-    def __init__(self, drop_existing=False):
-        logger.info(f"Connecting to Neo4j at {NEO4J_URI}...")
+    def __init__(self, drop_existing=False, uri=None, user=None, password=None):
+        actual_uri = uri or NEO4J_URI
+        actual_user = user or NEO4J_USER
+        actual_pass = password or NEO4J_PASSWORD
+        logger.info(f"Connecting to Neo4j at {actual_uri}...")
         try:
-            self.driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASS))
+            self.driver = GraphDatabase.driver(actual_uri, auth=(actual_user, actual_pass))
             self.driver.verify_connectivity()
-            logger.info("✅ Connection successful!")
+            logger.info("Connection successful!")
             if drop_existing:
                 self.drop_database()
             self._create_constraints()
         except Exception as e:
-            logger.error(f"❌ Connection failed: {e}")
+            logger.error(f"Connection failed: {e}")
             raise RuntimeError(f"Neo4j connection failed: {e}") from e
 
     def close(self):
@@ -76,7 +77,6 @@ class Neo4jManager:
         logger.info("Closed Neo4j connection.")
 
     def drop_database(self):
-        """Xóa toàn bộ node/edge hiện có. Dùng trước khi nạp batch mới trong môi trường research."""
         logger.warning("[DROP] Xóa toàn bộ database...")
         with self.driver.session() as session:
             session.run("MATCH (n) DETACH DELETE n")
@@ -97,7 +97,6 @@ class Neo4jManager:
                     pass
 
     def build_structural_graph(self):
-        """Dựng cấu trúc phân cấp LawDocument -> Chapter -> Article -> Chunk."""
         from paths import CONTEXTUAL_CHUNKS_FILE
         logger.info(f"Building structural tree from: {CONTEXTUAL_CHUNKS_FILE}")
         if not os.path.exists(CONTEXTUAL_CHUNKS_FILE):
@@ -140,11 +139,10 @@ class Neo4jManager:
                 self._insert_structural_batch(batch_data)
                 total_inserted += len(batch_data)
 
-        logger.info(f"✅ Structural tree finished: {total_inserted} chunks.")
+        logger.info(f"Structural tree finished: {total_inserted} chunks.")
         self.build_chunk_references()
 
     def build_chunk_references(self):
-        """Đọc cross_references từ final_contextual_chunks.jsonl để dựng quan hệ liên kết mức độ Chunk."""
         from paths import CONTEXTUAL_CHUNKS_FILE
         logger.info(f"Dựng quan hệ dẫn chiếu mức độ Chunk từ: {CONTEXTUAL_CHUNKS_FILE}")
         if not os.path.exists(CONTEXTUAL_CHUNKS_FILE):
@@ -171,7 +169,6 @@ class Neo4jManager:
                     target_num = ref.get("target_number", "")
 
                     if target_doc and target_num:
-                        # Chuẩn hóa tên/số hiệu văn bản để link
                         batch_data.append({
                             "chunk_id": chunk_id,
                             "target_doc": target_doc,
@@ -184,11 +181,9 @@ class Neo4jManager:
 
             if batch_data:
                 self._insert_chunk_references_batch(batch_data)
-        logger.info("✅ Hoàn thành quan hệ dẫn chiếu mức độ Chunk.")
+        logger.info("Hoàn thành quan hệ dẫn chiếu mức độ Chunk.")
 
     def _insert_chunk_references_batch(self, batch_data):
-        # Cypher nối Chunk của văn bản A tới Article của văn bản B thông qua text matching
-        # Chỉ MERGE quan hệ nếu target_doc và target_art ĐÃ TỒN TẠI trong hệ thống (MATCH)
         cypher = """
         UNWIND $batch AS row
         MATCH (ck:Chunk {chunk_id: row.chunk_id})
@@ -205,8 +200,6 @@ class Neo4jManager:
                 logger.error(f"Lỗi nạp chunk references batch: {e}")
 
     def _insert_structural_batch(self, batch_data):
-        # Thiết lập mô hình Canonical Text Version (CTV) & Temporal Versioning trên đồ thị
-        # Chunks được kết nối với Article thông qua CTV node có thuộc tính temporal
         cypher = """
         UNWIND $batch AS row
         MERGE (doc:LawDocument {doc_id: row.doc_id})
@@ -220,7 +213,6 @@ class Neo4jManager:
         MERGE (art:Article {name: row.dieu, chapter: row.chuong, doc_id: row.doc_id})
         MERGE (ch)-[:HAS_ARTICLE]->(art)
 
-        // Tạo node phiên bản văn bản (Canonical Text Version - CTV) có gắn mốc thời gian hiệu lực
         MERGE (ctv:CTV {ctv_id: row.doc_id + "_" + row.dieu + "_" + row.effective_date})
         SET ctv.effective_date = row.effective_date,
             ctv.doc_id = row.doc_id,
@@ -237,7 +229,6 @@ class Neo4jManager:
 
     @staticmethod
     def _sanitize_edge_type(raw: str) -> str:
-        """Chuẩn hóa edge_type cho Cypher: bỏ ký tự đặc biệt, không bắt đầu bằng số."""
         import re as _re
         cleaned = _re.sub(r'[^A-Za-z0-9_]', '_', raw).strip('_')
         if cleaned and cleaned[0].isdigit():
@@ -245,10 +236,6 @@ class Neo4jManager:
         return cleaned or "UNKNOWN_REL"
 
     def insert_semantic_relations_batch(self, items_batch):
-        """
-        Nạp một lô relationships đã chuẩn hoá từ LegalOntologyMappingPipeline.
-        Gom nhóm theo (edge_type, direction) → giảm số query xuống O(k) thay vì O(n).
-        """
         query_batches = defaultdict(list)
 
         for item in items_batch:
@@ -288,7 +275,7 @@ class Neo4jManager:
                         rel.direction = "OUTGOING",
                         rel.updated_at = timestamp()
                     """
-                else:  # INCOMING
+                else:
                     cypher = f"""
                     UNWIND $batch AS record
                     MERGE (s:LawDocument {{doc_id: record.source_id}})
@@ -310,17 +297,17 @@ class Neo4jManager:
                 except Exception as e:
                     logger.error(f"[ERROR] {edge_type}: {e}")
 
-        logger.info(f"✅ Total semantic relations inserted: {total_inserted}")
+        logger.info(f"Total semantic relations inserted: {total_inserted}")
         return total_inserted
 
     def load_items_from_metadata(self):
-        """Đọc items từ metadata.jsonl (đã qua pipeline chuẩn hoá)."""
-        if not os.path.exists(INPUT_FILE):
-            logger.error(f"Input file not found: {INPUT_FILE}")
+        from paths import METADATA_FILE
+        if not os.path.exists(METADATA_FILE):
+            logger.error(f"Input file not found: {METADATA_FILE}")
             return []
 
         items = []
-        with open(INPUT_FILE, "r", encoding="utf-8") as f:
+        with open(METADATA_FILE, "r", encoding="utf-8") as f:
             for line in f:
                 if not line.strip():
                     continue
@@ -328,16 +315,8 @@ class Neo4jManager:
                     items.append(json.loads(line))
                 except json.JSONDecodeError:
                     continue
-        logger.info(f"Loaded {len(items)} items from {INPUT_FILE}")
+        logger.info(f"Loaded {len(items)} items from {METADATA_FILE}")
         return items
-
-
-# DEPRECATED: Code cũ đọc từ RAW_DIAGRAM_DIR - không còn dùng trong pipeline mới
-# Giữ lại dưới dạng comment để tham khảo.
-#
-# def build_relations_graph_legacy(self):
-#     """DEPRECATED: Đọc file diagram JSON thô - không còn dùng. Thay bằng insert_semantic_relations_batch."""
-#     pass
 
 
 if __name__ == "__main__":

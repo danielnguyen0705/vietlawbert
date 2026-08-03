@@ -1,32 +1,6 @@
 services:
-  vllm:
-    image: vllm/vllm-openai:latest
-    container_name: vietlaw_vllm_server
-    restart: unless-stopped
-    ports:
-      - "8000:8000"
-    ipc: host
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    volumes:
-      - D:/UIT-HK7/models:/root/.cache/huggingface
-    command: >
-      --model Qwen/Qwen2.5-7B-Instruct
-      --enable-prefix-caching
-      --port 8000
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 15s
-      retries: 5
-      start_period: 120s
-    networks:
-      - vietlaw_net
+  # vllm: Đã loại bỏ khỏi Docker do GTX 1050 Ti (Pascal) không tương thích.
+  # LLM sẽ chạy trực tiếp trên host Ubuntu qua Ollama (http://localhost:11434/v1)
 
   # ==========================================
   # 1. BỘ NÃO XỬ LÝ & DỮ LIỆU THÔ (CORE)
@@ -35,7 +9,7 @@ services:
     build: .
     container_name: vietlawbert_container
     volumes:
-      - .:/app  # BIND MOUNT: Sửa code máy thật, Docker cập nhật ngay
+      - .:/app
     working_dir: /app/law_dataset
     environment:
       - MONGO_URI=mongodb://db:27017/
@@ -44,10 +18,14 @@ services:
       - NEO4J_PASSWORD=vietlawbert
       - MILVUS_HOST=milvus-standalone
       - MILVUS_PORT=19530
-      - LLM_API_BASE=http://vllm:8000/v1
-      - LLM_API_KEY=EMPTY
-      - CONTEXTUALIZER_MODEL=Qwen/Qwen2.5-7B-Instruct
-      - GENERATOR_MODEL=Qwen/Qwen2.5-7B-Instruct
+      # LLM chạy trực tiếp trên host Ubuntu (Ollama)
+      - LLM_API_BASE=http://host.docker.internal:11434/v1
+      - LLM_API_KEY=ollama
+      - CONTEXTUALIZER_MODEL=qwen2.5:1.5b
+      - GENERATOR_MODEL=qwen2.5:1.5b
+      - KAFKA_BROKER=redpanda:9092
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_started
@@ -55,9 +33,7 @@ services:
         condition: service_started
       milvus-standalone:
         condition: service_started
-      vllm:
-        condition: service_healthy
-    stdin_open: true 
+    stdin_open: true
     tty: true
     networks:
       - vietlaw_net
@@ -66,9 +42,9 @@ services:
     image: mongo:latest
     container_name: mongodb_vietlaw
     ports:
-      - "27017:27017" # Kết nối MongoDB Compass từ máy thật
+      - "27017:27017"
     volumes:
-      - vietlaw_data:/data/db # VOLUME: Dữ liệu bền vững
+      - vietlaw_data:/data/db
     networks:
       - vietlaw_net
 
@@ -76,14 +52,16 @@ services:
   # 2. HẠ TẦNG HYBRID RAG (GRAPH & VECTOR)
   # ==========================================
   neo4j:
-    image: neo4j:5.18.1  # Phiên bản tối ưu cho LangChain/GraphRAG
+    image: neo4j:5.18.1
     container_name: neo4j_vietlaw
     ports:
-      - "7474:7474" # Giao diện Web (mở http://localhost:7474 trên trình duyệt)
-      - "7687:7687" # Cổng Bolt giao tiếp với code Python
+      - "7474:7474"
+      - "7687:7687"
     environment:
-      - NEO4J_AUTH=neo4j/vietlawbert # Tài khoản đăng nhập (User: neo4j / Pass: vietlawbert)
-      - NEO4J_PLUGINS=["apoc"] # Cài sẵn thư viện APOC cực kỳ cần thiết cho Graph
+      - NEO4J_AUTH=neo4j/vietlawbert
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_dbms_security_procedures_allowlist=apoc.*
     volumes:
       - neo4j_data:/data
     networks:
@@ -111,7 +89,7 @@ services:
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
     ports:
-      - "9001:9001" # Cổng giao diện console của MinIO
+      - "9001:9001"
     volumes:
       - minio_data:/minio_data
     command: minio server /minio_data --console-address ":9001"
@@ -133,7 +111,7 @@ services:
     volumes:
       - milvus_data:/var/lib/milvus
     ports:
-      - "19530:19530" # Cổng để Python (pymilvus) kết nối vào
+      - "19530:19530"
       - "9091:9091"
     depends_on:
       - "etcd"
@@ -169,7 +147,6 @@ services:
     networks:
       - vietlaw_net
 
-# Khai báo các Volume chuyên biệt để không bao giờ mất dữ liệu
 volumes:
   vietlaw_data:
   neo4j_data:
@@ -178,7 +155,6 @@ volumes:
   milvus_data:
   redpanda_data:
 
-# Tạo mạng LAN ảo cho hệ thống
 networks:
   vietlaw_net:
     driver: bridge

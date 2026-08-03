@@ -3,6 +3,8 @@ milvus_client.py - Nap chunks vao Milvus (Vector RAG)
 
 Embedding model: BAAI/bge-m3 (1024 dim)
 Dung transformers + torch truc tiep de tranh DLL conflict cua scipy/sklearn.
+
+Tuong thich: Ubuntu 22.04+, Docker Compose v2, Python 3.12
 """
 
 import os
@@ -13,7 +15,7 @@ import torch
 from transformers import AutoTokenizer, AutoModel
 from pymilvus import MilvusClient, DataType
 
-from paths import get_log_path, CONTEXTUAL_CHUNKS_FILE, BASE_DIR
+from paths import get_log_path, BASE_DIR
 
 CURRENT_FILENAME = os.path.basename(__file__).split('.')[0]
 LOG_FILE_PATH = get_log_path(CURRENT_FILENAME)
@@ -34,6 +36,11 @@ COLLECTION_NAME = "vietlaw_chunks"
 EMBED_BATCH_SIZE = 8
 INSERT_BATCH_SIZE = 32
 
+# Doc tu env de tuong thich Docker
+MILVUS_HOST = os.getenv("MILVUS_HOST", "localhost")
+MILVUS_PORT = os.getenv("MILVUS_PORT", "19530")
+MILVUS_URI = os.getenv("MILVUS_URI", f"http://{MILVUS_HOST}:{MILVUS_PORT}")
+
 
 def load_encoder():
     logger.info(f"Dang tai mo hinh {MODEL_NAME}...")
@@ -50,23 +57,20 @@ def encode_texts(tokenizer, model, texts: list[str]) -> list[list[float]]:
         encoded = tokenizer(batch, padding=True, truncation=True, max_length=512, return_tensors="pt")
         with torch.no_grad():
             output = model(**encoded)
-        # CLS token embedding
         embeddings = output.last_hidden_state[:, 0, :]
-        # L2 normalize
         embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
         all_embeddings.extend(embeddings.tolist())
     return all_embeddings
 
 
 def setup_milvus() -> MilvusClient:
-    logger.info("Ket noi Milvus Docker (localhost:19530)...")
-    client = MilvusClient(uri="http://localhost:19530")
+    logger.info(f"Ket noi Milvus tai {MILVUS_URI}...")
+    client = MilvusClient(uri=MILVUS_URI)
 
     if client.has_collection(collection_name=COLLECTION_NAME):
         logger.warning(f"Collection '{COLLECTION_NAME}' ton tai. Xoa de tao moi...")
         client.drop_collection(collection_name=COLLECTION_NAME)
 
-    # Dung schema explicit de tranh conflict voi auto-generated 'id' field cua MilvusClient v3
     schema = client.create_schema(auto_id=False, enable_dynamic_field=False)
     schema.add_field("chunk_id",      DataType.VARCHAR, max_length=256, is_primary=True)
     schema.add_field("doc_id",        DataType.VARCHAR, max_length=128)
@@ -90,7 +94,35 @@ def setup_milvus() -> MilvusClient:
     return client
 
 
+def ingest_from_kafka_consumer(consumer_batch_texts: list[str], consumer_batch_rows: list[dict]) -> int:
+    """
+    Nạp batch dữ liệu từ Kafka Consumer (không qua JSONL trung gian).
+    Returns: số chunks đã insert thành công.
+    """
+    if not consumer_batch_texts:
+        return 0
+
+    client = MilvusClient(uri=MILVUS_URI)
+    if not client.has_collection(collection_name=COLLECTION_NAME):
+        setup_milvus()
+
+    try:
+        vectors = encode_texts(load_encoder()[0], load_encoder()[1], consumer_batch_texts)
+        data = []
+        for row, vec in zip(consumer_batch_rows, vectors):
+            row["embedding"] = vec
+            data.append(row)
+        client.insert(collection_name=COLLECTION_NAME, data=data)
+        logger.info(f"[MILVUS] Da insert {len(data)} chunks.")
+        return len(data)
+    except Exception as e:
+        logger.error(f"[MILVUS ERROR] {e}")
+        return 0
+
+
 def ingest_data():
+    """Backward-compat: doc tu CONTEXTUAL_CHUNKS_FILE neu can."""
+    from paths import CONTEXTUAL_CHUNKS_FILE
     tokenizer, model = load_encoder()
     client = setup_milvus()
 

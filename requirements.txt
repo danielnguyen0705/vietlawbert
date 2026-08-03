@@ -5,27 +5,28 @@ scrapy
 requests
 beautifulsoup4
 html2text
+lxml
 
 # ==========================================
 # 2. DATA PROCESSING & UTILS (Xử lý dữ liệu)
 # ==========================================
 python-dotenv
-pymupdf           # fitz - Xử lý PDF
-pydantic          # Data validation
-tqdm              # Progress bars
-pandas            # Data manipulation
+pymupdf
+pydantic
+tqdm
+pandas
 
 # ==========================================
 # 3. DATABASES (Hệ sinh thái lưu trữ)
 # ==========================================
-pymilvus          # Vector DB (Milvus)
-neo4j             # Graph DB (Neo4j)
-confluent-kafka   # Event Streaming (Xử lý song song)
+pymilvus
+neo4j
+confluent-kafka
 
 # ==========================================
 # 4. AI, LLM & EMBEDDINGS (Core VietLawBERT)
 # ==========================================
-# Cài đặt Torch trước khi cài các thư viện AI khác
+# Cài torch qua extra-index để lấy bản CUDA 12.1
 --extra-index-url https://download.pytorch.org/whl/cu121
 torch
 torchvision
@@ -33,21 +34,21 @@ torchaudio
 
 transformers
 sentence-transformers
-openai            # Gọi vLLM/SGLang qua OpenAI API
+openai
 langchain-text-splitters
-rank_bm25         # Lexical Filtering cho GG-SLM
+rank_bm25
 
-# Serving & Inference
-vllm              # Chỉ chạy tốt trên Linux/WSL2
-sglang            # Alternative serving engine
+# Lưu ý: vllm, sglang KHÔNG cài trong Docker. Cài trực tiếp trên host Ubuntu.
 
 # ==========================================
 # 5. EVALUATION (Đánh giá chuẩn Q1)
 # ==========================================
-ragas             # Đánh giá RAG (Faithfulness, Relevance)
-deepeval          # Framework đánh giá LLM chuyên sâu
+ragas
+deepeval
 
 # ==========================================
 # 6. WEB FRAMEWORK (Giao diện)
 # ==========================================
 chainlit
+fastapi
+uvicorn
