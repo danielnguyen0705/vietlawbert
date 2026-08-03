@@ -4,7 +4,7 @@ import os
 import re
 from scrapy import signals
 from bs4 import BeautifulSoup
-from paths import METADATA_FILE, FAILED_FILE, get_log_path
+from paths import METADATA_FILE, FAILED_FILE, get_log_path, ensure_dirs
 from crawler.items import HTMLStatus
 from crawler.pipelines import LegalOntologyMappingPipeline
 
@@ -53,7 +53,9 @@ class LawSpider(scrapy.Spider):
         # THREAD-SAFE: In-memory buffer for dynamic key discovery (single-threaded Scrapy)
         self.dynamic_map = {}  # {raw_key: {edge_type, direction, graph_layer}}
         self.ontology_pipeline = LegalOntologyMappingPipeline(self.dynamic_map)
-        
+
+        ensure_dirs()
+
         if os.path.exists(self.metadata_file):
             with open(self.metadata_file, 'r', encoding='utf-8') as f:
                 for line in f:
