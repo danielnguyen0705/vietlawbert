@@ -46,8 +46,7 @@ class LawSpider(scrapy.Spider):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.successful_ids = set()
-        # THREAD-SAFE: In-memory buffer for dynamic key discovery (single-threaded Scrapy)
-        self.dynamic_map = {}  # {raw_key: {edge_type, direction, graph_layer}}
+        self.dynamic_map = {}
         self.ontology_pipeline = LegalOntologyMappingPipeline(self.dynamic_map)
 
     @classmethod

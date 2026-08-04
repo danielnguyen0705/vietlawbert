@@ -4,12 +4,6 @@ import logging
 import re
 import unicodedata
 from bs4 import BeautifulSoup
-from paths import (
-    DATA_DIR,
-    RAW_HTML_DIR,
-    RAW_PDF_DIR,
-    RAW_DIAGRAM_DIR,
-)
 from crawler.items import HTMLStatus, PDFStatus
 from confluent_kafka import Producer
 import socket
@@ -33,8 +27,6 @@ class LegalOntologyMappingPipeline:
         self.kafka_topic = "law-documents"
 
     def open_spider(self, spider):
-        for d in [RAW_HTML_DIR, RAW_PDF_DIR, RAW_DIAGRAM_DIR]:
-            os.makedirs(d, exist_ok=True)
         spider.logger.info("[PIPELINE] LegalOntologyMappingPipeline ready (Kafka Push enabled)")
 
     def close_spider(self, spider):
@@ -57,21 +49,6 @@ class LegalOntologyMappingPipeline:
         with open(self.ontology_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
 
-    def _make_filename(self, item_id):
-        return str(item_id).strip().replace("/", "-").replace("\\", "-")
-
-    def _classify_pdf_status(self, pdf_local_path):
-        if not os.path.exists(pdf_local_path):
-            return PDFStatus.NOT_FOUND
-        try:
-            import fitz
-            doc = fitz.open(pdf_local_path)
-            text = "".join([p.get_text() for p in doc])
-            doc.close()
-            return PDFStatus.DIGITAL_TEXT if len(text.strip()) > 500 else PDFStatus.SCANNED_OR_CORRUPTED
-        except Exception:
-            return PDFStatus.SCANNED_OR_CORRUPTED
-
     def _normalize_text(self, text):
         text = unicodedata.normalize("NFKC", str(text or "")).lower()
         text = re.sub(r"\s+", " ", text).strip()
@@ -92,8 +69,7 @@ class LegalOntologyMappingPipeline:
             if not any(kw in header_norm for kw in ["văn bản", "van ban", "căn cứ", "can cu", "pháp lệnh", "phap lenh", "nghị định", "nghi dinh"]):
                 continue
             category = re.sub(r"\(\d+\)", "", header_text).strip()
-            
-            # Tìm thẻ chứa danh sách các văn bản trực tiếp dưới header
+
             docs = []
             sibling = header.next_sibling
             while sibling:
@@ -104,22 +80,19 @@ class LegalOntologyMappingPipeline:
                     if links:
                         docs.extend([x.get_text(" ", strip=True) for x in links if x.get_text(" ", strip=True)])
                 sibling = sibling.next_sibling
-            
+
             if not docs:
-                # Fallback: Quét các thẻ <a> lân cận
                 direct_links = header.find_all_next("a", limit=20)
                 docs = [x.get_text(" ", strip=True) for x in direct_links if x.get_text(" ", strip=True)]
-                
+
             if docs:
                 groups[category] = set(self._normalize_text(x) for x in docs)
         return groups
 
     def _extract_doc_number_only(self, text):
-        # Bóc tách dạng số hiệu: VD 46/2016/NĐ-CP hoặc 171/2013/NĐ-CP
         match = re.search(r'(\d+/\d+/[a-z\-đdđcphuqd]+)', text.lower())
         if match:
             return match.group(1).replace(" ", "")
-        # Bóc tách dạng số hiệu thô: VD 49/CP
         match_cp = re.search(r'(\d+/[cphqd]+)', text.lower())
         if match_cp:
             return match_cp.group(1).replace(" ", "")
@@ -130,27 +103,27 @@ class LegalOntologyMappingPipeline:
         json_set = {x for x in json_set if x}
         if not json_set:
             return f"REL_TYPE_{raw_key}", 0.0
-            
+
         html_groups = self._parse_html_groups(html_dom)
         best_label = f"REL_TYPE_{raw_key}"
         highest_score = 0.0
-        
+
         for category_name, html_docs_set in html_groups.items():
             html_normalized_set = set(self._extract_doc_number_only(x) for x in html_docs_set)
             html_normalized_set = {x for x in html_normalized_set if x}
-            
+
             intersection = html_normalized_set.intersection(json_set)
             union = html_normalized_set.union(json_set)
-            
+
             if not union:
                 continue
-                
+
             score = len(intersection) / len(union)
             if score > highest_score:
                 highest_score = score
                 best_label = category_name
-                
-        if highest_score >= 0.5: # Giảm threshold xuống 0.5 vì so khớp dựa trên số hiệu cực kỳ chính xác
+
+        if highest_score >= 0.5:
             return self._normalize_category_name_to_edge_type(best_label), highest_score
         return f"REL_TYPE_{raw_key}", highest_score
 
@@ -237,8 +210,6 @@ class LegalOntologyMappingPipeline:
 
     def process_item(self, item, spider):
         item = self.process_diagram(item, item.get("html_dom"))
-
-        # PUSH TO KAFKA
         try:
             self.kafka_producer.produce(
                 self.kafka_topic,
@@ -247,5 +218,4 @@ class LegalOntologyMappingPipeline:
             self.kafka_producer.poll(0)
         except Exception as e:
             spider.logger.error(f"[KAFKA ERROR] Failed to push item {item.get('item_id')}: {e}")
-
         return item
