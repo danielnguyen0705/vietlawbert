@@ -5,7 +5,7 @@ import re
 from datetime import datetime
 from scrapy import signals
 from typing import Optional
-from paths import JSON_DIR, RAW_PDF_DIR, METADATA_FILE, AUDIT_TRAIL_FILE, get_log_path
+from paths import get_log_path
 from crawler.items import HTMLStatus, PDFStatus
 from crawler.pipelines import LegalOntologyMappingPipeline
 
@@ -37,7 +37,6 @@ class RescueSpider(scrapy.Spider):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.audit_file = AUDIT_TRAIL_FILE
         self.successful_ids = set()
         self.pending_items = {}
         self.dynamic_map = {}
@@ -50,55 +49,8 @@ class RescueSpider(scrapy.Spider):
         return spider
 
     async def start(self):
-        self.logger.info("[BAT DAU] Doc audit_trail.jsonl de tim cac item can tai PDF...")
-
-        if not os.path.exists(self.audit_file):
-            self.logger.info(f"Khong tim thay {self.audit_file}. Chay law_spider truoc!")
-            return
-
-        with open(self.audit_file, 'r', encoding='utf-8') as f:
-            for line in f:
-                if line.strip():
-                    try:
-                        record = json.loads(line)
-                        item_id = record.get('item_id')
-                        html_status = record.get('html_status')
-                        pdf_status = record.get('pdf_status')
-
-                        # Can PDF rescue if: HTML empty OR PDF not found
-                        needs_pdf = (
-                            html_status == "EMPTY" or
-                            pdf_status in ("NOT_FOUND", "SCANNED_OR_CORRUPTED")
-                        )
-
-                        if needs_pdf and item_id:
-                            self.pending_items[item_id] = record
-                            self.logger.info(f"[QUEUE] {item_id} - html={html_status}, pdf={pdf_status}")
-
-                    except json.JSONDecodeError:
-                        pass
-
-        if not self.pending_items:
-            self.logger.info("Khong co item nao can tai PDF. He thong da sac!")
-            return
-
-        self.logger.info(f"Tong {len(self.pending_items)} item can tai PDF. Bat dau...")
-
-        for item_id, record in self.pending_items.items():
-            detail_url = f"{SEARCH_API}/{item_id}"
-            yield scrapy.Request(
-                url=detail_url,
-                method="GET",
-                headers={
-                    'Origin': 'https://vbpl.vn',
-                    'Referer': 'https://vbpl.vn/',
-                    'Accept': 'application/json'
-                },
-                callback=self.parse_detail,
-                errback=self.handle_error,
-                cb_kwargs={'record': record},
-                dont_filter=True
-            )
+        self.logger.info("[WARN] Rescue spider cần được refactor để đọc từ Kafka thay vì audit_trail.jsonl")
+        return
 
     def _extract_pdf_filename(self, doc_data: dict) -> Optional[str]:
         # 1. attachments
