@@ -26,8 +26,8 @@ class Config:
     LLM_API_BASE = os.getenv("LLM_API_BASE", "http://localhost:11434/v1")
     LLM_API_KEY = os.getenv("LLM_API_KEY", "ollama")
 
-    CONTEXTUALIZER_MODEL = os.getenv("CONTEXTUALIZER_MODEL", "qwen2.5:7b-instruct")
-    GENERATOR_MODEL = os.getenv("GENERATOR_MODEL", "deepseek-r1:14b")
+    CONTEXTUALIZER_MODEL = os.getenv("CONTEXTUALIZER_MODEL", "qwen2.5:1.5b")
+    GENERATOR_MODEL = os.getenv("GENERATOR_MODEL", "qwen2.5:1.5b")
 
     GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
     GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
