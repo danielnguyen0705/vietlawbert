@@ -4,7 +4,7 @@ import os
 import re
 from scrapy import signals
 from bs4 import BeautifulSoup
-from paths import METADATA_FILE, FAILED_FILE, get_log_path, ensure_dirs
+from paths import get_log_path
 from crawler.items import HTMLStatus
 from crawler.pipelines import LegalOntologyMappingPipeline
 
@@ -45,26 +45,10 @@ class LawSpider(scrapy.Spider):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.failed_file = FAILED_FILE
-        self.metadata_file = METADATA_FILE
         self.successful_ids = set()
-        self.current_failed_items = {}
-        self.existing_metadata_ids = set()
         # THREAD-SAFE: In-memory buffer for dynamic key discovery (single-threaded Scrapy)
         self.dynamic_map = {}  # {raw_key: {edge_type, direction, graph_layer}}
         self.ontology_pipeline = LegalOntologyMappingPipeline(self.dynamic_map)
-
-        ensure_dirs()
-
-        if os.path.exists(self.metadata_file):
-            with open(self.metadata_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    if line.strip():
-                        try:
-                            data = json.loads(line)
-                            self.existing_metadata_ids.add(data.get('item_id'))
-                        except json.JSONDecodeError:
-                            pass
 
     @classmethod
     def from_crawler(cls, crawler, *args, **kwargs):
@@ -151,9 +135,6 @@ class LawSpider(scrapy.Spider):
         for doc in documents:
             doc_id = str(doc.get('id', ''))
             if not doc_id:
-                continue
-            if doc_id in self.existing_metadata_ids:
-                self.logger.info(f"[BO QUA] {doc_id} da co san")
                 continue
 
             new_item = {
@@ -267,34 +248,11 @@ class LawSpider(scrapy.Spider):
             f.write(json.dumps(item, ensure_ascii=False) + '\n')
 
     def spider_closed(self, spider):
-        self.logger.info("[DON DEP] Ve sinh failed_links.jsonl...")
-        
+        self.logger.info("[DON DEP] Ontology mappings...")
+
         # SINGLE DISK I/O: Persist discovered dynamic mappings to system ontology
         if self.dynamic_map:
             self.logger.info(f"[ONTOLOGY] Writing {len(self.dynamic_map)} new mappings to disk...")
             self.ontology_pipeline.save_dynamic_mappings()
 
-        existing_failures = {}
-        if os.path.exists(self.failed_file):
-            with open(self.failed_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    if line.strip():
-                        try:
-                            data = json.loads(line)
-                            existing_failures[data['item_id']] = data
-                        except json.JSONDecodeError:
-                            pass
-
-        for sid in self.successful_ids:
-            if sid in existing_failures:
-                del existing_failures[sid]
-
-        if existing_failures:
-            with open(self.failed_file, 'w', encoding='utf-8') as f:
-                for fi in existing_failures.values():
-                    f.write(json.dumps(fi, ensure_ascii=False) + '\n')
-            self.logger.info(f"[CON LAI] {len(existing_failures)} item loi. Hay chay rescue_spider!")
-        else:
-            if os.path.exists(self.failed_file):
-                os.remove(self.failed_file)
-            self.logger.info("[SACH] Khong con item loi nao!")
+        self.logger.info(f"Da xu ly xong {len(self.successful_ids)} items.")

@@ -1,0 +1,17 @@
+def extract_cross_references(text: str) -> list:
+    """Trich xuat cac dan chieu phuc tap trong van ban."""
+    import re
+    refs = []
+    # Pattern 1: Dan chieu tu van ban khac
+    complex_ref_pattern = re.compile(
+        r'(?:tai\s+)?(?:[Kk]hoan\s+\d+\s+)?(?:[DD]ieu\s+(\d+[a-zA-Z]?))\s+(?:cua|trong|duoc\s+quy\s+dinh\s+tai)?\s*(Luat|Nghi\s+dinh|Quyet\s+dinh|Thong\s+tu)(?:\s+so)?\s*([\w\-/]+)?\s*([^.,;(\n]+)?',
+        re.IGNORECASE
+    )
+    for match in complex_ref_pattern.finditer(text):
+        target_doc = (f"{match.group(2)} {match.group(3) or ''} {match.group(4) or ''}").strip()
+        refs.append({
+            'target_type': 'Dieu',
+            'target_number': match.group(1),
+            'target_document': target_doc
+        })
+    return refs
