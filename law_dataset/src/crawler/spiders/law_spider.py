@@ -230,9 +230,7 @@ class LawSpider(scrapy.Spider):
         self.successful_ids.add(doc_id)
         self.logger.info(f"[HOAN THANH] {item.get('doc_number')} (ID: {doc_id}) - Status: {item.get('diagram_status')}")
 
-        if doc_id not in self.existing_metadata_ids:
-            self.existing_metadata_ids.add(doc_id)
-            yield item
+        yield item
 
     def handle_failure(self, failure):
         item = failure.request.cb_kwargs.get('item')
