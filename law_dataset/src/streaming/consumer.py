@@ -32,7 +32,8 @@ class LawEventConsumer:
         conf = {
             'bootstrap.servers': bootstrap_servers,
             'group.id': "vietlawbert-consumers",
-            'auto.offset.reset': 'earliest'
+            'auto.offset.reset': 'earliest',
+            'max.poll.interval.ms': 600000  # Tăng lên 10 phút để tránh lỗi timeout
         }
         self.consumer = Consumer(conf)
         self.topic = "law-documents"
