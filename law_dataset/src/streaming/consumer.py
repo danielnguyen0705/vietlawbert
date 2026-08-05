@@ -19,6 +19,7 @@ from preprocess.contextualizer import build_prompt, call_ollama
 from database.milvus_client import load_encoder, encode_texts, setup_milvus
 from database.neo4j_client import Neo4jManager
 
+# Khai báo logger toàn cục
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | [%(levelname)s] | %(message)s")
 logger = logging.getLogger("KafkaConsumer")
 
@@ -26,42 +27,41 @@ KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9092")
 
 
 class LawEventConsumer:
-    BATCH_SIZE = 200  # Tăng batch size để tận dụng Bulk Insert
+    BATCH_SIZE = 200
 
     def __init__(self, bootstrap_servers=KAFKA_BROKER):
         conf = {
             'bootstrap.servers': bootstrap_servers,
             'group.id': "vietlawbert-consumers",
             'auto.offset.reset': 'earliest',
-            'max.poll.interval.ms': 600000  # Tăng lên 10 phút để tránh lỗi timeout
+            'max.poll.interval.ms': 600000
         }
         self.consumer = Consumer(conf)
         self.topic = "law-documents"
         self.consumer.subscribe([self.topic])
 
-        # Khởi tạo encoder và kết nối DB
         self.tokenizer, self.model = load_encoder()
         self.milvus_client = setup_milvus()
         self.neo_manager = Neo4jManager()
 
-        # Buffer cho bulk insert
         self.pending_milvus_rows = []
         self.pending_milvus_texts = []
         self.pending_neo_batch = []
         self.pending_relations_batch = []
 
     def process_message(self, data):
-        # Hỗ trợ 2 dạng message: từ contextualizer (đã có chunk) hoặc từ crawler (HTML thô)
-        if "chunk_id" in data and "contextualized_text" in data:
-            self._process_chunk_record(data)
-        else:
-            self._process_raw_document(data)
+        try:
+            if "chunk_id" in data and "contextualized_text" in data:
+                self._process_chunk_record(data)
+            else:
+                self._process_raw_document(data)
 
-        if len(self.pending_milvus_rows) >= self.BATCH_SIZE:
-            self._flush_batch()
+            if len(self.pending_milvus_rows) >= self.BATCH_SIZE:
+                self._flush_batch()
+        except Exception as e:
+            logger.error(f"Lỗi xử lý tin nhắn: {e}")
 
     def _process_chunk_record(self, data):
-        """Xử lý record đã được contextualize (từ contextualizer.py)."""
         chunk_id = data["chunk_id"]
         meta = data.get("metadata", {})
         hierarchy = meta.get("hierarchy_path", {})
@@ -98,7 +98,6 @@ class LawEventConsumer:
         })
 
     def _process_raw_document(self, data):
-        """Xử lý document thô từ crawler (HTML). Giữ backward-compatible."""
         item_id = data.get("item_id", "")
         doc_number = data.get("doc_number", item_id)
         html_raw = data.get("html_raw", "")
@@ -164,7 +163,6 @@ class LawEventConsumer:
                 "dieu": hierarchy_dict.get("điều") or "Điều N/A"
             })
 
-        # Gom quan hệ đồ thị ngữ nghĩa từ pipeline crawler
         if data.get("relationships"):
             self.pending_relations_batch.append({
                 "item_id": item_id,
@@ -174,7 +172,6 @@ class LawEventConsumer:
             })
 
     def _flush_batch(self):
-        """Bulk insert dữ liệu vào Milvus, Neo4j và quan hệ ngữ nghĩa."""
         if not self.pending_milvus_rows:
             return
 
@@ -203,24 +200,18 @@ class LawEventConsumer:
             self.pending_relations_batch = []
 
     def run(self):
-        logger.info("Kafka Consumer đang chờ tin nhắn từ topic 'law-documents'...")
+        logger.info("Kafka Consumer đang chờ tin nhắn...")
         try:
             while True:
                 msg = self.consumer.poll(1.0)
-                if msg is None:
-                    continue
+                if msg is None: continue
                 if msg.error():
-                    if msg.error().code() == KafkaError._PARTITION_EOF:
-                        continue
-                    else:
-                        logger.error(f"Lỗi Consumer: {msg.error()}")
-                        break
+                    if msg.error().code() == KafkaError._PARTITION_EOF: continue
+                    logger.error(f"Lỗi Consumer: {msg.error()}")
+                    break
 
                 data = json.loads(msg.value().decode('utf-8'))
-                try:
-                    self.process_message(data)
-                except Exception as e:
-                    logger.error(f"Lỗi xử lý tin nhắn: {e}")
+                self.process_message(data)
         finally:
             self._flush_batch()
             self.consumer.close()
