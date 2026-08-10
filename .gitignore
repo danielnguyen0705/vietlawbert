@@ -1,5 +1,12 @@
 law_dataset/data
 law_dataset/logs
+law_dataset/artifacts/vbpl_pilot_*/checkpoint.jsonl
+law_dataset/artifacts/vbpl_pilot_*/documents.jsonl.gz
+law_dataset/artifacts/vbpl_pilot_*/resume.log
+law_dataset/artifacts/**/sitemap_inventory.jsonl.gz
+law_dataset/artifacts/**/audit_records.jsonl
+law_dataset/artifacts/**/sample_pages.jsonl
+law_dataset/artifacts/**/robots.txt
 law_dataset/.env
 law_dataset/.streamlit
 law_dataset/src/.scrapy

@@ -1,0 +1,64 @@
+{
+  "generated_at": "2026-08-10T16:04:14.710073+00:00",
+  "scope": {
+    "inventory_size": 171536,
+    "sampling": "deterministic stratified by central/local and identifier family, then evenly across sitemap order",
+    "sample_size": 120,
+    "workers": 2,
+    "delay_per_worker_seconds": 0.75
+  },
+  "sample": {
+    "attempted": 120,
+    "successful": 120,
+    "with_legislation_json_ld": 120,
+    "http_success_wilson_95": {
+      "estimate": 1.0,
+      "lower": 0.969,
+      "upper": 1.0
+    },
+    "json_ld_wilson_95": {
+      "estimate": 1.0,
+      "lower": 0.969,
+      "upper": 1.0
+    },
+    "by_scope": {
+      "central": 41,
+      "local": 79
+    },
+    "by_id_type": {
+      "legacy_prefixed": 10,
+      "numeric": 105,
+      "uuid": 5
+    }
+  },
+  "classification": {
+    "by_group": {
+      "CONSOLIDATED": 2,
+      "LEGAL_FORM_CANDIDATE": 108,
+      "SYSTEMATIZED": 3,
+      "TRANSLATION": 7
+    },
+    "by_disposition": {
+      "GROUP_AND_CONTENT_CHECK_REQUIRED": 110,
+      "REFERENCE_ONLY": 10
+    }
+  },
+  "quality": {
+    "warnings": {},
+    "pages_without_warning": 120,
+    "has_ssr_provision_content": 0,
+    "has_document_content_marker": 120
+  },
+  "duplicates": {
+    "duplicate_urls": 0,
+    "repeated_logical_keys": 0,
+    "logical_key_groups": {},
+    "content_hash_checked": false
+  },
+  "limits": [
+    "The sample is stratified and deterministic, not a simple random sample.",
+    "Public HTML metadata was audited; dynamically loaded full legal text was not accepted as valid.",
+    "Wilson intervals are descriptive only because the sample is not simple random.",
+    "Classification is rule-based and must be reviewed against rendered content fixtures."
+  ]
+}

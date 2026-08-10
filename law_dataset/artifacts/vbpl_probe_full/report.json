@@ -1,0 +1,340 @@
+{
+  "generated_at": "2026-08-10T15:38:40.495789+00:00",
+  "probe_policy": {
+    "read_only": true,
+    "respects_robots": true,
+    "gateway_api_called": false,
+    "minimum_delay_seconds": 0.25,
+    "user_agent": "VietLawBERT-Research-Probe/0.1 (+read-only; respectful-rate)"
+  },
+  "robots": {
+    "url": "https://vbpl.vn/robots.txt",
+    "status": 200,
+    "content_type": "text/plain",
+    "parsed": {
+      "allow": [
+        "/"
+      ],
+      "disallow": [
+        "/api/",
+        "/Pages/"
+      ],
+      "sitemaps": [
+        "https://vbpl.vn/sitemap.xml"
+      ]
+    }
+  },
+  "sitemaps": {
+    "index_url": "https://vbpl.vn/sitemap.xml",
+    "index_status": 200,
+    "index_content_type": "application/xml; charset=utf-8",
+    "advertised": 36,
+    "inspected": 36,
+    "counts": [
+      {
+        "url": "https://vbpl.vn/sitemap/0.xml",
+        "scope": "static",
+        "status": 200,
+        "documents": 0
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/1.xml",
+        "scope": "central",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/2.xml",
+        "scope": "central",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/3.xml",
+        "scope": "central",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/4.xml",
+        "scope": "central",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/5.xml",
+        "scope": "central",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/6.xml",
+        "scope": "central",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/7.xml",
+        "scope": "central",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/8.xml",
+        "scope": "central",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/9.xml",
+        "scope": "central",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/10.xml",
+        "scope": "central",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/11.xml",
+        "scope": "central",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/12.xml",
+        "scope": "central",
+        "status": 200,
+        "documents": 1834
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/13.xml",
+        "scope": "local",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/14.xml",
+        "scope": "local",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/15.xml",
+        "scope": "local",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/16.xml",
+        "scope": "local",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/17.xml",
+        "scope": "local",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/18.xml",
+        "scope": "local",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/19.xml",
+        "scope": "local",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/20.xml",
+        "scope": "local",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/21.xml",
+        "scope": "local",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/22.xml",
+        "scope": "local",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/23.xml",
+        "scope": "local",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/24.xml",
+        "scope": "local",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/25.xml",
+        "scope": "local",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/26.xml",
+        "scope": "local",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/27.xml",
+        "scope": "local",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/28.xml",
+        "scope": "local",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/29.xml",
+        "scope": "local",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/30.xml",
+        "scope": "local",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/31.xml",
+        "scope": "local",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/32.xml",
+        "scope": "local",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/33.xml",
+        "scope": "local",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/34.xml",
+        "scope": "local",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/35.xml",
+        "scope": "local",
+        "status": 200,
+        "documents": 4702
+      }
+    ],
+    "errors": []
+  },
+  "inventory": {
+    "total_rows": 171536,
+    "total_urls": 171536,
+    "duplicate_urls": 0,
+    "by_scope": {
+      "central": 56834,
+      "local": 114702
+    },
+    "by_id_type": {
+      "legacy_prefixed": 11887,
+      "numeric": 155546,
+      "uuid": 4103
+    },
+    "by_scope_and_id_type": {
+      "central:legacy_prefixed": 10704,
+      "central:numeric": 45208,
+      "central:uuid": 922,
+      "local:legacy_prefixed": 1183,
+      "local:numeric": 110338,
+      "local:uuid": 3181
+    }
+  },
+  "sample": {
+    "attempted": 18,
+    "successful": 18,
+    "failed": 0,
+    "has_legislation_json_ld": 18,
+    "has_ssr_provision_content": 0,
+    "has_document_content_marker": 18,
+    "legislation_json_ld_coverage": {
+      "name": {
+        "present": 13,
+        "successful_pages": 18,
+        "ratio": 0.7222
+      },
+      "legislationIdentifier": {
+        "present": 16,
+        "successful_pages": 18,
+        "ratio": 0.8889
+      },
+      "legislationType": {
+        "present": 18,
+        "successful_pages": 18,
+        "ratio": 1.0
+      },
+      "legislationDate": {
+        "present": 18,
+        "successful_pages": 18,
+        "ratio": 1.0
+      },
+      "legislationLegalForce": {
+        "present": 18,
+        "successful_pages": 18,
+        "ratio": 1.0
+      },
+      "legislationPassedBy": {
+        "present": 18,
+        "successful_pages": 18,
+        "ratio": 1.0
+      },
+      "legislationJurisdiction": {
+        "present": 18,
+        "successful_pages": 18,
+        "ratio": 1.0
+      },
+      "url": {
+        "present": 18,
+        "successful_pages": 18,
+        "ratio": 1.0
+      },
+      "inLanguage": {
+        "present": 18,
+        "successful_pages": 18,
+        "ratio": 1.0
+      },
+      "keywords": {
+        "present": 18,
+        "successful_pages": 18,
+        "ratio": 1.0
+      }
+    }
+  },
+  "artifacts": {
+    "inventory": "sitemap_inventory.jsonl.gz",
+    "sample_pages": "sample_pages.jsonl",
+    "robots": "robots.txt"
+  }
+}

@@ -1,0 +1,123 @@
+{
+  "verified_at": "2026-08-10T16:28:50.189191+00:00",
+  "contract_verified_at": "2026-08-10T23:17:00+07:00",
+  "source_chunk": "https://vbpl.vn/_next/static/chunks/611-1d80403d4a7b098e.js",
+  "requires_cookie": false,
+  "requires_router_state": false,
+  "passed": true,
+  "status_counts": {
+    "CONTENT_TOO_SHORT": 1,
+    "HTML_VALID": 5
+  },
+  "records": [
+    {
+      "fixture": "numeric_law",
+      "document_id": "175440",
+      "status": "HTML_VALID",
+      "content_chars": 257702,
+      "content_sha256": "329d56c79ae9ca95d180fa8e30dd4aeda6ddcf97df3ea43191e9f6cccb540fa9",
+      "file_count": 3,
+      "document_number": "64/2025/QH15",
+      "default_language": "VN",
+      "official_group_code": "VBQPPL",
+      "official_group_name": "Văn bản quy phạm pháp luật",
+      "official_form_code": "Lu",
+      "official_form_name": "Luật",
+      "diagram_checked": false,
+      "warnings": [],
+      "error": null
+    },
+    {
+      "fixture": "uuid_decree",
+      "document_id": "3dedecb0-9239-11f1-889f-513c5fa29d01",
+      "status": "HTML_VALID",
+      "content_chars": 104806,
+      "content_sha256": "3ce36fc52b14941c01f7feb2d38fb5fc76303c79facb94e3182de800ac2987a7",
+      "file_count": 3,
+      "document_number": "302/2026/NĐ-CP",
+      "default_language": "VN",
+      "official_group_code": "VBQPPL",
+      "official_group_name": "Văn bản quy phạm pháp luật",
+      "official_form_code": "NĐ",
+      "official_form_name": "Nghị định",
+      "diagram_checked": true,
+      "warnings": [],
+      "error": null
+    },
+    {
+      "fixture": "legacy_translation",
+      "document_id": "vbpqta_1964",
+      "status": "HTML_VALID",
+      "content_chars": 1126,
+      "content_sha256": "00410f663b70667d4e25194288544e7dea8badfe4e66e6b2c15a42bf824ef8a2",
+      "file_count": 0,
+      "document_number": "363/TT-LT",
+      "default_language": "EN",
+      "official_group_code": "BD",
+      "official_group_name": "Bản dịch văn bản",
+      "official_form_code": "BD",
+      "official_form_name": "Bản dịch văn bản",
+      "diagram_checked": true,
+      "warnings": [],
+      "error": null
+    },
+    {
+      "fixture": "legacy_systematized",
+      "document_id": "hhtquyetdinh_228",
+      "status": "HTML_VALID",
+      "content_chars": 233041,
+      "content_sha256": "0bbb10c42335067be56f09d7f1cb19522f183a64c66fc5897d9a8abed1b32568",
+      "file_count": 0,
+      "document_number": "105/QĐ-BKHCN",
+      "default_language": "VN",
+      "official_group_code": "VBHTH",
+      "official_group_name": "Văn bản hệ thống hóa",
+      "official_form_code": "VBHTH",
+      "official_form_name": "Văn bản hệ thống hóa",
+      "diagram_checked": false,
+      "warnings": [],
+      "error": null
+    },
+    {
+      "fixture": "numeric_consolidated",
+      "document_id": "121624",
+      "status": "CONTENT_TOO_SHORT",
+      "content_chars": 83,
+      "content_sha256": "227fe705b87309dc9af872221a49da126db17cfa4d3a307472ee5bb74ce01c79",
+      "file_count": 1,
+      "document_number": "10/VBHN-BTC",
+      "default_language": "VN",
+      "official_group_code": "VBHN",
+      "official_group_name": "Văn bản hợp nhất",
+      "official_form_code": "VBHN",
+      "official_form_name": "Văn bản hợp nhất",
+      "diagram_checked": false,
+      "warnings": [],
+      "error": null
+    },
+    {
+      "fixture": "decision_review_case",
+      "document_id": "90831",
+      "status": "HTML_VALID",
+      "content_chars": 19064,
+      "content_sha256": "dcd424229a02aad446dee91465ef519edb7c82f3d9fc40a223bf5093e4be36d5",
+      "file_count": 2,
+      "document_number": "3410/QĐ-UBND",
+      "default_language": "VN",
+      "official_group_code": "VBQPPL",
+      "official_group_name": "Văn bản quy phạm pháp luật",
+      "official_form_code": "QĐ",
+      "official_form_name": "Quyết định",
+      "diagram_checked": false,
+      "warnings": [
+        "VBQPPL_DECISION_REVIEW_RECOMMENDED"
+      ],
+      "error": null
+    }
+  ],
+  "notes": [
+    "This is a representative contract check, not proof that every sitemap URL is valid.",
+    "Content hashes are build/data drift signals; raw legal text is intentionally not stored.",
+    "Official group/form values come from VBPL search results and may still require data-quality review."
+  ]
+}

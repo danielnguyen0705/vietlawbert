@@ -1,0 +1,138 @@
+{
+  "generated_at": "2026-08-10T15:32:34.717981+00:00",
+  "probe_policy": {
+    "read_only": true,
+    "respects_robots": true,
+    "gateway_api_called": false,
+    "minimum_delay_seconds": 0.35,
+    "user_agent": "VietLawBERT-Research-Probe/0.1 (+read-only; respectful-rate)"
+  },
+  "robots": {
+    "url": "https://vbpl.vn/robots.txt",
+    "status": 200,
+    "content_type": "text/plain",
+    "parsed": {
+      "allow": [
+        "/"
+      ],
+      "disallow": [
+        "/api/",
+        "/Pages/"
+      ],
+      "sitemaps": [
+        "https://vbpl.vn/sitemap.xml"
+      ]
+    }
+  },
+  "sitemaps": {
+    "index_url": "https://vbpl.vn/sitemap.xml",
+    "index_status": 200,
+    "index_content_type": "application/xml; charset=utf-8",
+    "advertised": 36,
+    "inspected": 3,
+    "counts": [
+      {
+        "url": "https://vbpl.vn/sitemap/0.xml",
+        "scope": "static",
+        "status": 200,
+        "documents": 0
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/1.xml",
+        "scope": "central",
+        "status": 200,
+        "documents": 5000
+      },
+      {
+        "url": "https://vbpl.vn/sitemap/2.xml",
+        "scope": "central",
+        "status": 200,
+        "documents": 5000
+      }
+    ],
+    "errors": []
+  },
+  "inventory": {
+    "total_rows": 10000,
+    "total_urls": 10000,
+    "duplicate_urls": 0,
+    "by_scope": {
+      "central": 10000
+    },
+    "by_id_type": {
+      "legacy_prefixed": 60,
+      "numeric": 9018,
+      "uuid": 922
+    },
+    "by_scope_and_id_type": {
+      "central:legacy_prefixed": 60,
+      "central:numeric": 9018,
+      "central:uuid": 922
+    }
+  },
+  "sample": {
+    "attempted": 6,
+    "successful": 6,
+    "failed": 0,
+    "has_legislation_json_ld": 6,
+    "has_ssr_provision_content": 0,
+    "has_document_content_marker": 6,
+    "legislation_json_ld_coverage": {
+      "name": {
+        "present": 6,
+        "successful_pages": 6,
+        "ratio": 1.0
+      },
+      "legislationIdentifier": {
+        "present": 6,
+        "successful_pages": 6,
+        "ratio": 1.0
+      },
+      "legislationType": {
+        "present": 6,
+        "successful_pages": 6,
+        "ratio": 1.0
+      },
+      "legislationDate": {
+        "present": 6,
+        "successful_pages": 6,
+        "ratio": 1.0
+      },
+      "legislationLegalForce": {
+        "present": 6,
+        "successful_pages": 6,
+        "ratio": 1.0
+      },
+      "legislationPassedBy": {
+        "present": 6,
+        "successful_pages": 6,
+        "ratio": 1.0
+      },
+      "legislationJurisdiction": {
+        "present": 6,
+        "successful_pages": 6,
+        "ratio": 1.0
+      },
+      "url": {
+        "present": 6,
+        "successful_pages": 6,
+        "ratio": 1.0
+      },
+      "inLanguage": {
+        "present": 6,
+        "successful_pages": 6,
+        "ratio": 1.0
+      },
+      "keywords": {
+        "present": 6,
+        "successful_pages": 6,
+        "ratio": 1.0
+      }
+    }
+  },
+  "artifacts": {
+    "inventory": "sitemap_inventory.jsonl.gz",
+    "sample_pages": "sample_pages.jsonl",
+    "robots": "robots.txt"
+  }
+}
