@@ -1,0 +1,59 @@
+{
+  "status": "PASS",
+  "timestamp": "2026-08-13T04:05:28.888051+00:00",
+  "input": "harness/fixtures/sample_documents.jsonl",
+  "documents_scanned": 2,
+  "valid_documents": 2,
+  "rejected_documents": 0,
+  "rejection_reasons": {},
+  "duplicate_count": 0,
+  "duplicate_record_count": 0,
+  "duplicate_findings": [],
+  "metadata_completeness": {
+    "document_id": 1.0,
+    "document_type": 1.0,
+    "missing_document_number": 1.0,
+    "missing_field": 1.0,
+    "missing_issuer": 1.0,
+    "missing_scope": 1.0,
+    "official_form_name": 1.0,
+    "official_group_code": 1.0,
+    "source_url": 1.0,
+    "status": 1.0,
+    "title": 1.0
+  },
+  "status_distribution": {
+    "HTML_VALID": 2
+  },
+  "json_errors": [],
+  "record_results": [
+    {
+      "index": 0,
+      "document_id": "sample-001",
+      "source_url": "https://vbpl.vn/van-ban/chi-tiet/sample-001",
+      "native_status": "HTML_VALID",
+      "valid": true,
+      "reasons": [],
+      "content_chars": 325,
+      "vietnamese_score": 0.9972
+    },
+    {
+      "index": 1,
+      "document_id": "sample-002",
+      "source_url": "https://vbpl.vn/van-ban/chi-tiet/sample-002",
+      "native_status": "HTML_VALID",
+      "valid": true,
+      "reasons": [],
+      "content_chars": 281,
+      "vietnamese_score": 0.9967
+    }
+  ],
+  "thresholds": {
+    "minimum_content_chars": 120,
+    "minimum_vietnamese_score": 0.25,
+    "maximum_duplicate_ratio": 0.01,
+    "require_source_url": true,
+    "require_document_id": true,
+    "require_title": false
+  }
+}

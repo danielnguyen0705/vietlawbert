@@ -1,0 +1,35 @@
+name: quality-gate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - cuong-ubutu
+      - cuong-ubuntu
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run crawler syntax checks
+        run: python -m py_compile law_dataset/src/crawler/*.py
+
+      - name: Run existing unit tests
+        run: python -m unittest discover -s law_dataset/tests -v
+
+      - name: Run harness unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Run harness validation fixture
+        run: python -m harness.checks.validate_pipeline --input harness/fixtures/sample_documents.jsonl --report harness/reports/latest_validation.json
+
+      - name: Check diff formatting
+        run: git diff --check

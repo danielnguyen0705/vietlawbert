@@ -19,6 +19,7 @@ try:
         ActionContract,
         ContentStatus,
         NextActionClient,
+        PDFExtractor,
         VBPLContentAdapter,
         classify_official_doc_type,
     )
@@ -27,6 +28,7 @@ except ModuleNotFoundError:  # direct execution support
         ActionContract,
         ContentStatus,
         NextActionClient,
+        PDFExtractor,
         VBPLContentAdapter,
         classify_official_doc_type,
     )
@@ -43,6 +45,26 @@ STOP_STATUSES = {
     ContentStatus.CONTRACT_ERROR.value,
     ContentStatus.PARSE_ERROR.value,
 }
+CORPUS_REVIEW_WARNING_CODES = {
+    "CONTENT_RECOVERED_BY_OCR_REVIEW_RECOMMENDED",
+    "RECOVERED_TEXT_ENCODING_REVIEW_RECOMMENDED",
+    "OCR_RECOVERED_TEXT_SHORT_REVIEW_RECOMMENDED",
+    "RECOVERED_TEXT_SUSPECT_CHAR_DENSITY_REVIEW_RECOMMENDED",
+    "RECOVERED_TEXT_LOW_VIETNAMESE_RATIO_REVIEW_RECOMMENDED",
+    "RECOVERED_TEXT_TRUNCATION_REVIEW_RECOMMENDED",
+}
+NON_CLASSIFICATION_WARNING_CODES = {
+    "CONTENT_RECOVERED_FROM_PDF",
+    "CONTENT_RECOVERED_BY_OCR_REVIEW_RECOMMENDED",
+    "RECOVERED_TEXT_ENCODING_REVIEW_RECOMMENDED",
+    "OCR_RECOVERED_TEXT_SHORT_REVIEW_RECOMMENDED",
+    "RECOVERED_TEXT_SUSPECT_CHAR_DENSITY_REVIEW_RECOMMENDED",
+    "RECOVERED_TEXT_LOW_VIETNAMESE_RATIO_REVIEW_RECOMMENDED",
+    "RECOVERED_TEXT_TRUNCATION_REVIEW_RECOMMENDED",
+    "PDF_EXTRACTION_INSUFFICIENT",
+    "PDF_FETCH_FAILED",
+}
+ACCEPTED_CORPUS_STATUSES = {ContentStatus.HTML_VALID.value}
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -51,6 +73,15 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     opener = gzip.open if path.suffix == ".gz" else open
     with opener(path, "rt", encoding="utf-8") as stream:
         return [json.loads(line) for line in stream if line.strip()]
+
+
+def normalize_manifest_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Normalize audit and manifest rows without changing their document IDs."""
+
+    value = dict(row)
+    if "document_group" not in value and "observed_group" in value:
+        value["document_group"] = value["observed_group"]
+    return value
 
 
 def evenly_spaced(items: list[dict[str, Any]], count: int) -> list[dict[str, Any]]:
@@ -154,6 +185,18 @@ def make_record(source: dict[str, Any], result: Any) -> dict[str, Any]:
         "warnings": result.warnings,
         "backend": result.backend,
         "error": result.error,
+        "extraction_method": result.extraction_method,
+        "extraction_source_file": result.extraction_source_file,
+        "extraction_confidence": result.extraction_confidence,
+        "extraction_note": result.extraction_note,
+        "ocr_attempted": result.ocr_attempted,
+        "pdf_url": result.pdf_url,
+        "pdf_text_chars": result.pdf_text_chars,
+        "pdf_ocr_chars": result.pdf_ocr_chars,
+        "pdf_fetch_error": result.pdf_fetch_error,
+        "recovered_text_normalized": result.recovered_text_normalized,
+        "recovered_text_normalization": result.recovered_text_normalization,
+        "recovered_text_metrics": result.recovered_text_metrics,
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -206,14 +249,36 @@ def evaluate(records: list[dict[str, Any]], requested: int, stopped_early: bool)
         if row.get("content_sha256") and row["status"] == ContentStatus.HTML_VALID.value
     )
     duplicate_content = sum(count - 1 for count in hashes.values() if count > 1)
-    classification_review = sum(bool(row.get("warnings")) for row in records)
+    classification_review = sum(
+        any(code not in NON_CLASSIFICATION_WARNING_CODES for code in row.get("warnings", []))
+        for row in records
+    )
+    corpus_review_required = sum(
+        row.get("status") in ACCEPTED_CORPUS_STATUSES
+        and any(code in CORPUS_REVIEW_WARNING_CODES for code in row.get("warnings", []))
+        for row in records
+    )
+    corpus_ready = sum(
+        row.get("status") in ACCEPTED_CORPUS_STATUSES
+        and not any(code in CORPUS_REVIEW_WARNING_CODES for code in row.get("warnings", []))
+        for row in records
+    )
+    recovered_quality_review = sum(
+        "CONTENT_RECOVERED_FROM_PDF" in (row.get("warnings") or [])
+        and any(code in CORPUS_REVIEW_WARNING_CODES for code in row.get("warnings", []))
+        for row in records
+    )
 
     hard_failure_ratio = hard_failures / total if total else 1.0
     content_available_ratio = content_available / total if total else 0.0
     missing_group_ratio = missing_group / total if total else 1.0
     duplicate_ratio = duplicate_content / total if total else 1.0
     classification_review_ratio = classification_review / total if total else 1.0
-    gates = {
+    corpus_review_required_ratio = corpus_review_required / total if total else 1.0
+    corpus_ready_ratio = corpus_ready / total if total else 0.0
+    recovered_quality_review_ratio = recovered_quality_review / total if total else 0.0
+
+    technical_gates = {
         "completed_requested_sample": total == requested and not stopped_early,
         "hard_failure_ratio_lte_2pct": hard_failure_ratio <= 0.02,
         "content_or_pdf_ratio_gte_95pct": content_available_ratio >= 0.95,
@@ -221,22 +286,74 @@ def evaluate(records: list[dict[str, Any]], requested: int, stopped_early: bool)
         "duplicate_content_ratio_lte_1pct": duplicate_ratio <= 0.01,
         "classification_review_ratio_lte_20pct": classification_review_ratio <= 0.20,
     }
+    technical_decision = (
+        "READY_FOR_LARGER_PILOT" if all(technical_gates.values()) else "REVIEW_AND_REPEAT"
+    )
+    corpus_gates = {
+        "completed_requested_sample": total == requested and not stopped_early,
+        "content_or_pdf_ratio_gte_95pct": content_available_ratio >= 0.95,
+        "corpus_review_required_records_eq_0": corpus_review_required == 0,
+        "recovered_quality_review_records_eq_0": recovered_quality_review == 0,
+    }
+    corpus_decision = "READY_FOR_PHASE_3" if all(corpus_gates.values()) else "REVIEW_REQUIRED"
+    metrics = {
+        "records": total,
+        "hard_failures": hard_failures,
+        "hard_failure_ratio": round(hard_failure_ratio, 4),
+        "content_or_pdf": content_available,
+        "content_or_pdf_ratio": round(content_available_ratio, 4),
+        "missing_official_group": missing_group,
+        "missing_official_group_ratio": round(missing_group_ratio, 4),
+        "duplicate_content_records": duplicate_content,
+        "duplicate_content_ratio": round(duplicate_ratio, 4),
+        "classification_review_records": classification_review,
+        "classification_review_ratio": round(classification_review_ratio, 4),
+        "corpus_ready_records": corpus_ready,
+        "corpus_ready_ratio": round(corpus_ready_ratio, 4),
+        "corpus_review_required_records": corpus_review_required,
+        "corpus_review_required_ratio": round(corpus_review_required_ratio, 4),
+        "recovered_quality_review_records": recovered_quality_review,
+        "recovered_quality_review_ratio": round(recovered_quality_review_ratio, 4),
+    }
     return {
-        "decision": "READY_FOR_LARGER_PILOT" if all(gates.values()) else "REVIEW_AND_REPEAT",
-        "gates": gates,
-        "metrics": {
-            "records": total,
-            "hard_failures": hard_failures,
-            "hard_failure_ratio": round(hard_failure_ratio, 4),
-            "content_or_pdf": content_available,
-            "content_or_pdf_ratio": round(content_available_ratio, 4),
-            "missing_official_group": missing_group,
-            "missing_official_group_ratio": round(missing_group_ratio, 4),
-            "duplicate_content_records": duplicate_content,
-            "duplicate_content_ratio": round(duplicate_ratio, 4),
-            "classification_review_records": classification_review,
-            "classification_review_ratio": round(classification_review_ratio, 4),
+        "decision": technical_decision,
+        "gates": technical_gates,
+        "metrics": metrics,
+        "technical_readiness": {
+            "decision": technical_decision,
+            "gates": technical_gates,
+            "metrics": metrics,
         },
+        "corpus_readiness": {
+            "decision": corpus_decision,
+            "gates": corpus_gates,
+            "metrics": {
+                "records": total,
+                "content_or_pdf": content_available,
+                "content_or_pdf_ratio": round(content_available_ratio, 4),
+                "corpus_ready_records": corpus_ready,
+                "corpus_ready_ratio": round(corpus_ready_ratio, 4),
+                "corpus_review_required_records": corpus_review_required,
+                "corpus_review_required_ratio": round(corpus_review_required_ratio, 4),
+                "recovered_quality_review_records": recovered_quality_review,
+                "recovered_quality_review_ratio": round(recovered_quality_review_ratio, 4),
+            },
+        },
+    }
+
+
+def _fallback_recovery_metrics(records: list[dict[str, Any]]) -> dict[str, Any]:
+    recovered = [row for row in records if "CONTENT_RECOVERED_FROM_PDF" in (row.get("warnings") or [])]
+    recovered_ocr = [row for row in records if "CONTENT_RECOVERED_BY_OCR_REVIEW_RECOMMENDED" in (row.get("warnings") or [])]
+    fetch_failed = [row for row in records if "PDF_FETCH_FAILED" in (row.get("warnings") or [])]
+    insufficient = [row for row in records if "PDF_EXTRACTION_INSUFFICIENT" in (row.get("warnings") or [])]
+    return {
+        "recovered_from_pdf": len(recovered),
+        "recovered_by_ocr": len(recovered_ocr),
+        "pdf_fetch_failed": len(fetch_failed),
+        "pdf_extraction_insufficient": len(insufficient),
+        "recovered_document_ids": [str(row.get("document_id")) for row in recovered],
+        "ocr_recovered_document_ids": [str(row.get("document_id")) for row in recovered_ocr],
     }
 
 
@@ -245,6 +362,7 @@ def build_report(
 ) -> dict[str, Any]:
     lengths = [row["content_chars"] for row in records if row["content_chars"] > 0]
     evaluation = evaluate(records, requested, stopped_early)
+    fallback_metrics = _fallback_recovery_metrics(records)
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "pilot": {
@@ -275,6 +393,7 @@ def build_report(
             "max": max(lengths) if lengths else 0,
         },
         "evaluation": evaluation,
+        "fallback": fallback_metrics,
         "limits": [
             "This pilot is stratified and deterministic, not a simple random sample.",
             "Observed groups come from JSON-LD; official groups/forms come from VBPL detail metadata.",
@@ -288,22 +407,35 @@ def build_report(
 def report_markdown(report: dict[str, Any]) -> str:
     pilot = report["pilot"]
     evaluation = report["evaluation"]
+    technical = evaluation.get("technical_readiness", evaluation)
+    corpus = evaluation.get("corpus_readiness", {})
     lines = [
         "# VBPL controlled full-text pilot",
         "",
-        f"- Decision: **{evaluation['decision']}**",
+        f"- Technical retrieval decision: **{technical['decision']}**",
+        f"- Corpus readiness decision: **{corpus.get('decision', 'UNKNOWN')}**",
         f"- Completed: **{pilot['completed']}/{pilot['requested']}**",
         f"- Stopped early: **{pilot['stopped_early']}**",
         "- Sampling: central/local + identifier family + observed document group",
         "",
-        "## Quality gates",
+        "## Technical quality gates",
         "",
         "| Gate | Passed |",
         "|---|---:|",
     ]
-    lines.extend(f"| `{key}` | {value} |" for key, value in evaluation["gates"].items())
-    lines.extend(["", "## Metrics", "", "| Metric | Value |", "|---|---:|"])
-    lines.extend(f"| `{key}` | {value} |" for key, value in evaluation["metrics"].items())
+    lines.extend(f"| `{key}` | {value} |" for key, value in technical["gates"].items())
+    lines.extend(["", "## Technical metrics", "", "| Metric | Value |", "|---|---:|"])
+    lines.extend(f"| `{key}` | {value} |" for key, value in technical["metrics"].items())
+    if corpus:
+        lines.extend(["", "## Corpus readiness gates", "", "| Gate | Passed |", "|---|---:|"])
+        lines.extend(f"| `{key}` | {value} |" for key, value in corpus["gates"].items())
+        lines.extend(["", "## Corpus readiness metrics", "", "| Metric | Value |", "|---|---:|"])
+        lines.extend(f"| `{key}` | {value} |" for key, value in corpus["metrics"].items())
+    fallback = report.get("fallback") or {}
+    if fallback:
+        lines.extend(["", "## PDF/OCR fallback", "", "| Metric | Value |", "|---|---:|"])
+        for key in ("recovered_from_pdf", "recovered_by_ocr", "pdf_fetch_failed", "pdf_extraction_insufficient"):
+            lines.append(f"| `{key}` | {fallback.get(key, 0)} |")
     for title, key in (
         ("Status", "by_status"),
         ("Scope", "by_scope"),
@@ -320,17 +452,26 @@ def report_markdown(report: dict[str, Any]) -> str:
     lines.extend(["", "## Limits", ""])
     lines.extend(f"- {item}" for item in report["limits"])
     lines.extend(["", "## Recommended next step", ""])
-    if evaluation["decision"] == "READY_FOR_LARGER_PILOT":
+    if technical["decision"] != "READY_FOR_LARGER_PILOT":
+        lines.append("- Fix failed technical retrieval gates and repeat the 120-document pilot before increasing load.")
+    elif corpus.get("decision") != "READY_FOR_PHASE_3":
         lines.extend(
             [
-                "- Implement and test PDF text extraction/OCR for non-valid HTML records.",
-                "- Review records with classification warnings; do not silently force a group.",
-                "- Then run a larger 500–1,000 document pilot with the same gates.",
-                "- Do not start a full-sitemap crawl from this result alone.",
+                "- Keep Phase 2 open: review and repair recovered records flagged for OCR or encoding quality.",
+                "- Do not treat recovered HTML_VALID records as corpus-ready until corpus review warnings return to zero.",
+                "- Rebuild the pilot report after fixes, then re-evaluate Phase 3 entry criteria.",
+                "- Do not start a 500–1,000 document pilot or full-sitemap crawl from this report alone.",
             ]
         )
     else:
-        lines.append("- Fix failed gates and repeat the 120-document pilot before increasing load.")
+        lines.extend(
+            [
+                "- Technical retrieval and corpus readiness gates passed on this pilot.",
+                "- Run a larger 500–1,000 document pilot with the same gates and evidence capture.",
+                "- Keep contract verification, checkpointing and rate limits enabled.",
+                "- Do not start a full-sitemap crawl from this result alone.",
+            ]
+        )
     lines.append("")
     return "\n".join(lines)
 
@@ -357,6 +498,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--sample-size", type=int, default=120)
     parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=None,
+        help="Authoritative existing manifest. Replays its exact rows without resampling.",
+    )
+    parser.add_argument(
         "--contract", type=Path, default=root / "config" / "vbpl_action_contract.json"
     )
     parser.add_argument(
@@ -365,13 +512,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--delay", type=float, default=0.75)
     parser.add_argument("--timeout", type=float, default=90.0)
     parser.add_argument("--retries", type=int, default=2)
+    parser.add_argument("--enable-pdf-fallback", action="store_true")
+    parser.add_argument("--disable-ocr", action="store_true")
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
-    source_rows = read_jsonl(args.input)
-    selected = stratified_sample(source_rows, args.sample_size)
+    if args.manifest:
+        source_rows = [normalize_manifest_row(row) for row in read_jsonl(args.manifest)]
+        selected = source_rows
+    else:
+        source_rows = [normalize_manifest_row(row) for row in read_jsonl(args.input)]
+        selected = stratified_sample(source_rows, args.sample_size)
+
+    if not selected:
+        raise SystemExit("No pilot rows selected; check --manifest or --input.")
+    if len({str(row.get("document_id")) for row in selected}) != len(selected):
+        raise SystemExit("Manifest contains duplicate document_id values; refusing ambiguous resume state.")
+
     args.output.mkdir(parents=True, exist_ok=True)
     manifest_path = args.output / "sample_manifest.jsonl"
     checkpoint_path = args.output / "checkpoint.jsonl"
@@ -391,7 +550,11 @@ def main() -> int:
     client = NextActionClient(
         contract, delay=args.delay, timeout=args.timeout, retries=args.retries
     )
-    adapter = VBPLContentAdapter(client)
+    adapter = VBPLContentAdapter(
+        client,
+        pdf_extractor=PDFExtractor(enable_ocr=not args.disable_ocr),
+        enable_pdf_fallback=args.enable_pdf_fallback,
+    )
     stopped_early = False
     with checkpoint_path.open("a", encoding="utf-8") as stream:
         for index, source in enumerate(selected, start=1):
