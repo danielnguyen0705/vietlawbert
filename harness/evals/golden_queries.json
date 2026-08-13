@@ -1,0 +1,9 @@
+[
+  {
+    "id": "synthetic-001",
+    "question": "Văn bản mẫu quy định gì về kiểm tra chất lượng dữ liệu pháp luật?",
+    "expected_document_id": "sample-002",
+    "expected_article": "Điều 1",
+    "notes": "Synthetic example only; không phải số liệu benchmark hiện tại."
+  }
+]
