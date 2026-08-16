@@ -78,7 +78,7 @@ Thành công. Hệ thống đồng nhất 211 chunks trên cả Milvus và Neo4j
 
 ### 4.4. Quyết định readiness
 
-- **Crawler nội dung pilot 100:** sẵn sàng chạy theo `docs/pilot_100_runbook.md`; pagination và giới hạn item đã được kiểm chứng thật.
+- **Crawler nội dung pilot 100:** sẵn sàng chạy theo `docs/guides/pilot_100_runbook.md`; pagination và giới hạn item đã được kiểm chứng thật.
 - **Ontology/diagram pilot 100:** chưa pass. Pilot 100 phải dùng để thống kê các mã quan hệ, xác minh mapping rồi crawl/ingest lại trước full crawl.
 - **Consumer pilot 100:** sẵn sàng về tính đúng/idempotency; CPU INT8 dùng được cho pilot nhưng cần chấp nhận thời gian hàng chục phút.
 - **Full crawl + full embedding:** chưa được phép mở. Cần pilot 100 pass toàn bộ quality gate, giải quyết record thiếu HTML bằng PDF/OCR và chuyển embedding sang GPU/service có throughput phù hợp.

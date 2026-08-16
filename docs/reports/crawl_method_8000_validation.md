@@ -103,4 +103,4 @@ sau envelope còn 541.757 byte; trung bình 13.625 byte và không có message v
 
 Bằng chứng máy đọc nằm tại
 `law_dataset/artifacts/full_crawl_v5/pipeline_8000_gate.json`; quy trình tái lập nằm trong
-`docs/ubuntu_to_full_crawl_guide.md`.
+`docs/guides/ubuntu_to_full_crawl.md`.

@@ -208,7 +208,7 @@ Các điểm sau đã hiện diện thật trong code/harness:
 - `pilot_crawl_vbpl.py` hiện chưa ghi `manual_corpus_review` vào record output.
 - Chưa thấy field `pdf_page_count` hoặc page-count evidence trong record/report của pilot hiện tại, trong khi guide Phase 3 yêu cầu so sánh page count cho blocked rerun.
 - Chưa có artifact Phase 3 riêng cho rerun ba blocked record.
-- Chưa có `docs/phase3_blocked_records_rerun_20260813.md`.
+- Chưa có `docs/archive/phase3_blocked_records_rerun_20260813.md`.
 - Chưa có benchmark manifest 30 record của Phase 3.
 - Chưa có benchmark candidate Crawlee/Scrapling theo vai trò tách biệt.
 
@@ -235,4 +235,4 @@ Bước tiếp theo đúng thứ tự guide:
 1. tạo exact manifest chỉ gồm `133328`, `138353`, `68560` từ artifact pilot hiện hữu;
 2. rerun bằng adapter hiện tại vào thư mục mới `law_dataset/artifacts/vbpl_phase3_blocked_rerun_20260813/`;
 3. rebuild `report.json` và `REPORT.md` mới;
-4. viết `docs/phase3_blocked_records_rerun_20260813.md` với so sánh method, content length, metrics, warnings, corpus decision, và evidence pack cho `133328`.
+4. viết `docs/archive/phase3_blocked_records_rerun_20260813.md` với so sánh method, content length, metrics, warnings, corpus decision, và evidence pack cho `133328`.
