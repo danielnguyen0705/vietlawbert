@@ -194,7 +194,7 @@ def load_consumer_with_stubs():
 
     module_name = "consumer_stabilization_test_target"
     spec = importlib.util.spec_from_file_location(
-        module_name, SRC / "streaming" / "consumer.py"
+        module_name, SRC / "ingestion" / "embedding_consumer.py"
     )
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module

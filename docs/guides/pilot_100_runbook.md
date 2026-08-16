@@ -77,7 +77,8 @@ export EMBED_DEVICE=cpu
 export EMBED_BATCH_SIZE=16
 export EMBED_CPU_INT8=1
 
-python law_dataset/src/streaming/consumer.py --idle-exit-seconds 30
+cd law_dataset/src
+python -m ingestion.embedding_consumer --idle-exit-seconds 30
 ```
 
 Production phải dùng GPU hoặc OpenAI-compatible endpoint trả đúng vector 1024 chiều:
