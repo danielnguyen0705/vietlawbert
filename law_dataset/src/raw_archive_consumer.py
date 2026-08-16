@@ -11,7 +11,7 @@ import time
 from confluent_kafka import Consumer
 from neo4j import GraphDatabase
 
-from pipeline_artifacts import decode_kafka_envelope
+from artifacts.canonical import decode_kafka_envelope
 
 
 def write_batch(session, rows):

@@ -10,8 +10,8 @@ from pathlib import Path
 from confluent_kafka import Producer
 from confluent_kafka.admin import AdminClient, NewTopic
 
-from audit_pilot import read_jsonl
-from pipeline_artifacts import artifact_manifest, canonical_artifacts, encode_kafka_envelope
+from quality.crawl_audit import read_jsonl
+from artifacts.canonical import artifact_manifest, canonical_artifacts, encode_kafka_envelope
 from run_crawl_shards import write_json_atomic
 
 

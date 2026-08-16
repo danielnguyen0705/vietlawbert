@@ -9,8 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from audit_pilot import audit_crawl, read_jsonl
-from merge_crawl_artifacts import merge_records, write_jsonl
+from quality.crawl_audit import audit_crawl, read_jsonl
+from artifacts.merge import merge_records, write_jsonl
 from run_crawl_shards import write_json_atomic
 
 

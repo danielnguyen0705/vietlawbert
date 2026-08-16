@@ -11,7 +11,7 @@ from pathlib import Path
 from confluent_kafka import Consumer, TopicPartition
 from neo4j import GraphDatabase
 
-from pipeline_artifacts import artifact_manifest, canonical_artifacts, decode_kafka_envelope, payload_hash
+from artifacts.canonical import artifact_manifest, canonical_artifacts, decode_kafka_envelope, payload_hash
 from run_crawl_shards import write_json_atomic
 
 

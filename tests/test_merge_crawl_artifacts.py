@@ -6,11 +6,11 @@ from pathlib import Path
 SRC = Path(__file__).parents[1] / "law_dataset" / "src"
 sys.path.insert(0, str(SRC))
 
-from merge_crawl_artifacts import merge_records, read_jsonl, write_jsonl
-from audit_pilot import audit_crawl
+from artifacts.merge import merge_records, read_jsonl, write_jsonl
+from quality.crawl_audit import audit_crawl
 from run_crawl_shards import build_shards, write_content_quarantine
 from run_ocr_quarantine import base_artifact_for, pending_ids, rescued_artifact_for
-from pipeline_artifacts import (
+from artifacts.canonical import (
     artifact_manifest,
     canonical_artifacts,
     decode_kafka_envelope,

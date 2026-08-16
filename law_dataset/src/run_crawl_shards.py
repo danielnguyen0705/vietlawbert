@@ -13,7 +13,7 @@ import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from audit_pilot import audit_crawl, read_jsonl
+from quality.crawl_audit import audit_crawl, read_jsonl
 
 
 @dataclass(frozen=True)

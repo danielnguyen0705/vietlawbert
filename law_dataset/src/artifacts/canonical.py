@@ -8,7 +8,7 @@ import gzip
 import json
 from pathlib import Path
 
-from audit_pilot import read_jsonl
+from quality.crawl_audit import read_jsonl
 
 
 def canonical_artifacts(input_dir: Path, expected_shards: int | None = None) -> list[Path]:
