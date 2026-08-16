@@ -9,3 +9,8 @@ __pycache__/
 *.log
 *.html
 .git/
+artifacts/
+law_dataset/artifacts/
+law_dataset/logs/
+law_dataset/cookies/
+**/.cache/

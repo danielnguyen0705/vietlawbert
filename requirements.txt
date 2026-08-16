@@ -2,10 +2,12 @@
 # 1. CRAWLING & WEB SCRAPING (Lấy dữ liệu)
 # ==========================================
 scrapy
+scrapy-playwright
 requests
 beautifulsoup4
 html2text
 lxml
+playwright
 
 # ==========================================
 # 2. DATA PROCESSING & UTILS (Xử lý dữ liệu)
@@ -26,8 +28,8 @@ confluent-kafka
 # ==========================================
 # 4. AI, LLM & EMBEDDINGS (Core VietLawBERT)
 # ==========================================
-# Cài torch qua extra-index để lấy bản CUDA 12.1
---extra-index-url https://download.pytorch.org/whl/cu121
+# Dockerfile cài wheel CPU trước. Nếu chạy training GPU trực tiếp trên host,
+# cài bộ PyTorch phù hợp driver/CUDA của host trước khi cài file này.
 torch
 torchvision
 torchaudio

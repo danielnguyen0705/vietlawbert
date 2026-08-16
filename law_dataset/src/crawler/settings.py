@@ -8,7 +8,7 @@ SPIDER_MODULES = ['crawler.spiders']
 NEWSPIDER_MODULE = 'crawler.spiders'
 
 # FIX: Phải để False vì web nhà nước chặn Bot rất gắt
-ROBOTSTXT_OBEY = False 
+ROBOTSTXT_OBEY = False
 
 # FIX: Giả lập trình duyệt người thật
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
@@ -18,11 +18,11 @@ USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 # ==========================================
 
 # Ép nhện đi hàng một để server không bị quá tải
-CONCURRENT_REQUESTS = 1
-CONCURRENT_REQUESTS_PER_DOMAIN = 1
+CONCURRENT_REQUESTS = 8
+CONCURRENT_REQUESTS_PER_DOMAIN = 8
 
 # Tăng thời gian nghỉ (3 giây) và cho phép ngẫu nhiên để giống người thật hơn
-DOWNLOAD_DELAY = 3.0
+DOWNLOAD_DELAY = 0.1
 RANDOMIZE_DOWNLOAD_DELAY = True
 
 # Bật AutoThrottle: Scrapy sẽ tự "nhìn sắc mặt" server để chỉnh tốc độ
@@ -37,13 +37,13 @@ AUTOTHROTTLE_TARGET_CONCURRENCY = 1.0
 # ==========================================
 
 # [THÊM MỚI] Trị bệnh "chết lâm sàng": Quá 30s server không rep là cắt luôn, báo lỗi rồi đi tiếp!
-DOWNLOAD_TIMEOUT = 30  
+DOWNLOAD_TIMEOUT = 30
 
 # [THÊM MỚI] Nới rộng hồ chứa luồng xử lý ngầm để Pipeline không bị nghẽn lúc ghi file JSONL
 REACTOR_THREADPOOL_MAXSIZE = 20
 
 # [ĐIỀU CHỈNH] Giảm số lần thử lại xuống 3. (Nếu để 5 lần x 30s timeout = kẹt 2.5 phút/link là quá lâu)
-RETRY_TIMES = 3 
+RETRY_TIMES = 3
 # Chỉ định rõ các mã lỗi cần thử lại (Đặc trị lỗi 500)
 RETRY_HTTP_CODES = [500, 502, 503, 504, 522, 524, 408, 429]
 
@@ -63,12 +63,37 @@ ITEM_PIPELINES = {
 # CẤU HÌNH GHI LOG CHO SCRAPY (HỘP ĐEN)
 # ==========================================
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-LOG_DIR = os.path.join(BASE_DIR, "logs", datetime.now().strftime("%Y-%m-%d"))
+LOG_DIR = os.path.expanduser("~/.cache/vietlawbert/logs") if os.name == "posix" else os.path.join(BASE_DIR, "logs", datetime.now().strftime("%Y-%m-%d"))
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, "log_crawler.log")
 LOG_FILE_APPEND = False
 
 # [ĐIỀU CHỈNH] Đổi từ DEBUG sang INFO để file log sạch sẽ, dễ đọc, chỉ hiển thị thông báo chính
-LOG_LEVEL = 'INFO' 
+LOG_LEVEL = 'INFO'
+LOG_STDOUT = True
+LOG_FILE = None
 
 logging.getLogger('urllib3').setLevel(logging.WARNING)
+# ==========================================
+# CẤU HÌNH SCRAPY-PLAYWRIGHT
+# ==========================================
+DOWNLOAD_HANDLERS = {
+    "https": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
+}
+
+TWISTED_REACTOR = "twisted.internet.asyncioreactor.AsyncioSelectorReactor"
+
+PLAYWRIGHT_PROCESS_REQUEST_HEADERS = None
+PLAYWRIGHT_CONTEXTS = {
+    "vbpl": {
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+        "viewport": {"width": 1920, "height": 1080},
+        "locale": "vi-VN",
+        "timezone_id": "Asia/Ho_Chi_Minh",
+        "bypass_csp": True,
+    },
+}
+PLAYWRIGHT_LAUNCH_OPTIONS = {
+    "headless": True,
+    "timeout": 20 * 1000,
+}

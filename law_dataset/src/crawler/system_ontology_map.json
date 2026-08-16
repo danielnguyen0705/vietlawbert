@@ -1,72 +1,42 @@
 {
-    "documentNamesByType": {
-        "1": "CAN_CO_BAN_HANH",
-        "2": "VAN_BAN_DUOC_THAY_THE",
-        "3": "VAN_BAN_SUA_DOI_BO_SUNG",
-        "4": "VAN_BAN_BI_BAI_BO",
-        "5": "VAN_BAN_DAN_CHIEU",
-        "6": "VAN_BAN_QUY_DINH_CHI_TIET_HUONG_DAN",
-        "7": "VAN_BAN_AP_DUNG",
-        "8": "VAN_BAN_THAY_THE"
-    },
-    "documentNamesBySource": {
-        "canCu": "CAN_CO_BAN_HANH",
-        "thayThe": "VAN_BAN_THAY_THE",
-        "duocThayThe": "VAN_BAN_DUOC_THAY_THE",
-        "suaDoiBoSung": "VAN_BAN_SUA_DOI_BO_SUNG",
-        "biBaiBoHuyBo": "VAN_BAN_BI_BAI_BO",
-        "danChieu": "VAN_BAN_DAN_CHIEU",
-        "quyDinhChiTietHuongDan": "VAN_BAN_QUY_DINH_CHI_TIET_HUONG_DAN",
-        "apDung": "VAN_BAN_AP_DUNG",
-        "hietLuc": "VAN_BAN_BI_BAI_BO"
-    },
-    "relationship_templates": {
-        "CAN_CO_BAN_HANH": {
-            "direction": "OUTGOING",
-            "graph_layer": "Hierarchical"
-        },
-        "VAN_BAN_THAY_THE": {
-            "direction": "OUTGOING",
-            "graph_layer": "Temporal"
-        },
-        "VAN_BAN_DUOC_THAY_THE": {
-            "direction": "INCOMING",
-            "graph_layer": "Temporal"
-        },
-        "VAN_BAN_SUA_DOI_BO_SUNG": {
-            "direction": "OUTGOING",
-            "graph_layer": "Temporal"
-        },
-        "VAN_BAN_BI_BAI_BO": {
-            "direction": "OUTGOING",
-            "graph_layer": "Temporal"
-        },
-        "VAN_BAN_DAN_CHIEU": {
-            "direction": "OUTGOING",
-            "graph_layer": "Operational"
-        },
-        "VAN_BAN_QUY_DINH_CHI_TIET_HUONG_DAN": {
-            "direction": "INCOMING",
-            "graph_layer": "Hierarchical"
-        },
-        "VAN_BAN_AP_DUNG": {
-            "direction": "OUTGOING",
-            "graph_layer": "Operational"
-        }
-    },
-    "dynamic_keys": {
-        "documentNamesBySource:3": "REL_TYPE_3",
-        "documentNamesByType:12": "4_SUA_OI_BO_SUNG_IEM_D_KHOAN_2_IEU_4_NGHI_INH_SO_115_2024_N_CP_NGAY_16_THANG_9_NAM_2024_CUA_CHINH_PHU_QUY_INH_CHI_TIET_MOT_SO_IEU_VA_BIEN_PHAP_THI_HANH_LUAT_AU_THAU_VE_LUA_CHON_NHA_AU_TU_THUC_HIEN_DU_AN_CO_SU_DUNG_AT_NHU_SAU",
-        "documentNamesBySource:1": "REL_TYPE_1",
-        "documentNamesBySource:4": "REL_TYPE_4",
-        "documentNamesBySource:10": "REL_TYPE_10",
-        "documentNamesBySource:8": "REL_TYPE_8",
-        "documentNamesBySource:9": "REL_TYPE_9",
-        "documentNamesBySource:12": "REL_TYPE_12",
-        "documentNamesByType:9": "REL_TYPE_9",
-        "documentNamesByType:10": "REL_TYPE_10",
-        "documentNamesBySource:7": "REL_TYPE_7",
-        "documentNamesBySource:5": "REL_TYPE_5",
-        "documentNamesBySource:2": "REL_TYPE_2"
-    }
+  "documentNamesByType": {
+    "1": "BAI_BO", "2": "BAN_DICH", "3": "CAN_CU_BAN_HANH",
+    "4": "DAN_CHIEU", "5": "DINH_CHI_THI_HANH", "6": "DINH_CHINH",
+    "7": "HOP_NHAT", "8": "HUONG_DAN_AP_DUNG",
+    "9": "QUY_DINH_CHI_TIET_HUONG_DAN", "10": "SUA_DOI_BO_SUNG",
+    "11": "TAM_NGUNG_HIEU_LUC", "12": "THAY_THE", "13": "BO_SUNG",
+    "14": "GIAI_THICH", "15": "CONG_BO"
+  },
+  "documentNamesBySource": {
+    "1": "BAI_BO", "2": "BAN_DICH", "3": "CAN_CU_BAN_HANH",
+    "4": "DAN_CHIEU", "5": "DINH_CHI_THI_HANH", "6": "DINH_CHINH",
+    "7": "HOP_NHAT", "8": "HUONG_DAN_AP_DUNG",
+    "9": "QUY_DINH_CHI_TIET_HUONG_DAN", "10": "SUA_DOI_BO_SUNG",
+    "11": "TAM_NGUNG_HIEU_LUC", "12": "THAY_THE", "13": "BO_SUNG",
+    "14": "GIAI_THICH", "15": "CONG_BO"
+  },
+  "relationship_templates": {
+    "BAI_BO": {"graph_layer": "Temporal"},
+    "BAN_DICH": {"graph_layer": "Operational"},
+    "CAN_CU_BAN_HANH": {"graph_layer": "Hierarchical"},
+    "DAN_CHIEU": {"graph_layer": "Operational"},
+    "DINH_CHI_THI_HANH": {"graph_layer": "Temporal"},
+    "DINH_CHINH": {"graph_layer": "Temporal"},
+    "HOP_NHAT": {"graph_layer": "Temporal"},
+    "HUONG_DAN_AP_DUNG": {"graph_layer": "Hierarchical"},
+    "QUY_DINH_CHI_TIET_HUONG_DAN": {"graph_layer": "Hierarchical"},
+    "SUA_DOI_BO_SUNG": {"graph_layer": "Temporal"},
+    "TAM_NGUNG_HIEU_LUC": {"graph_layer": "Temporal"},
+    "THAY_THE": {"graph_layer": "Temporal"},
+    "BO_SUNG": {"graph_layer": "Temporal"},
+    "GIAI_THICH": {"graph_layer": "Hierarchical"},
+    "CONG_BO": {"graph_layer": "Operational"}
+  },
+  "source_evidence": {
+    "url": "https://vbpl.vn/_next/static/chunks/3824-a707face93b2bef1.js",
+    "module": "50033",
+    "verified_at": "2026-08-16",
+    "note": "Official VBPL frontend enum N8 and Vietnamese label map aB. documentNamesByType is outgoing; documentNamesBySource is incoming."
+  },
+  "dynamic_keys": {}
 }

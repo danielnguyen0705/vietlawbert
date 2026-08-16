@@ -6,16 +6,16 @@ Bỏ qua JSONL trung gian, sử dụng Bulk Insert trực tiếp để tối ưu
 import json
 import logging
 import os
+import signal
 import sys
-from confluent_kafka import Consumer, KafkaError
+import time
+from confluent_kafka import Consumer, KafkaError, TopicPartition
 
 # Đảm bảo PYTHONPATH đúng
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from config import config
 from preprocess.legal_chunker import chunk_legal_document
 from preprocess.text_cleaner import clean_boilerplate, extract_doc_type, extract_doc_number, extract_effective_date
-from preprocess.contextualizer import build_prompt, call_ollama
 from database.milvus_client import load_encoder, encode_texts, setup_milvus
 from database.neo4j_client import Neo4jManager
 
@@ -24,20 +24,27 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | [%(levelname)s] | 
 logger = logging.getLogger("KafkaConsumer")
 
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9092")
+KAFKA_GROUP_ID = os.getenv("KAFKA_GROUP_ID", "vietlawbert-consumers-v5-bounded")
+KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "law-documents-v5")
+MILVUS_COLLECTION = os.getenv("MILVUS_COLLECTION", "vietlaw_chunks")
 
 
 class LawEventConsumer:
-    BATCH_SIZE = 200
+    DOC_COMMIT_BATCH_SIZE = int(os.getenv("CONSUMER_DOC_BATCH_SIZE", "10"))
+    CHUNK_WRITE_BATCH_SIZE = int(os.getenv("CONSUMER_CHUNK_BATCH_SIZE", "64"))
+    FLUSH_INTERVAL_SECONDS = float(os.getenv("CONSUMER_FLUSH_INTERVAL_SECONDS", "5"))
 
-    def __init__(self, bootstrap_servers=KAFKA_BROKER):
+    def __init__(self, bootstrap_servers=KAFKA_BROKER, group_id=KAFKA_GROUP_ID):
         conf = {
             'bootstrap.servers': bootstrap_servers,
-            'group.id': "vietlawbert-consumers",
+            'group.id': group_id,
+            'session.timeout.ms': 60000,
             'auto.offset.reset': 'earliest',
-            'max.poll.interval.ms': 600000
+            'enable.auto.commit': False,
+            'max.poll.interval.ms': int(os.getenv("KAFKA_MAX_POLL_INTERVAL_MS", "1800000")),
         }
         self.consumer = Consumer(conf)
-        self.topic = "law-documents"
+        self.topic = KAFKA_TOPIC
         self.consumer.subscribe([self.topic])
 
         self.tokenizer, self.model = load_encoder()
@@ -48,18 +55,24 @@ class LawEventConsumer:
         self.pending_milvus_texts = []
         self.pending_neo_batch = []
         self.pending_relations_batch = []
+        self.pending_messages = []
+        self.last_flush_at = time.monotonic()
+        self.documents_processed = 0
+        self.chunks_written = 0
 
-    def process_message(self, data):
-        try:
-            if "chunk_id" in data and "contextualized_text" in data:
-                self._process_chunk_record(data)
-            else:
-                self._process_raw_document(data)
+    def process_message(self, msg, data):
+        if "chunk_id" in data and "contextualized_text" in data:
+            self._process_chunk_record(data)
+        else:
+            self._process_raw_document(data)
 
-            if len(self.pending_milvus_rows) >= self.BATCH_SIZE:
-                self._flush_batch()
-        except Exception as e:
-            logger.error(f"Lỗi xử lý tin nhắn: {e}")
+        # Chỉ đánh dấu message hoàn tất sau khi parse/chunk không phát sinh lỗi.
+        # Nếu có exception, process dừng để lần chạy sau replay từ offset đã commit.
+        self.pending_messages.append(msg)
+        self.documents_processed += 1
+
+        if len(self.pending_messages) >= self.DOC_COMMIT_BATCH_SIZE:
+            self._flush_batch()
 
     def _process_chunk_record(self, data):
         chunk_id = data["chunk_id"]
@@ -96,6 +109,7 @@ class LawEventConsumer:
             "chuong": hierarchy.get("chương") or "Chương N/A",
             "dieu": hierarchy.get("điều") or "Điều N/A"
         })
+        self._flush_chunks_if_full()
 
     def _process_raw_document(self, data):
         item_id = data.get("item_id", "")
@@ -106,6 +120,7 @@ class LawEventConsumer:
         logger.info(f"[DOC] {doc_number} (ID: {item_id})")
 
         if not html_raw:
+            logger.warning(f"[DOC] {doc_number} (ID: {item_id}) khong co HTML, bo qua.")
             return
 
         from bs4 import BeautifulSoup
@@ -135,9 +150,8 @@ class LawEventConsumer:
             if len(chunk.text.strip()) < 50:
                 continue
 
-            prompt = build_prompt(chunk, doc_num, doc_type, effective_date)
-            context = call_ollama(prompt, max_tokens=150)
-            contextualized_text = f"Context: {context}\n\nContent:\n{chunk.text}" if context else chunk.text
+            # Bỏ sinh context bằng LLM để tăng tốc độ (chỉ dùng LLM cho OCR PDF sau này)
+            contextualized_text = chunk.text
 
             hierarchy_dict = chunk.hierarchy.to_dict()
             row = {
@@ -162,6 +176,7 @@ class LawEventConsumer:
                 "chuong": hierarchy_dict.get("chương") or "Chương N/A",
                 "dieu": hierarchy_dict.get("điều") or "Điều N/A"
             })
+            self._flush_chunks_if_full()
 
         if data.get("relationships"):
             self.pending_relations_batch.append({
@@ -171,53 +186,147 @@ class LawEventConsumer:
                 "relationships": data["relationships"],
             })
 
-    def _flush_batch(self):
+    def _flush_chunks_if_full(self):
+        if len(self.pending_milvus_rows) >= self.CHUNK_WRITE_BATCH_SIZE:
+            self._flush_chunk_storage(self.CHUNK_WRITE_BATCH_SIZE)
+
+    def _flush_chunk_storage(self, count=None):
         if not self.pending_milvus_rows:
             return
 
-        try:
-            vectors = encode_texts(self.tokenizer, self.model, self.pending_milvus_texts)
-            milvus_data = []
-            for row, vec in zip(self.pending_milvus_rows, vectors):
-                row["embedding"] = vec
-                milvus_data.append(row)
-            self.milvus_client.insert(collection_name="vietlaw_chunks", data=milvus_data)
-            logger.info(f"[BULK MILVUS] Đã nạp {len(milvus_data)} chunks.")
+        count = min(count or len(self.pending_milvus_rows), len(self.pending_milvus_rows))
+        rows = self.pending_milvus_rows[:count]
+        texts = self.pending_milvus_texts[:count]
+        neo_rows = self.pending_neo_batch[:count]
+        started_at = time.monotonic()
 
-            self.neo_manager._insert_structural_batch(self.pending_neo_batch)
-            logger.info(f"[BULK NEO4J] Đã nạp {len(self.pending_neo_batch)} nodes.")
+        vectors = encode_texts(self.tokenizer, self.model, texts)
+        milvus_data = []
+        for row, vec in zip(rows, vectors):
+            milvus_data.append({**row, "embedding": vec})
+
+        # Hai thao tác đều idempotent. Nếu Neo4j lỗi sau Milvus, replay/upsert là an toàn.
+        self.milvus_client.upsert(collection_name=MILVUS_COLLECTION, data=milvus_data)
+        self.neo_manager._insert_structural_batch(neo_rows)
+
+        del self.pending_milvus_rows[:count]
+        del self.pending_milvus_texts[:count]
+        del self.pending_neo_batch[:count]
+        self.chunks_written += count
+        elapsed = time.monotonic() - started_at
+        logger.info(
+            "[CHUNK BATCH] Đã upsert %d chunks trong %.2fs (%.2f chunks/s, tổng=%d).",
+            count,
+            elapsed,
+            count / elapsed if elapsed else 0.0,
+            self.chunks_written,
+        )
+
+    def _commit_pending_messages(self):
+        if not self.pending_messages:
+            return
+        highest_offsets = {}
+        for message in self.pending_messages:
+            key = (message.topic(), message.partition())
+            highest_offsets[key] = max(highest_offsets.get(key, -1), message.offset() + 1)
+        offsets = [
+            TopicPartition(topic, partition, offset)
+            for (topic, partition), offset in highest_offsets.items()
+        ]
+        self.consumer.commit(offsets=offsets, asynchronous=False)
+        logger.info(
+            "[KAFKA COMMIT] Đã commit %d message trên %d partition.",
+            len(self.pending_messages),
+            len(offsets),
+        )
+
+    def _flush_batch(self):
+        if not self.pending_milvus_rows and not self.pending_neo_batch and not self.pending_relations_batch:
+            if self.pending_messages:
+                self._commit_pending_messages()
+                self.pending_messages = []
+                self.last_flush_at = time.monotonic()
+            return
+
+        try:
+            while self.pending_milvus_rows:
+                self._flush_chunk_storage(self.CHUNK_WRITE_BATCH_SIZE)
 
             if self.pending_relations_batch:
                 self.neo_manager.insert_semantic_relations_batch(self.pending_relations_batch)
                 logger.info(f"[BULK RELATIONS] Đã nạp {len(self.pending_relations_batch)} semantic relations.")
 
-        except Exception as e:
-            logger.error(f"[BULK INSERT ERROR] {e}")
-        finally:
+            # CHỈ COMMIT KHI CẢ MILVUS VÀ NEO4J ĐÃ THÀNH CÔNG HÀN HOÀN
+            if self.pending_messages:
+                self._commit_pending_messages()
+
+        except Exception:
+            logger.exception("[BULK INSERT ERROR]")
+            raise
+        else:
             self.pending_milvus_rows = []
             self.pending_milvus_texts = []
             self.pending_neo_batch = []
             self.pending_relations_batch = []
+            self.pending_messages = []
+            self.last_flush_at = time.monotonic()
 
-    def run(self):
+    def run(self, idle_exit_seconds=0):
         logger.info("Kafka Consumer đang chờ tin nhắn...")
+        idle_started_at = None
+        stop_requested = False
+
+        def request_stop(signum, frame):
+            nonlocal stop_requested
+            stop_requested = True
+            logger.info("[SHUTDOWN] Nhận signal %s; sẽ dừng sau record hiện tại.", signum)
+
+        previous_sigint = signal.signal(signal.SIGINT, request_stop)
+        previous_sigterm = signal.signal(signal.SIGTERM, request_stop)
         try:
-            while True:
+            while not stop_requested:
                 msg = self.consumer.poll(1.0)
-                if msg is None: continue
+                if msg is None:
+                    now = time.monotonic()
+                    if self.pending_messages and now - self.last_flush_at >= self.FLUSH_INTERVAL_SECONDS:
+                        logger.info("[IDLE FLUSH] Kafka tạm hết message, flush batch đang chờ.")
+                        self._flush_batch()
+                    if idle_exit_seconds > 0:
+                        idle_started_at = idle_started_at or now
+                        if now - idle_started_at >= idle_exit_seconds:
+                            logger.info("[IDLE EXIT] Không còn message trong %.1fs, dừng consumer.", idle_exit_seconds)
+                            break
+                    continue
                 if msg.error():
                     if msg.error().code() == KafkaError._PARTITION_EOF: continue
                     logger.error(f"Lỗi Consumer: {msg.error()}")
-                    break
+                    raise RuntimeError(str(msg.error()))
 
+                idle_started_at = None
                 data = json.loads(msg.value().decode('utf-8'))
-                self.process_message(data)
+                self.process_message(msg, data)
         finally:
-            self._flush_batch()
-            self.consumer.close()
-            self.neo_manager.close()
+            try:
+                self._flush_batch()
+            except Exception:
+                logger.exception("Không thể flush batch còn lại; offset chưa được commit")
+            finally:
+                self.consumer.close()
+                self.neo_manager.close()
+                signal.signal(signal.SIGINT, previous_sigint)
+                signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="VietLawBERT Kafka ingestion consumer")
+    parser.add_argument(
+        "--idle-exit-seconds",
+        type=float,
+        default=float(os.getenv("CONSUMER_IDLE_EXIT_SECONDS", "0")),
+        help="Thoát sau N giây Kafka không có message; 0 nghĩa là chạy daemon.",
+    )
+    args = parser.parse_args()
     c = LawEventConsumer()
-    c.run()
+    c.run(idle_exit_seconds=args.idle_exit_seconds)

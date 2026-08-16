@@ -4,7 +4,6 @@ import logging
 import re
 import unicodedata
 from bs4 import BeautifulSoup
-from crawler.items import HTMLStatus, PDFStatus
 from confluent_kafka import Producer
 import socket
 
@@ -15,23 +14,49 @@ class LegalOntologyMappingPipeline:
         self.ontology_path = os.path.join(os.path.dirname(__file__), "system_ontology_map.json")
         self.static_mapping, self.edge_templates = self._load_system_ontology()
         self.logger = logging.getLogger("LegalOntologyMappingPipeline")
+        self.kafka_enabled = os.getenv("KAFKA_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
+        self.publish_empty = os.getenv("KAFKA_PUBLISH_EMPTY", "0").strip().lower() in {"1", "true", "yes"}
 
         # Kafka Producer setup
         self.kafka_producer = Producer({
-            'bootstrap.servers': 'localhost:9092',
-            'client.id': socket.gethostname(),
-            'acks': 'all',
-            'linger.ms': 10,
-            'batch.size': 65536,
-        })
-        self.kafka_topic = "law-documents"
+                'bootstrap.servers': os.getenv('KAFKA_BROKER', 'localhost:9092'),
+                'client.id': socket.gethostname(),
+                'acks': 'all',
+                'linger.ms': 10,
+                'batch.size': 65536,
+                'compression.type': 'zstd',
+                'enable.idempotence': True,
+            }) if self.kafka_enabled else None
+        self.kafka_topic = os.getenv("KAFKA_TOPIC", "law-documents-v5")
+        self.delivery_errors = []
 
-    def open_spider(self, spider):
-        spider.logger.info("[PIPELINE] LegalOntologyMappingPipeline ready (Kafka Push enabled)")
+    @classmethod
+    def from_crawler(cls, crawler):
+        pipeline = cls()
+        pipeline.crawler = crawler
+        return pipeline
 
-    def close_spider(self, spider):
-        self.kafka_producer.flush()
-        spider.logger.info("[PIPELINE] Kafka Producer flushed and closed")
+    def open_spider(self):
+        self.logger.info(
+            "[PIPELINE] LegalOntologyMappingPipeline ready (Kafka Push %s)",
+            "enabled" if self.kafka_enabled else "disabled",
+        )
+
+    def close_spider(self):
+        if self.kafka_producer is not None:
+            remaining = self.kafka_producer.flush(30)
+            if remaining or self.delivery_errors:
+                raise RuntimeError(
+                    f"Kafka delivery incomplete: remaining={remaining}, errors={len(self.delivery_errors)}"
+                )
+        if self.dynamic_maps:
+            self.save_dynamic_mappings()
+        self.logger.info("[PIPELINE] closed%s", " after Kafka flush" if self.kafka_enabled else "")
+
+    def _delivery_report(self, err, msg):
+        if err is not None:
+            self.delivery_errors.append(str(err))
+            self.logger.error("Kafka delivery failed: %s", err)
 
     def _load_system_ontology(self):
         with open(self.ontology_path, "r", encoding="utf-8") as f:
@@ -153,12 +178,11 @@ class LegalOntologyMappingPipeline:
         ascii_text = re.sub(r"[^A-Za-z0-9]+", "_", ascii_text).strip("_").upper()
         return ascii_text or "UNKNOWN_RELATION"
 
-    def _to_standard_relation(self, doc, edge_type, extraction_method, source_item):
+    def _to_standard_relation(self, doc, edge_type, direction, extraction_method, source_item):
         target_id = str(doc.get("id", "")).strip()
         if not target_id:
             return None
         tmpl = self.edge_templates.get(edge_type, {})
-        direction = tmpl.get("direction", "OUTGOING")
         graph_layer = tmpl.get("graph_layer", "Operational")
         if direction not in {"INCOMING", "OUTGOING"}:
             return None
@@ -183,6 +207,7 @@ class LegalOntologyMappingPipeline:
         unresolved = []
         for group_name in ["documentNamesByType", "documentNamesBySource"]:
             group_data = diagram_json.get(group_name) or {}
+            direction = "OUTGOING" if group_name == "documentNamesByType" else "INCOMING"
             for raw_key, docs_list in group_data.items():
                 raw_key = str(raw_key)
                 edge_type = self.static_mapping.get((group_name, raw_key))
@@ -190,7 +215,6 @@ class LegalOntologyMappingPipeline:
                 if not edge_type:
                     if html_dom:
                         edge_type, score = self._jaccard_fallback(raw_key, html_dom, docs_list)
-                        self.dynamic_maps[f"{group_name}:{raw_key}"] = edge_type
                         method = "dynamic_jaccard"
                     else:
                         edge_type = f"REL_TYPE_{raw_key}"
@@ -198,24 +222,59 @@ class LegalOntologyMappingPipeline:
                         method = "fallback"
                     if edge_type.startswith("REL_TYPE_"):
                         unresolved.append({"group": group_name, "key": raw_key, "score": score})
+                        # Giữ raw diagram trong artifact để phân loại sau; không đưa
+                        # relationship type chưa biết vào knowledge graph production.
+                        continue
+                    if method == "dynamic_jaccard":
+                        self.dynamic_maps[f"{group_name}:{raw_key}"] = edge_type
                 for doc in docs_list or []:
-                    rel = self._to_standard_relation(doc, edge_type, method, item)
+                    rel = self._to_standard_relation(doc, edge_type, direction, method, item)
                     if rel:
                         relationships.append(rel)
         item["relationships"] = relationships
-        item["diagram_status"] = "VALID" if relationships and not unresolved else "INCONSISTENT"
+        if unresolved:
+            item["diagram_status"] = "INCONSISTENT"
+        elif relationships:
+            item["diagram_status"] = "VALID"
+        else:
+            item["diagram_status"] = "EMPTY"
         if unresolved:
             item["diagram_unresolved_keys"] = unresolved
         return item
 
-    def process_item(self, item, spider):
+    def process_item(self, item):
         item = self.process_diagram(item, item.get("html_dom"))
-        try:
-            self.kafka_producer.produce(
-                self.kafka_topic,
-                value=json.dumps(item, ensure_ascii=False).encode('utf-8')
+        html_status = getattr(item.get("html_status"), "value", item.get("html_status"))
+        if html_status != "VALID" and not self.publish_empty:
+            self.logger.warning(
+                "[CONTENT QUARANTINE] %s không có text hợp lệ (rescue=%s)",
+                item.get("item_id"),
+                item.get("rescue_status"),
             )
+            if hasattr(self, "crawler"):
+                self.crawler.stats.inc_value("kafka/quarantined_empty")
+            return item
+        if not self.kafka_enabled:
+            return item
+        try:
+            payload = json.dumps(dict(item), ensure_ascii=False).encode('utf-8')
+            try:
+                self.kafka_producer.produce(
+                    self.kafka_topic,
+                    key=str(item.get('item_id', '')).encode('utf-8'),
+                    value=payload,
+                    callback=self._delivery_report,
+                )
+            except BufferError:
+                self.kafka_producer.poll(1.0)
+                self.kafka_producer.produce(
+                    self.kafka_topic,
+                    key=str(item.get('item_id', '')).encode('utf-8'),
+                    value=payload,
+                    callback=self._delivery_report,
+                )
             self.kafka_producer.poll(0)
         except Exception as e:
-            spider.logger.error(f"[KAFKA ERROR] Failed to push item {item.get('item_id')}: {e}")
+            self.logger.error(f"[KAFKA ERROR] Failed to push item {item.get('item_id')}: {e}")
+            raise
         return item

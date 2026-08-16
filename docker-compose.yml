@@ -23,7 +23,15 @@ services:
       - LLM_API_KEY=ollama
       - CONTEXTUALIZER_MODEL=qwen2.5:1.5b
       - GENERATOR_MODEL=qwen2.5:1.5b
-      - KAFKA_BROKER=redpanda:9092
+      - KAFKA_BROKER=redpanda:29092
+      - KAFKA_GROUP_ID=vietlawbert-consumers-v5-bounded
+      - KAFKA_TOPIC=law-documents-v5
+      - OCR_ENABLED=1
+      - OCR_INLINE_ENABLED=1
+      - OCR_LANG=vie+eng
+      - OCR_DPI=200
+      - OCR_MAX_PAGES=200
+      - OCR_CONCURRENCY=2
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -35,6 +43,42 @@ services:
         condition: service_started
     stdin_open: true
     tty: true
+    networks:
+      - vietlaw_net
+
+  # Consumer ingestion chạy độc lập, có thể auto-restart và theo dõi log riêng.
+  # Khởi động: docker compose --profile ingestion up -d consumer
+  consumer:
+    profiles: ["ingestion"]
+    build: .
+    container_name: vietlawbert_consumer
+    command: ["python", "src/streaming/consumer.py"]
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    working_dir: /app/law_dataset
+    environment:
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=vietlawbert
+      - MILVUS_HOST=milvus-standalone
+      - MILVUS_PORT=19530
+      - KAFKA_BROKER=redpanda:29092
+      - KAFKA_GROUP_ID=vietlawbert-consumers-v5-bounded
+      - KAFKA_TOPIC=law-documents-v5
+      - CONSUMER_DOC_BATCH_SIZE=10
+      - CONSUMER_CHUNK_BATCH_SIZE=64
+      - CONSUMER_FLUSH_INTERVAL_SECONDS=5
+      - EMBED_DEVICE=auto
+      - EMBED_BATCH_SIZE=16
+      - EMBED_CPU_INT8=1
+    depends_on:
+      neo4j:
+        condition: service_started
+      milvus-standalone:
+        condition: service_started
+      redpanda:
+        condition: service_started
     networks:
       - vietlaw_net
 

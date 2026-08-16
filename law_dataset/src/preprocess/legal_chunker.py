@@ -74,33 +74,38 @@ class LegalChunk:
 # REGEX PATTERNS CHO CẤU TRÚC PHÁP LUẬT VN
 # ============================================================
 
+# html2text thường tạo tiêu đề dạng ``**“Điều 31. ...**`` hoặc ``### Chương I``.
+# Prefix này bỏ markup/ngoặc kép ở đầu dòng nhưng vẫn giữ anchor để không nhận nhầm
+# các dẫn chiếu "theo Điều 31" ở giữa câu thành tiêu đề cấu trúc.
+MD_HEADING_PREFIX = r'^[ \t]*(?:#{1,6}[ \t]*)?(?:[*_]{1,3})?[“”"\'‘’(\[]*[ \t]*'
+
 # Phần (Roman numerals: I, II, III, IV, V, ...)
 PHAN_PATTERN = re.compile(
-    r'^(?:#####)?\s*(?:Phần\s+)([IVXLCDM]+)\s*[:\.\s]*(.*)$',
+    MD_HEADING_PREFIX + r'(?:Phần\s+)([IVXLCDM]+)\s*[:\.\s]*(.*)$',
     re.MULTILINE | re.IGNORECASE
 )
 
 # Chương (Roman numerals)
 CHUONG_PATTERN = re.compile(
-    r'^(?:##)?\s*(?:CHƯƠNG\s+)([IVXLCDM]+)\s*[:\.\s]*(.*)$',
+    MD_HEADING_PREFIX + r'(?:CHƯƠNG\s+)([IVXLCDM]+)\s*[:\.\s]*(.*)$',
     re.MULTILINE | re.IGNORECASE
 )
 
 # Mục
 MUC_PATTERN = re.compile(
-    r'^(?:###)?\s*(?:MỤC\s+)(\d+)\s*[:\.\s]*(.*)$',
+    MD_HEADING_PREFIX + r'(?:MỤC\s+)(\d+)\s*[:\.\s]*(.*)$',
     re.MULTILINE | re.IGNORECASE
 )
 
 # Tiểu mục
 TIEU_MUC_PATTERN = re.compile(
-    r'^(?:####)?\s*(?:TIỂU\s*MỤC\s+)(\d+)\s*[:\.\s]*(.*)$',
+    MD_HEADING_PREFIX + r'(?:TIỂU\s*MỤC\s+)(\d+)\s*[:\.\s]*(.*)$',
     re.MULTILINE | re.IGNORECASE
 )
 
 # Điều (Arabic numerals)
 DIEU_PATTERN = re.compile(
-    r'^(?:#####)?\s*(?:Điều\s+)(\d+[a-zA-Z]?)\s*[:\.\s]*(.*)$',
+    MD_HEADING_PREFIX + r'(?:Điều\s+)(\d+[a-zA-Z]?)\s*[:\.\s]*(.*)$',
     re.MULTILINE | re.IGNORECASE
 )
 
@@ -120,7 +125,7 @@ DIEM_PATTERN = re.compile(
 
 # Tiêu đề Điều (ví dụ: "Điều 3. Nguyên tắc cử tuyển")
 DIEU_TITLE_PATTERN = re.compile(
-    r'(?:#####)?\s*Điều\s+(\d+[a-zA-Z]?)\s*[:\.\s]*(.*)$',
+    MD_HEADING_PREFIX + r'Điều\s+(\d+[a-zA-Z]?)\s*[:\.\s]*(.*)$',
     re.MULTILINE | re.IGNORECASE
 )
 
@@ -236,7 +241,7 @@ def chunk_by_dieu(text: str, doc_id: str) -> List[LegalChunk]:
         chunks.append(LegalChunk(
             chunk_id=f"{doc_id}_full",
             text=text.strip(),
-            hierarchy=HierarchyPath(),
+            hierarchy=HierarchyPath(phan="Phần Mở đầu"),
             level=LegalLevel.DIEU,
             start_pos=0,
             end_pos=len(text),
@@ -250,7 +255,7 @@ def chunk_by_dieu(text: str, doc_id: str) -> List[LegalChunk]:
             chunks.append(LegalChunk(
                 chunk_id=f"{doc_id}_preamble",
                 text=preamble,
-                hierarchy=HierarchyPath(),
+                hierarchy=HierarchyPath(phan="Phần Mở đầu"),
                 level=LegalLevel.DIEU,
                 start_pos=0,
                 end_pos=dieu_positions[0]['start'],
@@ -420,7 +425,7 @@ def chunk_by_khoan(text: str, doc_id: str) -> List[LegalChunk]:
 def chunk_legal_document(
     text: str,
     doc_id: str,
-    max_chunk_size: int = 2000
+    max_chunk_size: int = 1600
 ) -> List[LegalChunk]:
     """
     Main function: Chunk văn bản pháp luật theo cấu trúc.
@@ -428,7 +433,8 @@ def chunk_legal_document(
     Args:
         text: Văn bản Markdown đã được làm sạch
         doc_id: ID của văn bản
-        max_chunk_size: Kích thước tối đa của một chunk (bytes)
+        max_chunk_size: Số ký tự tối đa của một chunk. Khoản/điểm vượt
+            ngưỡng được tách ở biên đoạn/câu gần nhất nhưng giữ nguyên hierarchy.
 
     Returns:
         Danh sách LegalChunk
@@ -439,11 +445,65 @@ def chunk_legal_document(
     # Merge các chunk quá ngắn
     merged_chunks = merge_short_chunks(chunks, min_size=200)
 
+    # BGE-M3 chỉ nhận tối đa 512 token. Trước đây tham số này không được dùng,
+    # khiến khoản dài bị tokenizer cắt đuôi âm thầm. Chỉ các atomic unit thực sự
+    # vượt ngưỡng mới phải tách; hierarchy pháp lý vẫn được giữ trên mọi segment.
+    bounded_chunks = []
+    for chunk in merged_chunks:
+        bounded_chunks.extend(split_oversized_chunk(chunk, max_chunk_size))
+
     # Tạo chunk_id duy nhất
-    for i, chunk in enumerate(merged_chunks):
+    for i, chunk in enumerate(bounded_chunks):
         chunk.chunk_id = f"{doc_id}_chunk_{i+1}"
 
-    return merged_chunks
+    return bounded_chunks
+
+
+def split_oversized_chunk(chunk: LegalChunk, max_size: int) -> List[LegalChunk]:
+    """Tách atomic unit quá dài ở whitespace/câu gần nhất, không mất ký tự."""
+    if max_size <= 0:
+        raise ValueError("max_chunk_size phải lớn hơn 0")
+    if len(chunk.text) <= max_size:
+        return [chunk]
+
+    text = chunk.text
+    spans = []
+    start = 0
+    preferred_boundaries = ("\n\n", "\n", ". ", "; ", ": ", " ")
+    while len(text) - start > max_size:
+        window = text[start:start + max_size + 1]
+        minimum_cut = max(1, max_size // 2)
+        cut = -1
+        for boundary in preferred_boundaries:
+            candidate = window.rfind(boundary)
+            if candidate >= minimum_cut:
+                cut = candidate + len(boundary)
+                break
+        if cut <= 0:
+            cut = max_size
+        end = start + cut
+        spans.append((start, end))
+        start = end
+        while start < len(text) and text[start].isspace():
+            start += 1
+    if start < len(text):
+        spans.append((start, len(text)))
+
+    total = len(spans)
+    output = []
+    for index, (local_start, local_end) in enumerate(spans, 1):
+        metadata = dict(chunk.metadata)
+        metadata.update({"oversized_segment": index, "oversized_segment_count": total})
+        output.append(LegalChunk(
+            chunk_id=chunk.chunk_id,
+            text=text[local_start:local_end].strip(),
+            hierarchy=chunk.hierarchy.copy(),
+            level=chunk.level,
+            start_pos=chunk.start_pos + local_start,
+            end_pos=chunk.start_pos + local_end,
+            metadata=metadata,
+        ))
+    return output
 
 
 def merge_short_chunks(
@@ -462,16 +522,17 @@ def merge_short_chunks(
     for i in range(1, len(chunks)):
         current = chunks[i]
 
-        # Nếu buffer quá ngắn, merge với chunk tiếp theo
+        # Chỉ ghép header/intro ngắn vào đúng Điều kế tiếp. Không ghép preamble,
+        # Khoản hoặc Điểm vì đây là các atomic unit pháp lý độc lập.
         if len(buffer.text) < min_size:
-            # Chỉ merge nếu cùng cấp độ hoặc buffer là header/intro
-            if (buffer.metadata.get('type') in ['dieu_header', 'khoan_intro', None] or
-                buffer.level.value <= current.level.value):
+            mergeable_type = buffer.metadata.get('type') in {'dieu_header', 'khoan_intro'}
+            same_article = buffer.hierarchy.dieu == current.hierarchy.dieu
+            if mergeable_type and same_article:
                 buffer = LegalChunk(
                     chunk_id=buffer.chunk_id,
                     text=buffer.text + "\n\n" + current.text,
-                    hierarchy=buffer.hierarchy,
-                    level=max(buffer.level, current.level, key=lambda x: list(LegalLevel).index(x)),
+                    hierarchy=current.hierarchy.copy(),
+                    level=current.level,
                     start_pos=buffer.start_pos,
                     end_pos=current.end_pos,
                     metadata=buffer.metadata,

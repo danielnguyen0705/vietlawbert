@@ -36,9 +36,11 @@ load_dotenv(env_path)
 # ============================================================
 # CẤU HÌNH LLM SERVER (Ollama/vLLM/OpenAI compatible)
 # ============================================================
-client = OpenAI(base_url=config.LLM_API_BASE, api_key=config.LLM_API_KEY)
+logger = logging.getLogger("Contextualizer")
+client = OpenAI(base_url=config.LLM_API_BASE, api_key=config.LLM_API_KEY, timeout=1.5, max_retries=0)
 CONTEXTUALIZER_MODEL = config.CONTEXTUALIZER_MODEL
 REQUEST_DELAY = float(os.getenv("CONTEXTUALIZER_DELAY", "0.05"))
+CONTEXTUALIZER_ENABLED = os.getenv("CONTEXTUALIZER_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
 
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9092")
 KAFKA_TOPIC_CHUNKS = os.getenv("KAFKA_TOPIC_CHUNKS", "law-documents")
@@ -64,10 +66,14 @@ TUYET DOI KHONG:
 """
 
 
+_ollama_warning_logged = False
+
 def call_ollama(prompt: str, model: str = None, max_tokens: int = 512) -> str:
     """
     Gọi LLM server qua OpenAI-compatible API.
     """
+    global _ollama_warning_logged
+
     model = model or CONTEXTUALIZER_MODEL
     try:
         response = client.chat.completions.create(
@@ -81,7 +87,11 @@ def call_ollama(prompt: str, model: str = None, max_tokens: int = 512) -> str:
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        logger.error(f"[LLM ERROR] {e}")
+        if "429" in str(e) or "rate_limit" in str(e).lower():
+            return ""  # Impose silent fallback on Rate Limit without slowing pipeline
+        if not _ollama_warning_logged:
+            logger.warning(f"[LLM OFFLINE] Khong ket noi duoc LLM ({e}). Tu dong dung text goc.")
+            _ollama_warning_logged = True
         return ""
 
 

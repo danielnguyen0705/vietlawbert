@@ -12,6 +12,7 @@ import sys
 import json
 import logging
 import torch
+from dataclasses import dataclass
 from transformers import AutoTokenizer, AutoModel
 from pymilvus import MilvusClient, DataType
 
@@ -30,10 +31,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(CURRENT_FILENAME.capitalize())
 
-MODEL_NAME = "BAAI/bge-m3"
+MODEL_NAME = os.getenv("EMBED_MODEL_NAME", "BAAI/bge-m3")
 VECTOR_DIM = 1024
-COLLECTION_NAME = "vietlaw_chunks"
-EMBED_BATCH_SIZE = 8
+COLLECTION_NAME = os.getenv("MILVUS_COLLECTION", "vietlaw_chunks")
+EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "16"))
+EMBED_MAX_LENGTH = int(os.getenv("EMBED_MAX_LENGTH", "512"))
+EMBED_DEVICE = os.getenv("EMBED_DEVICE", "auto").lower()
+EMBED_PROVIDER = os.getenv("EMBED_PROVIDER", "local").lower()
 INSERT_BATCH_SIZE = 32
 
 # Doc tu env de tuong thich Docker
@@ -42,25 +46,97 @@ MILVUS_PORT = os.getenv("MILVUS_PORT", "19530")
 MILVUS_URI = os.getenv("MILVUS_URI", f"http://{MILVUS_HOST}:{MILVUS_PORT}")
 
 
+@dataclass
+class RemoteEmbeddingModel:
+    client: object
+    model_name: str
+
+
 def load_encoder():
-    logger.info(f"Dang tai mo hinh {MODEL_NAME}...")
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    model = AutoModel.from_pretrained(MODEL_NAME)
+    if EMBED_PROVIDER == "openai_compatible":
+        from openai import OpenAI
+
+        base_url = os.environ["EMBED_API_BASE"]
+        model_name = os.environ["EMBED_API_MODEL"]
+        client = OpenAI(
+            base_url=base_url,
+            api_key=os.getenv("EMBED_API_KEY", "not-required"),
+            timeout=float(os.getenv("EMBED_API_TIMEOUT", "120")),
+            max_retries=int(os.getenv("EMBED_API_MAX_RETRIES", "3")),
+        )
+        logger.info("Embedding remote ready: base_url=%s, model=%s", base_url, model_name)
+        return None, RemoteEmbeddingModel(client=client, model_name=model_name)
+    if EMBED_PROVIDER != "local":
+        raise ValueError(f"EMBED_PROVIDER không được hỗ trợ: {EMBED_PROVIDER}")
+
+    if EMBED_DEVICE == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    else:
+        device = EMBED_DEVICE
+
+    logger.info(f"Dang tai mo hinh {MODEL_NAME} tren {device}...")
+    local_only = os.getenv("EMBED_LOCAL_FILES_ONLY", "0") == "1"
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, local_files_only=local_only)
+    model = AutoModel.from_pretrained(MODEL_NAME, local_files_only=local_only)
+    model.to(device)
+    if device == "cuda" and os.getenv("EMBED_FP16", "1") == "1":
+        model.half()
+    if device == "cpu" and os.getenv("EMBED_CPU_INT8", "0") == "1":
+        logger.info("Áp dụng dynamic INT8 quantization cho CPU...")
+        model = torch.ao.quantization.quantize_dynamic(
+            model, {torch.nn.Linear}, dtype=torch.qint8
+        )
     model.eval()
+    model._vietlawbert_device = device
+    logger.info(
+        "Embedding ready: device=%s, batch_size=%d, max_length=%d",
+        device, EMBED_BATCH_SIZE, EMBED_MAX_LENGTH,
+    )
     return tokenizer, model
 
 
 def encode_texts(tokenizer, model, texts: list[str]) -> list[list[float]]:
+    if isinstance(model, RemoteEmbeddingModel):
+        all_embeddings = []
+        for i in range(0, len(texts), EMBED_BATCH_SIZE):
+            response = model.client.embeddings.create(
+                model=model.model_name,
+                input=texts[i:i + EMBED_BATCH_SIZE],
+                encoding_format="float",
+            )
+            batch_embeddings = [item.embedding for item in sorted(response.data, key=lambda item: item.index)]
+            if any(len(vector) != VECTOR_DIM for vector in batch_embeddings):
+                raise ValueError(f"Embedding API phải trả vector {VECTOR_DIM} chiều")
+            all_embeddings.extend(batch_embeddings)
+        return all_embeddings
+
     all_embeddings = []
-    for i in range(0, len(texts), EMBED_BATCH_SIZE):
-        batch = texts[i: i + EMBED_BATCH_SIZE]
-        encoded = tokenizer(batch, padding=True, truncation=True, max_length=512, return_tensors="pt")
-        with torch.no_grad():
+    device = getattr(model, "_vietlawbert_device", None)
+    if device is None:
+        device = next(model.parameters()).device
+
+    # Gom các văn bản có độ dài gần nhau để giảm padding CPU/GPU, sau đó trả
+    # embedding về đúng thứ tự đầu vào trước khi ghép với metadata.
+    ordered_indices = sorted(range(len(texts)), key=lambda index: len(texts[index]))
+    ordered_embeddings = [None] * len(texts)
+    for i in range(0, len(ordered_indices), EMBED_BATCH_SIZE):
+        batch_indices = ordered_indices[i:i + EMBED_BATCH_SIZE]
+        batch = [texts[index] for index in batch_indices]
+        encoded = tokenizer(
+            batch,
+            padding=True,
+            truncation=True,
+            max_length=EMBED_MAX_LENGTH,
+            return_tensors="pt",
+        )
+        encoded = {name: tensor.to(device) for name, tensor in encoded.items()}
+        with torch.inference_mode():
             output = model(**encoded)
         embeddings = output.last_hidden_state[:, 0, :]
         embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
-        all_embeddings.extend(embeddings.tolist())
-    return all_embeddings
+        for original_index, embedding in zip(batch_indices, embeddings.float().cpu().tolist()):
+            ordered_embeddings[original_index] = embedding
+    return ordered_embeddings
 
 
 def setup_milvus() -> MilvusClient:
@@ -68,8 +144,8 @@ def setup_milvus() -> MilvusClient:
     client = MilvusClient(uri=MILVUS_URI)
 
     if client.has_collection(collection_name=COLLECTION_NAME):
-        logger.warning(f"Collection '{COLLECTION_NAME}' ton tai. Xoa de tao moi...")
-        client.drop_collection(collection_name=COLLECTION_NAME)
+        logger.info(f"Collection '{COLLECTION_NAME}' da ton tai. Dung lai schema cu.")
+        return client
 
     schema = client.create_schema(auto_id=False, enable_dynamic_field=False)
     schema.add_field("chunk_id",      DataType.VARCHAR, max_length=256, is_primary=True)
@@ -112,7 +188,7 @@ def ingest_from_kafka_consumer(consumer_batch_texts: list[str], consumer_batch_r
         for row, vec in zip(consumer_batch_rows, vectors):
             row["embedding"] = vec
             data.append(row)
-        client.insert(collection_name=COLLECTION_NAME, data=data)
+        client.upsert(collection_name=COLLECTION_NAME, data=data)
         logger.info(f"[MILVUS] Da insert {len(data)} chunks.")
         return len(data)
     except Exception as e:
@@ -146,7 +222,7 @@ def ingest_data():
             for row, vec in zip(pending_rows, vectors):
                 row["embedding"] = vec
                 data.append(row)
-            client.insert(collection_name=COLLECTION_NAME, data=data)
+            client.upsert(collection_name=COLLECTION_NAME, data=data)
             total_inserted += len(data)
             logger.info(f"Da nhoi {total_inserted} chunks...")
         except Exception as e:

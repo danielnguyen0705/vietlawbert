@@ -9,10 +9,12 @@ from typing import Optional
 # 1. Header patterns (mở đầu văn bản)
 HEADER_PATTERNS = [
     # Quốc hiệu + khẩu hiệu
-    r'CỘNG\s*HOÀ\s*Xã\s*HỘI\s*CHỦ\s*NGHĨA\s*VIỆT\s*NAM',
+    r'CỘNG\s*HÒA\s*XÃ\s*HỘI\s*CHỦ\s*NGHĨA\s*VIỆT\s*NAM',
+    r'CHÍNH\s*PHỦ\s*[-–—|]*\s*CỘNG\s*HÒA\s*XÃ\s*HỘI\s*CHỦ\s*NGHĨA\s*VIỆT\s*NAM',
     r'Độc\s*lập\s*[-–—]\s*Tự\s*do\s*[-–—]\s*Hạnh\s*phúc',
     # Cơ quan ban hành (dòng đầu)
-    r'^(?:CHÍNH\s*PHỦ|QUỐC\s*HỘI|ỦY\s*BAN\s*THƯỜNG\s*VỤ\s*QUỐC\s*HỘI)\s*$',
+    r'^\s*\*{0,2}\s*(?:CHÍNH\s*PHỦ|QUỐC\s*HỘI|ỦY\s*BAN\s*THƯỜNG\s*VỤ\s*QUỐC\s*HỘI)\s*\*{0,2}\s*$',
+    r'^\s*\*{0,2}\s*(?:NGHỊ\s*ĐỊNH|QUYẾT\s*ĐỊNH|THÔNG\s*TƯ)\s*\*{0,2}\s*$',
     # Số hiệu + ngày ban hành (dòng riêng)
     r'^Số:\s*[\d]+[-–/][\w\-/]+',
     r'^Hà\s*Nội,\s*ngày\s+\d+\s+tháng\s+\d+\s+năm\s+\d+',
@@ -42,6 +44,7 @@ PAGE_NUMBER_PATTERNS = [
 # 5. Markdown artifacts
 MARKDOWN_ARTIFACTS = [
     r'\|[\s\-|]*\|',  # Bảng trống |---|---|
+    r'^\\?[\-–—|]{3,}\*{0,2}\s*$',  # Đường kẻ ngang markdown, kể cả \\---**
     r'^[\-\*]{3,}\s*$',  # Đường kẻ ngang ---
     r'\*{3,}',  # ****
     r'^\s*\|\s*$',  # Dòng |

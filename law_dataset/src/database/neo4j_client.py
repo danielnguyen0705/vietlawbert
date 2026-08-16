@@ -221,7 +221,8 @@ class Neo4jManager:
         MERGE (art)-[:HAS_VERSION]->(ctv)
 
         MERGE (ck:Chunk {chunk_id: row.chunk_id})
-        SET ck.text = row.original_text
+        SET ck.text = row.original_text,
+            ck.doc_id = row.doc_id
         MERGE (ctv)-[:HAS_CHUNK]->(ck)
         """
         with self.driver.session() as session:
@@ -256,6 +257,7 @@ class Neo4jManager:
                 query_batches[cluster_key].append(payload)
 
         total_inserted = 0
+        errors = []
         with self.driver.session() as session:
             for (edge_type, direction), batch_data in query_batches.items():
                 if not batch_data:
@@ -268,8 +270,7 @@ class Neo4jManager:
                       ON CREATE SET s.name = record.source_name
                     MERGE (t:LawDocument {{doc_id: record.target_id}})
                       ON CREATE SET t.name = record.target_name
-                    WITH s, t, record
-                    CALL apoc.create.relationship(s, $edge_type, {{}}, t) YIELD rel
+                    MERGE (s)-[rel:{edge_type}]->(t)
                     SET rel.graph_layer = record.layer,
                         rel.extraction_method = record.method,
                         rel.direction = "OUTGOING",
@@ -282,8 +283,7 @@ class Neo4jManager:
                       ON CREATE SET s.name = record.source_name
                     MERGE (t:LawDocument {{doc_id: record.target_id}})
                       ON CREATE SET t.name = record.target_name
-                    WITH s, t, record
-                    CALL apoc.create.relationship(t, $edge_type, {{}}, s) YIELD rel
+                    MERGE (t)-[rel:{edge_type}]->(s)
                     SET rel.graph_layer = record.layer,
                         rel.extraction_method = record.method,
                         rel.direction = "INCOMING",
@@ -291,12 +291,15 @@ class Neo4jManager:
                     """
 
                 try:
-                    session.run(cypher, batch=batch_data, edge_type=edge_type)
+                    session.run(cypher, batch=batch_data)
                     total_inserted += len(batch_data)
-                    logger.info(f"[BATCH] {edge_type} ({direction}): {len(batch_data)} relations")
+                    logger.info(f"[BATCH] {edge_type} ({direction}): {len(batch_data)} relations upserted")
                 except Exception as e:
                     logger.error(f"[ERROR] {edge_type}: {e}")
+                    errors.append(f"{edge_type} ({direction}): {e}")
 
+        if errors:
+            raise RuntimeError("Semantic relation upsert failed: " + "; ".join(errors))
         logger.info(f"Total semantic relations inserted: {total_inserted}")
         return total_inserted
 
