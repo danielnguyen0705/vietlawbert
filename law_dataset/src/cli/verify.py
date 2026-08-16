@@ -1,4 +1,4 @@
-"""Gate tổng quát: đối chiếu artifact, Kafka và Neo4j theo ID/SHA-256."""
+"""CLI đối chiếu ID/hash giữa artifact, Kafka và Neo4j."""
 
 from quality.pipeline_verifier import main
 

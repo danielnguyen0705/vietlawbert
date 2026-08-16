@@ -52,7 +52,7 @@ services:
     profiles: ["ingestion"]
     build: .
     container_name: vietlawbert_consumer
-    command: ["python", "-m", "ingestion.embedding_consumer"]
+    command: ["python", "-m", "cli.consume_embeddings"]
     restart: unless-stopped
     volumes:
       - .:/app

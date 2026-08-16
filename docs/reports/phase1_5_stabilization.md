@@ -67,7 +67,7 @@ Thành công. Hệ thống đồng nhất 211 chunks trên cả Milvus và Neo4j
 - `law_spider.py`: giới hạn chính xác `limit`, hỗ trợ `pages/page_size/keyword/agency_ids`, search pagination nằm trong cùng Playwright context, concurrency API mặc định tăng từ 1 lên 4.
 - `pipelines.py`: Kafka broker/topic từ env, idempotent producer, delivery callback và không nuốt lỗi delivery.
 - `legal_chunker.py`: nhận tiêu đề Markdown dạng `**“Điều 31...` và không merge preamble/khoản/điểm qua ranh giới cấu trúc.
-- `audit_pilot.py`: so trực tiếp `chunk_id` Milvus–Neo4j, kiểm tra duplicate relation, hierarchy, boilerplate, HTML và document count.
+- `quality/crawl_audit.py`: so trực tiếp `chunk_id` Milvus–Neo4j, kiểm tra duplicate relation, hierarchy, boilerplate, HTML và document count.
 
 ### 4.3. Kết quả xác minh
 
@@ -137,7 +137,7 @@ cũ thiếu HTML cũng phải đi qua nhánh rescue PDF/OCR thay vì được co
 - Spider hiện tự gọi file-server bằng Playwright khi detail rỗng, ưu tiên HTML/DOCX/PDF, và OCR
   PDF bằng Tesseract `vie+eng` nếu không có digital text. Retry record trên hoàn tất trong
   `18,38 giây`, trạng thái `PDF_OCR_RECOVERED`/`OCR_COMPLETED`, thu được 6.324 ký tự.
-- `merge_crawl_artifacts.py` overlay retry theo `item_id`, giữ thứ tự checkpoint và không cần
+- `artifacts/merge.py` overlay retry theo `item_id`, giữ thứ tự checkpoint và không cần
   crawl lại shard. Gate sau merge: 1.000/1.000 ID duy nhất và nội dung thật, 0 bản dịch,
   0 văn bản hành chính, 979 diagram `VALID`, 21 `EMPTY`, 0 `INCONSISTENT`, 0 relation key lạ.
 - Audit không còn tin riêng cờ `html_status=VALID`: nội dung `html_raw` phải có tối thiểu
@@ -149,8 +149,8 @@ cũ thiếu HTML cũng phải đi qua nhánh rescue PDF/OCR thay vì được co
   ổ D còn 43,73 GiB tại thời điểm kiểm tra. Ở throughput checkpoint, raw crawl 160.660 record
   mất khoảng 13,7 giờ nếu tốc độ được giữ ổn định.
 - Stabilization tests sau cùng: `23/23` pass.
-- `audit_pilot.py` đã chuyển sang streaming để full artifact 10+ GiB không bị nạp hết vào RAM.
-  `run_crawl_shards.py` chia mặc định 1.000 record/shard, audit raw, nén, audit gzip, lưu state,
+- `quality/crawl_audit.py` xử lý streaming để full artifact 10+ GiB không bị nạp hết vào RAM.
+  `crawler/shard_runner.py` chia mặc định 1.000 record/shard, audit raw, nén, audit gzip, lưu state,
   resume bằng cách skip shard đã pass và kiểm tra duplicate xuyên shard ở gate cuối. Smoke crawl
   mới và smoke resume đều pass; stabilization tests sau runner là `24/24`.
 
@@ -192,7 +192,7 @@ full crawl theo shard. Full embedding vẫn không nên chạy trên một CPU: 
 
 ### 4.11. OCR worker incremental
 
-- `run_ocr_quarantine.py` đọc các file `*.quarantine.jsonl`, chọn riêng `OCR_PENDING`, chia batch
+- `crawler/ocr_runner.py` đọc các file `*.quarantine.jsonl`, chọn riêng `OCR_PENDING`, chia batch
   targeted, bật OCR inline trong worker riêng và không phát Kafka.
 - Chỉ record OCR thành công được overlay; base gzip không bị sửa. Worker tạo bản
   `*.rescued.jsonl.gz`, file recovered/unresolved và `ocr_retries/ocr_state.json`.

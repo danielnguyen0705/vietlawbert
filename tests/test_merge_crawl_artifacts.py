@@ -8,8 +8,8 @@ sys.path.insert(0, str(SRC))
 
 from artifacts.merge import merge_records, read_jsonl, write_jsonl
 from quality.crawl_audit import audit_crawl
-from run_crawl_shards import build_shards, write_content_quarantine
-from run_ocr_quarantine import base_artifact_for, pending_ids, rescued_artifact_for
+from crawler.shard_runner import build_shards, write_content_quarantine
+from crawler.ocr_runner import base_artifact_for, pending_ids, rescued_artifact_for
 from artifacts.canonical import (
     artifact_manifest,
     canonical_artifacts,

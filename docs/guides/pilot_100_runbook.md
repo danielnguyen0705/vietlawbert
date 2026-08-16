@@ -78,7 +78,7 @@ export EMBED_BATCH_SIZE=16
 export EMBED_CPU_INT8=1
 
 cd law_dataset/src
-python -m ingestion.embedding_consumer --idle-exit-seconds 30
+python -m cli.consume_embeddings --idle-exit-seconds 30
 ```
 
 Production phải dùng GPU hoặc OpenAI-compatible endpoint trả đúng vector 1024 chiều:
@@ -97,7 +97,7 @@ idle-flush; lỗi record làm process fail để Kafka replay thay vì bỏ qua.
 
 ```bash
 cd /mnt/d/vietlawbert
-python law_dataset/src/audit_pilot.py \
+PYTHONPATH=law_dataset/src python -m cli.audit \
   --crawl-file law_dataset/artifacts/crawl_100_v5.jsonl \
   --databases \
   --expect-documents 100 \
@@ -126,11 +126,11 @@ docker run --rm \
     -a doc_ids=ID_1,ID_2 \
     -O ../artifacts/retry.jsonl
 
-python law_dataset/src/audit_pilot.py \
+PYTHONPATH=law_dataset/src python -m cli.audit \
   --crawl-file law_dataset/artifacts/retry.jsonl \
   --expect-documents 2
 
-python law_dataset/src/merge_crawl_artifacts.py \
+PYTHONPATH=law_dataset/src python -m cli.merge_artifacts \
   --base law_dataset/artifacts/checkpoint.jsonl \
   --overlay law_dataset/artifacts/retry.jsonl \
   --output law_dataset/artifacts/checkpoint_rescued.jsonl
@@ -150,7 +150,7 @@ docker run --rm \
   -v /mnt/d/vietlawbert:/app \
   -w /app/law_dataset/src \
   vietlawbert-app \
-  python run_crawl_shards.py \
+  python -m cli.crawl \
     --total-documents 160660 \
     --page-size 100 \
     --pages-per-shard 10 \
@@ -181,7 +181,7 @@ docker run --rm \
   -w /app/law_dataset/src \
   -e OCR_CONCURRENCY=1 \
   vietlawbert-app \
-  python run_ocr_quarantine.py \
+  python -m cli.ocr \
     --input-dir ../artifacts/full_crawl_v5 \
     --batch-size 2
 ```
@@ -207,7 +207,7 @@ duy trì tối thiểu 20 GiB trống cho artifact, retry, log và overhead. T�
 còn 43,73 GiB. Với profile đã đo, raw crawl dự kiến khoảng 13,7 giờ; nếu có 403/429, hạ
 `CRAWLER_CONCURRENCY` từ 16 xuống 8 và giữ nguyên các shard đã pass.
 
-`audit_pilot.py` xử lý JSONL theo streaming nên không nạp artifact 10+ GiB vào RAM. Runner đã được
+`quality/crawl_audit.py` xử lý JSONL theo streaming nên không nạp artifact 10+ GiB vào RAM. Runner đã được
 smoke-test cả lượt crawl mới và lượt resume `SKIP PASS`.
 
 Với CPU hiện tại, ngoại suy full embedding khoảng 18 ngày liên tục; đây là lý do kỹ thuật để

@@ -77,7 +77,7 @@ docker run --rm \
   -v /mnt/d/vietlawbert:/app \
   -w /app/law_dataset/src \
   vietlawbert-app \
-  python run_crawl_shards.py \
+  python -m cli.crawl \
     --total-documents 160660 \
     --page-size 100 \
     --pages-per-shard 10 \
@@ -135,7 +135,7 @@ docker run --rm \
   -w /app/law_dataset/src \
   -e OCR_CONCURRENCY=1 \
   vietlawbert-app \
-  python run_ocr_quarantine.py \
+  python -m cli.ocr \
     --input-dir ../artifacts/full_crawl_v6 \
     --batch-size 2
 ```
@@ -160,7 +160,7 @@ docker run --rm --network vietlawbert_vietlaw_net \
   -w /app/law_dataset/src \
   -e KAFKA_BROKER=redpanda:29092 \
   vietlawbert-app \
-  python publish_crawl_artifacts.py \
+  python -m cli.publish \
     --input-dir ../artifacts/full_crawl_v6 \
     --expect-documents 160660 \
     --expect-shards 161 \
@@ -183,7 +183,7 @@ docker run --rm --network vietlawbert_vietlaw_net \
   -e NEO4J_USER=neo4j \
   -e NEO4J_PASSWORD=vietlawbert \
   vietlawbert-app \
-  python raw_archive_consumer.py \
+  python -m cli.consume_raw \
     --topic law-documents-v7-full-gzip \
     --dataset-id v7-full-gzip \
     --expect-documents 160660 \
@@ -222,7 +222,7 @@ docker run --rm --network vietlawbert_vietlaw_net \
   -e NEO4J_USER=neo4j \
   -e NEO4J_PASSWORD=vietlawbert \
   vietlawbert-app \
-  python verify_pipeline.py \
+  python -m cli.verify \
     --input-dir ../artifacts/full_crawl_v6 \
     --expect-shards 161 \
     --expect-documents 160660 \

@@ -12,7 +12,7 @@ from confluent_kafka import Consumer, TopicPartition
 from neo4j import GraphDatabase
 
 from artifacts.canonical import artifact_manifest, canonical_artifacts, decode_kafka_envelope, payload_hash
-from run_crawl_shards import write_json_atomic
+from crawler.shard_runner import write_json_atomic
 
 
 def read_kafka_manifest(broker: str, topic: str):

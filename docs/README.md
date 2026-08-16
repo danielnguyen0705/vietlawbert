@@ -14,3 +14,12 @@
 - `guides/`: hướng dẫn vận hành có thể thực thi.
 - `reports/`: kết quả đo, gate chất lượng và quyết định kỹ thuật hiện hành.
 - `archive/`: handoff, inventory và báo cáo lịch sử; không dùng làm runbook hiện tại.
+
+## Entry point source
+
+Các tác vụ vận hành chạy từ `law_dataset/src` bằng `python -m cli.<tác_vụ>`:
+
+- `cli.crawl`, `cli.ocr`: crawl và OCR.
+- `cli.audit`, `cli.verify`: quality gate.
+- `cli.publish`, `cli.consume_raw`, `cli.consume_embeddings`: Kafka và ingestion.
+- `cli.inspect_database`: kiểm tra nhanh Milvus/Neo4j.

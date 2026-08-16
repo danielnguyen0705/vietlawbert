@@ -32,7 +32,7 @@ def main():
     # 2. Chạy Consumer (Background)
     logger.info("Khởi động Kafka Consumer...")
     consumer = run_command(
-        f'"{sys.executable}" -m ingestion.embedding_consumer',
+        f'"{sys.executable}" -m cli.consume_embeddings',
         "Consumer (Processing)",
         background=True,
         cwd=src_dir,

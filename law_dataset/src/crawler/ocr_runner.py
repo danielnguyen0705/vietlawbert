@@ -11,7 +11,7 @@ from pathlib import Path
 
 from quality.crawl_audit import audit_crawl, read_jsonl
 from artifacts.merge import merge_records, write_jsonl
-from run_crawl_shards import write_json_atomic
+from crawler.shard_runner import write_json_atomic
 
 
 def pending_ids(path: Path) -> list[str]:

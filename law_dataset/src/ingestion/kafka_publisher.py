@@ -12,7 +12,7 @@ from confluent_kafka.admin import AdminClient, NewTopic
 
 from quality.crawl_audit import read_jsonl
 from artifacts.canonical import artifact_manifest, canonical_artifacts, encode_kafka_envelope
-from run_crawl_shards import write_json_atomic
+from crawler.shard_runner import write_json_atomic
 
 
 def topic_message_count(broker: str, topic: str) -> int:

@@ -84,22 +84,19 @@ VBPL Website → Crawler → Preprocessing → Milvus(Embedding) + Neo4j(Graph) 
 ## Usage
 
 ### Basic Usage (CLI)
-```bash
-# Start the system
-python src/main.py
 
-# Menus:
-# 0 - Start Docker containers
-# 1 - Crawl data
-# 2 - Rescue failed links
-# 3 - HTML to Markdown conversion
-# 4 - Chunk & Contextualize
-# 5 - Ingest data to DB
-# 6 - Full pipeline (automatically starts chatbot)
-# 7 - Start chatbot interface
-# 8 - Generate training triplet data
-# 9 - Fine-tune embedding models
-# q - Exit
+Đọc `../docs/README.md` để chọn đúng runbook. Các lệnh vận hành được chạy từ `law_dataset/src`:
+
+```bash
+cd law_dataset/src
+python -m cli.crawl --help
+python -m cli.ocr --help
+python -m cli.audit --help
+python -m cli.publish --help
+python -m cli.consume_raw --help
+python -m cli.consume_embeddings --help
+python -m cli.verify --help
+python -m cli.inspect_database --help
 ```
 
 ### Application
@@ -116,20 +113,19 @@ VietLawBERT
 ├── Dockerfile, docker-compose.yml                    # Docker orchestration
 ├── law_dataset/
 │   ├── src/
-│   │   ├── crawler/         # Web scraping
-│   │   ├── preprocess/      # Text processing
-│   │   ├── database/        # Vector & graph databases
-│   │   ├── rag/            # Retrieval & generation
-│   │   └── streaming/       # Real-time processing
-│   ├── app.py              # Main CLI interface
+│   │   ├── cli/             # Entrypoint vận hành
+│   │   ├── crawler/         # Spider, shard runner và OCR
+│   │   ├── artifacts/       # Canonical artifact và merge overlay
+│   │   ├── quality/         # Audit và pipeline verification
+│   │   ├── ingestion/       # Kafka publisher/consumer, embedding
+│   │   ├── preprocess/      # Text cleaning và legal chunking
+│   │   ├── database/        # Milvus và Neo4j clients
+│   │   ├── rag/             # Retrieval và generation
+│   │   └── training/        # Công cụ tạo dữ liệu/huấn luyện
 │   ├── README.md           # Project documentation
-│   └── requirements.txt    # Dependencies
-├── data/
-│   ├── raw/               # Raw downloaded files
-│   ├── processed/         # Processed text files
-│   ├── json/              # Structured metadata
-│   └── logs/             # System logs
-└── models/               # Model weights (optional)
+│   └── artifacts/          # Dữ liệu sinh ra, không commit Git
+├── docs/                   # guides, reports và archive
+└── tests/                  # Kiểm thử pipeline
 ```
 
 ### Configuration

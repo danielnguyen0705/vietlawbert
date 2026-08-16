@@ -317,7 +317,7 @@ class LawEventConsumer:
                 signal.signal(signal.SIGTERM, previous_sigterm)
 
 
-if __name__ == "__main__":
+def main() -> int:
     import argparse
 
     parser = argparse.ArgumentParser(description="VietLawBERT Kafka ingestion consumer")
@@ -330,3 +330,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     c = LawEventConsumer()
     c.run(idle_exit_seconds=args.idle_exit_seconds)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
