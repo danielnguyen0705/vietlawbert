@@ -1,11 +1,53 @@
-law_dataset/data
-law_dataset/logs
-law_dataset/.env
-law_dataset/.streamlit
-law_dataset/src/.scrapy
-# Bỏ qua file .DS_Store (nếu có)
-.DS_Store
-.venv/
+# Byte-compiled / optimized / DLL files
 __pycache__/
+*.py[cod]
+*$py.class
+
+# Môi trường ảo (Virtual Environments)
+.venv/
+venv/
+ENV/
+env/
+
+# Biến môi trường và bí mật API
+.env
+.env.local
+.env.*.local
+
+# Dữ liệu lớn, Shards và Tệp nén trung gian
+data/
+law_dataset/
+raw_shards/
+*.jsonl
+*.jsonl.gz
+*.parquet
+*.csv
+*.pdf
+*.doc
+*.docx
+*.html
+
+# Model weights, Embeddings và Checkpoints huấn luyện
+artifacts/
+models/
+checkpoints/
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.onnx
+
+# Nhật ký và bộ nhớ đệm kiểm thử
+logs/
+*.log
+.scrapy/
+.pytest_cache/
+.coverage
+htmlcov/
+**/.cache/
+
+# IDE & OS specific
+.idea/
 .vscode/
-.scrapy
+.DS_Store
+Thumbs.db

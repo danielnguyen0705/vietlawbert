@@ -1,0 +1,123 @@
+{
+  "documentNamesByType": {
+    "1": "BAI_BO",
+    "2": "BAN_DICH",
+    "3": "CAN_CU_BAN_HANH",
+    "4": "DAN_CHIEU",
+    "5": "DINH_CHI_THI_HANH",
+    "6": "DINH_CHINH",
+    "7": "HOP_NHAT",
+    "8": "HUONG_DAN_AP_DUNG",
+    "9": "QUY_DINH_CHI_TIET_HUONG_DAN",
+    "10": "SUA_DOI_BO_SUNG",
+    "11": "TAM_NGUNG_HIEU_LUC",
+    "12": "THAY_THE",
+    "13": "BO_SUNG",
+    "14": "GIAI_THICH",
+    "15": "CONG_BO"
+  },
+  "documentNamesBySource": {
+    "1": "BAI_BO",
+    "2": "BAN_DICH",
+    "3": "CAN_CU_BAN_HANH",
+    "4": "DAN_CHIEU",
+    "5": "DINH_CHI_THI_HANH",
+    "6": "DINH_CHINH",
+    "7": "HOP_NHAT",
+    "8": "HUONG_DAN_AP_DUNG",
+    "9": "QUY_DINH_CHI_TIET_HUONG_DAN",
+    "10": "SUA_DOI_BO_SUNG",
+    "11": "TAM_NGUNG_HIEU_LUC",
+    "12": "THAY_THE",
+    "13": "BO_SUNG",
+    "14": "GIAI_THICH",
+    "15": "CONG_BO"
+  },
+  "relationship_templates": {
+    "BAI_BO": {
+      "graph_layer": "Temporal",
+      "canonical_name": "Bãi bỏ"
+    },
+    "BAN_DICH": {
+      "graph_layer": "Operational",
+      "canonical_name": "Bản dịch"
+    },
+    "CAN_CU_BAN_HANH": {
+      "graph_layer": "Hierarchical",
+      "canonical_name": "Căn cứ ban hành"
+    },
+    "DAN_CHIEU": {
+      "graph_layer": "Operational",
+      "canonical_name": "Dẫn chiếu"
+    },
+    "DINH_CHI_THI_HANH": {
+      "graph_layer": "Temporal",
+      "canonical_name": "Đình chỉ thi hành"
+    },
+    "DINH_CHINH": {
+      "graph_layer": "Temporal",
+      "canonical_name": "Đính chính"
+    },
+    "HOP_NHAT": {
+      "graph_layer": "Temporal",
+      "canonical_name": "Hợp nhất"
+    },
+    "HUONG_DAN_AP_DUNG": {
+      "graph_layer": "Hierarchical",
+      "canonical_name": "Hướng dẫn áp dụng"
+    },
+    "QUY_DINH_CHI_TIET_HUONG_DAN": {
+      "graph_layer": "Hierarchical",
+      "canonical_name": "Quy định chi tiết hướng dẫn"
+    },
+    "SUA_DOI_BO_SUNG": {
+      "graph_layer": "Temporal",
+      "canonical_name": "Sửa đổi bổ sung"
+    },
+    "TAM_NGUNG_HIEU_LUC": {
+      "graph_layer": "Temporal",
+      "canonical_name": "Tạm ngưng hiệu lực"
+    },
+    "THAY_THE": {
+      "graph_layer": "Temporal",
+      "canonical_name": "Thay thế"
+    },
+    "BO_SUNG": {
+      "graph_layer": "Temporal",
+      "canonical_name": "Bổ sung"
+    },
+    "GIAI_THICH": {
+      "graph_layer": "Hierarchical",
+      "canonical_name": "Giải thích"
+    },
+    "CONG_BO": {
+      "graph_layer": "Operational",
+      "canonical_name": "Công bố"
+    }
+  },
+  "category_normalization_aliases": {
+    "căn cứ ban hành": "CAN_CU_BAN_HANH",
+    "can cu ban hanh": "CAN_CU_BAN_HANH",
+    "văn bản được thay thế": "THAY_THE",
+    "van ban duoc thay the": "THAY_THE",
+    "văn bản bị bãi bỏ": "BAI_BO",
+    "van ban bi bai bo": "BAI_BO",
+    "văn bản áp dụng": "HUONG_DAN_AP_DUNG",
+    "van ban ap dung": "HUONG_DAN_AP_DUNG",
+    "văn bản dẫn chiếu": "DAN_CHIEU",
+    "van ban dan chieu": "DAN_CHIEU",
+    "văn bản quy định chi tiết hướng dẫn": "QUY_DINH_CHI_TIET_HUONG_DAN",
+    "van ban quy dinh chi tiet huong dan": "QUY_DINH_CHI_TIET_HUONG_DAN",
+    "văn bản sửa đổi bổ sung": "SUA_DOI_BO_SUNG",
+    "van ban sua doi bo sung": "SUA_DOI_BO_SUNG",
+    "văn bản thay thế": "THAY_THE",
+    "van ban thay the": "THAY_THE"
+  },
+  "source_evidence": {
+    "url": "https://vbpl.vn/_next/static/chunks/3824-a707face93b2bef1.js",
+    "module": "50033",
+    "verified_at": "2026-08-16",
+    "note": "Official VBPL frontend enum N8 and Vietnamese label map aB."
+  },
+  "dynamic_keys": {}
+}

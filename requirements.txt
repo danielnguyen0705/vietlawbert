@@ -1,39 +1,56 @@
 # ==========================================
-# 1. CRAWLING & WEB SCRAPING (Lấy dữ liệu)
+# 1. CRAWLING & WEB SCRAPING (Data Acquisition)
 # ==========================================
-scrapy
-requests
-beautifulsoup4
+scrapy>=2.11.0
+scrapy-playwright>=0.0.34
+playwright>=1.42.0
+requests>=2.31.0
+beautifulsoup4>=4.12.3
+html2text>=2024.2.26
+lxml>=5.1.0
 
 # ==========================================
-# 2. DATA PROCESSING & UTILS (Xử lý dữ liệu)
+# 2. DATA PROCESSING & BIG DATA STORAGE (Parquet/NoSQL)
 # ==========================================
-python-dotenv
-html2text
-cssselect
-lxml
+python-dotenv>=1.0.1
+pydantic>=2.7.0
+pymupdf>=1.24.0
+tqdm>=4.66.0
+pandas>=2.2.0
+pyarrow>=15.0.0
+fastparquet>=2024.2.0
+docling>=2.0.0
 
 # ==========================================
-# 3. DATABASES (Bộ 3 quyền lực)
+# 3. DATABASES & DISTRIBUTED STREAMING
 # ==========================================
-pymilvus      # Vector DB (Thay thế hoàn toàn cho faiss-cpu)
-neo4j         # Graph DB (Lưu trữ Knowledge Graph - Entities & Relationships)
+pymongo>=4.6.0
+pymilvus>=2.4.0
+neo4j>=5.18.0
+confluent-kafka>=2.3.0
 
 # ==========================================
-# 5. AI, LLM & EMBEDDINGS (Core VietLawBERT)
+# 4. AI, EMBEDDINGS & CONTRASTIVE LEARNING (VietLawBERT Core)
 # ==========================================
-# PyTorch CPU-only build
---extra-index-url https://download.pytorch.org/whl/cpu
-torch
-rank_bm25                    # Lexical Filtering cho GG-SLM
-
-transformers
-sentence-transformers # Dùng để chạy model BGE-M3 hoặc VNLawBERT
-openai              # OpenAI-compatible API cho Groq/GitHub Models
-langchain-text-splitters  # Chunking cho contextualizer
-
+torch>=2.2.0
+torchvision>=0.17.0
+torchaudio>=2.2.0
+transformers>=4.40.0
+sentence-transformers>=2.6.0
+openai>=1.20.0
+langchain-text-splitters>=0.0.1
+rank_bm25>=0.2.2
+scikit-learn>=1.4.0
 
 # ==========================================
-# 7. WEB FRAMEWORK (API & Chatbot)
+# 5. BENCHMARK & EVALUATION (Q1 Academic Standard)
 # ==========================================
-chainlit         # Giao diện chat chuyên dụng cho LLM (Thay thế Streamlit)
+ragas>=0.1.7
+deepeval>=0.21.0
+
+# ==========================================
+# 6. SERVING & API GATEWAY
+# ==========================================
+fastapi>=0.110.0
+uvicorn>=0.28.0
+chainlit>=1.0.500

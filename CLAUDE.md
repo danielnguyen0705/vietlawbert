@@ -5,4 +5,7 @@
 - Luôn cập nhật các kỹ thuật mới nhất của năm 2026, nhưng bài báo VNLawBERT luôn là bài báo nền tảng để phát triển thêm. 
 - Luôn xác định điểm mạnh / yếu của các lựa chọn và tìm ra giải pháp nào tối ưu hơn để xử lý.
 - Bạn bám đúng các tiêu chuẩn xây dựng kiến trúc trong việc xây dựng mô hình mà trên thế giới đều đang làm theo
+- Luôn kiểm tra thật kỹ logic code, cấu trúc, và xây dựng một cách hợp lý, đảm bảo hạn chế sai sót tối đa khi bạn đưa ra các sản phẩm cuối cùng
+- Có ý thức dọp dẹp và tối ưu code sau mỗi lần cập nhật code
 - Bạn phải luôn trả lời câu hỏi của tôi bằng Tiếng Việt
+- Vì bạn đang làm việc trên môi trường Window, còn tôi đang cho chạy mô hình bên máy Ubuntu, cho nên hy vọng bạn phải suy luận và đưa ra những dòng code thật sự tối ưu, thật sự chính xác và hạn chế sai sót, rồi sau đó hãy giúp tôi push thẳng lên https://github.com/danielnguyen0705/vietlawbert qua cái nhánh "ubuntu" để tôi sẽ clone nó về máy Ubuntu rồi tôi chạy theo hướng dẫn của bạn
