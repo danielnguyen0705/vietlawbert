@@ -28,7 +28,9 @@ raw_shards/
 *.html
 
 # Model weights, Embeddings và Checkpoints huấn luyện
-artifacts/
+artifacts/*
+!artifacts/*.py
+!artifacts/__init__.py
 models/
 checkpoints/
 *.pt

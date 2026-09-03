@@ -10,10 +10,10 @@ import sys
 import gzip
 import json
 import argparse
-import logging
 from pathlib import Path
 from typing import List, Dict, Any
 
+from configs.logging_config import get_subsystem_logger
 from database.neo4j_client import Neo4jClient
 from database.cypher_templates import (
     get_trace_hierarchical_root,
@@ -22,12 +22,7 @@ from database.cypher_templates import (
     get_gg_slm_triplets,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | [%(levelname)s] | %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
-)
-logger = logging.getLogger("Neo4jIngest")
+logger = get_subsystem_logger("database", "database")
 
 
 def stream_records(file_path: Path):
@@ -54,7 +49,6 @@ def ingest_file_to_graph(neo: Neo4jClient, file_path: Path, batch_size: int = 50
         meta = record.get("metadata", {}) or record.get("metadata_detail", {})
         hierarchy = meta.get("hierarchy_path", {})
 
-        # 1. Trích xuất cấu trúc phân cấp nếu có thông tin chunk
         if "chunk_id" in record:
             struct_batch.append({
                 "chunk_id": record.get("chunk_id", ""),
@@ -67,7 +61,6 @@ def ingest_file_to_graph(neo: Neo4jClient, file_path: Path, batch_size: int = 50
                 "dieu": hierarchy.get("điều") or "Điều N/A",
             })
 
-        # 2. Trích xuất quan hệ ngữ nghĩa nếu có
         if "relationships" in record:
             semantic_batch.append(record)
 

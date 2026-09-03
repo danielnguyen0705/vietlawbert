@@ -7,16 +7,16 @@ from __future__ import annotations
 
 import os
 import sys
-import logging
 from typing import List, Dict, Any, Optional
 
 from openai import OpenAI
 
-from configs.paths import ROOT_DIR, get_log_path
+from configs.paths import ROOT_DIR
 from configs.config import config
+from configs.logging_config import get_subsystem_logger
 from .retriever import LegalRetriever
 
-logger = logging.getLogger("VietLawBERT_Generator")
+logger = get_subsystem_logger("rag", "rag_engine")
 
 
 class LegalGenerator:
@@ -39,7 +39,6 @@ class LegalGenerator:
         logger.info(f"✓ Generator sẵn sàng. Mô hình phục vụ: [{self.model}] tại {self.api_base}")
 
     def _call_llm(self, prompt: str) -> str:
-        """Gửi prompt tới LLM Server và thu nhận phản hồi."""
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -53,7 +52,6 @@ class LegalGenerator:
             return f"Lỗi hệ thống: Không thể kết nối tới mô hình ngôn ngữ ({exc}). Vui lòng kiểm tra dịch vụ Ollama/vLLM."
 
     def build_prompt(self, query: str, contexts: List[Dict[str, Any]]) -> str:
-        """Xây dựng Prompt hoàn chỉnh có căn cứ trích dẫn cho từng tài liệu."""
         context_blocks = []
         for i, c in enumerate(contexts, start=1):
             doc_name = c.get("source_doc") or c.get("doc_info") or f"Văn bản số {c.get('doc_number', 'N/A')}"
@@ -88,7 +86,6 @@ CÂU HỎI: {query}
         return prompt
 
     def ask(self, query: str, top_k: int = 3) -> Dict[str, Any]:
-        """Thực thi hỏi đáp hoàn chỉnh và trả về cả câu trả lời kèm siêu dữ liệu nguồn gốc."""
         clean_query = query.strip()
         logger.info(f"Đang xử lý câu hỏi: '{clean_query[:80]}...'")
 
@@ -114,7 +111,6 @@ CÂU HỎI: {query}
         }
 
     def close(self):
-        """Giải phóng tài nguyên kết nối."""
         if hasattr(self.retriever, "close"):
             self.retriever.close()
 

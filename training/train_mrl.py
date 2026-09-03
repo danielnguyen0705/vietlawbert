@@ -8,9 +8,7 @@ from __future__ import annotations
 import os
 import sys
 import math
-import json
 import argparse
-import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -18,26 +16,15 @@ import torch
 from torch.utils.data import DataLoader
 from sentence_transformers import SentenceTransformer, InputExample, losses
 
-from configs.paths import ROOT_DIR, ARTIFACTS_DIR, MODELS_DIR, get_log_path
+from configs.paths import ROOT_DIR, ARTIFACTS_DIR, MODELS_DIR
 from configs.config import config
+from configs.logging_config import get_subsystem_logger
 from artifacts.canonical import read_jsonl
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | [%(levelname)s] | %(name)s - %(message)s",
-    handlers=[
-        logging.FileHandler(get_log_path("train_mrl"), encoding="utf-8", mode="a"),
-        logging.StreamHandler(sys.stdout),
-    ],
-)
-logger = logging.getLogger("VietLawBERT_MRLTrainer")
+logger = get_subsystem_logger("training", "model_training")
 
 
 def compute_matryoshka_weights(dims: List[int]) -> List[float]:
-    """
-    Tính toán trọng số phạt theo lý thuyết thông tin:
-    w_d = 1 / log2(d + 2), sau đó chuẩn hóa tổng trọng số về 1.0.
-    """
     raw_weights = [1.0 / math.log2(float(d) + 2.0) for d in dims]
     total_w = sum(raw_weights)
     normalized = [round(w / total_w, 4) for w in raw_weights]
@@ -46,7 +33,6 @@ def compute_matryoshka_weights(dims: List[int]) -> List[float]:
 
 
 def load_triplets(file_path: Path | str, max_samples: Optional[int] = None) -> List[InputExample]:
-    """Nạp tập bộ ba huấn luyện hỗ trợ .jsonl, .jsonl.gz và .parquet."""
     path = Path(file_path)
     if not path.exists():
         logger.error(f"Không tìm thấy tệp huấn luyện: {path}")
@@ -87,7 +73,6 @@ def train(
     hub_model_id: Optional[str] = None,
     auto_terminate: bool = False,
 ):
-    """Quy trình huấn luyện mạng biểu diễn nhúng pháp lý chuyên sâu VietLawBERT-MRL."""
     device = "cpu"
     if torch.cuda.is_available():
         device = "cuda"
@@ -106,14 +91,11 @@ def train(
     logger.info(f"Đang tải Backbone Encoder nền tảng: [{base_model_name}]...")
     model = SentenceTransformer(base_model_name, device=device)
 
-    # Đầy đủ 6 mốc chiều biểu diễn toán học bao gồm 768d đối chứng PhoBERT/VNLawBERT
     matryoshka_dims = [64, 128, 256, 512, 768, 1024]
     matryoshka_weights = compute_matryoshka_weights(matryoshka_dims)
 
-    # Hàm mất mát InfoNCE cơ sở (scale=20.0 tương ứng nhiệt độ tau=0.05)
     base_loss = losses.MultipleNegativesRankingLoss(model=model, scale=20.0)
 
-    # Đóng gói hàm mất mát Matryoshka Loss
     train_loss = losses.MatryoshkaLoss(
         model=model,
         loss=base_loss,
@@ -140,14 +122,12 @@ def train(
         )
         logger.info(f"✓ Huấn luyện thành công! Trọng số mô hình đã lưu tại: {out_path.resolve()}")
 
-        # Đẩy weights lên Hugging Face Hub phục vụ nghiên cứu cộng đồng
         if push_to_hub and hub_model_id:
             logger.info(f"Đang tải trọng số lên Hugging Face Hub: {hub_model_id}...")
             model.save_to_hub(repo_id=hub_model_id, private=True)
             logger.info(f"✓ Đã đưa mô hình lên Hugging Face Hub thành công: https://huggingface.co/{hub_model_id}")
 
     finally:
-        # Tự động ngắt kết nối Cloud Pod để tránh rò rỉ chi phí tính toán
         if auto_terminate and getattr(config, "ENABLE_CLOUD_GPU", False):
             logger.warning("[SAFETY] Kích hoạt tự hủy RunPod Pod sau khi hoàn tất...")
             pod_id = os.environ.get("RUNPOD_POD_ID") or getattr(config, "CLOUD_GPU_INSTANCE_ID", "")

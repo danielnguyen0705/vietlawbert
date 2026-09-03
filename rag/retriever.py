@@ -9,7 +9,6 @@ import os
 import sys
 import re
 import json
-import logging
 from collections import defaultdict
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
@@ -18,11 +17,12 @@ import numpy as np
 from neo4j import GraphDatabase
 from pymilvus import MilvusClient
 
-from configs.paths import DATA_STORAGE_ROOT, ARTIFACTS_DIR, get_log_path
+from configs.paths import DATA_STORAGE_ROOT, ARTIFACTS_DIR
 from configs.config import config
+from configs.logging_config import get_subsystem_logger
 from database.milvus_client import EmbeddingEngine
 
-logger = logging.getLogger("VietLawBERT_HybridRetriever")
+logger = get_subsystem_logger("rag", "rag_engine")
 
 
 class LegalReranker:
@@ -72,30 +72,22 @@ class LegalRetriever:
         self.collection_name = getattr(config, "MILVUS_COLLECTION_NAME", "vietlawbert_chunks")
         self.milvus_uri = getattr(config, "MILVUS_URI", "http://localhost:19530")
 
-        # 1. Tái sử dụng Singleton Encoder (tránh nạp trùng lặp BGE-M3 vào RAM)
         self.encoder = EmbeddingEngine.get_instance()
-
-        # 2. Khởi tạo Milvus Client
         self.milvus_client = MilvusClient(uri=self.milvus_uri)
-
-        # 3. Khởi tạo Neo4j Driver
         self.neo4j_driver = GraphDatabase.driver(
             getattr(config, "NEO4J_URI", "bolt://localhost:7687"),
             auth=(getattr(config, "NEO4J_USER", "neo4j"), getattr(config, "NEO4J_PASSWORD", "vietlawbert")),
         )
 
-        # 4. Tùy chọn Re-ranker Cross-Encoder
         self.use_reranker = use_reranker
         self.reranker = LegalReranker() if use_reranker else None
 
-        # 5. Bộ nhớ đệm BM25
         self._cached_bm25 = None
         self._cached_chunks = None
 
         logger.info("✓ LegalRetriever đã sẵn sàng tiếp nhận truy vấn.")
 
     def _search_dense(self, query: str, top_k: int) -> List[Dict[str, Any]]:
-        """Tầng 1: Truy vấn ngữ nghĩa dày đặc trên Milvus (Dense Semantic Retrieval)."""
         try:
             query_vectors = self.encoder.encode_texts([query])
             if not query_vectors:
@@ -144,7 +136,6 @@ class LegalRetriever:
             return []
 
     def _init_bm25_corpus(self):
-        """Khởi tạo chỉ mục BM25 từ kho dữ liệu đã qua tiền xử lý."""
         if self._cached_bm25 is not None:
             return
 
@@ -183,7 +174,6 @@ class LegalRetriever:
             logger.warning(f"Không thể khởi tạo BM25 từ tệp đĩa: {exc}")
 
     def _search_sparse_bm25(self, query: str, top_k: int) -> List[Dict[str, Any]]:
-        """Tầng 2: Truy vấn từ khóa chính xác BM25 (Sparse Lexical Retrieval)."""
         self._init_bm25_corpus()
         if self._cached_bm25 is None or not self._cached_chunks:
             return []
@@ -217,16 +207,11 @@ class LegalRetriever:
             return []
 
     def _search_exact_neo4j(self, query: str, top_k: int) -> List[Dict[str, Any]]:
-        """
-        Tầng 3: Truy vấn cấu trúc chính xác trên Neo4j (Graph Structural Traversal).
-        Khắc phục hoàn toàn lỗi nút trung gian: Đi thẳng từ Article sang Chunk.
-        """
         match_doc = re.search(r"(\d+/\d+/[A-ZĐa-z0-9\-]+)", query)
         match_art = re.search(r"Điều\s+(\d+[a-zA-Z]?)", query, re.IGNORECASE)
 
         params: Dict[str, Any] = {"limit": top_k}
 
-        # Kịch bản 1: Có cả số hiệu văn bản và số Điều
         if match_doc and match_art:
             cypher = """
             MATCH (doc:LawDocument)
@@ -246,7 +231,6 @@ class LegalRetriever:
             params["doc_num"] = match_doc.group(1).upper()
             params["art_name"] = f"Điều {match_art.group(1)}"
 
-        # Kịch bản 2: Chỉ chỉ định số Điều
         elif match_art:
             cypher = """
             MATCH (doc:LawDocument)-[:HAS_CHAPTER]->(ch:Chapter)-[:HAS_ARTICLE]->(art:Article)
@@ -263,7 +247,6 @@ class LegalRetriever:
             """
             params["art_name"] = f"Điều {match_art.group(1)}"
 
-        # Kịch bản 3: Tìm kiếm theo tên hoặc số hiệu văn bản
         elif match_doc:
             cypher = """
             MATCH (doc:LawDocument)
@@ -309,10 +292,6 @@ class LegalRetriever:
         k_param: int = 60,
         top_k: int = 10,
     ) -> List[Dict[str, Any]]:
-        """
-        Dung hợp thứ hạng nghịch đảo Reciprocal Rank Fusion (RRF k=60).
-        Công thức: RRF_Score(d) = sum_{m} w_m * (1 / (k + rank_m(d)))
-        """
         rrf_scores = defaultdict(float)
         docs_cache: Dict[str, Dict[str, Any]] = {}
 
@@ -332,19 +311,12 @@ class LegalRetriever:
         for cid in sorted_cids:
             doc_item = dict(docs_cache[cid])
             doc_item["rrf_score"] = round(rrf_scores[cid], 5)
-            # Định dạng doc_info cho các thành phần hiển thị
             doc_item["doc_info"] = f"{doc_item.get('source_doc', '')} (Số: {doc_item.get('doc_number', 'N/A')})"
             fused_results.append(doc_item)
 
         return fused_results
 
     def search_context(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
-        """
-        Luồng tìm kiếm hợp nhất 3 tầng kết hợp Re-ranking:
-        1. Thu thập Top-30 ứng viên song song từ Dense, Sparse, và Graph.
-        2. Dung hợp thứ hạng qua RRF (k=60).
-        3. Tái xếp hạng bằng Cross-Encoder (nếu được kích hoạt).
-        """
         clean_query = query.strip()
         candidate_k = max(top_k * 5, 20)
 
@@ -352,7 +324,6 @@ class LegalRetriever:
         sparse_hits = self._search_sparse_bm25(clean_query, top_k=candidate_k)
         exact_hits = self._search_exact_neo4j(clean_query, top_k=candidate_k)
 
-        # Dung hợp RRF với tỷ trọng (Dense: 0.5, Sparse: 0.25, Graph: 0.25)
         fused_candidates = self._rrf_fusion(
             [dense_hits, sparse_hits, exact_hits],
             weights=(0.5, 0.25, 0.25),
@@ -360,14 +331,12 @@ class LegalRetriever:
             top_k=candidate_k,
         )
 
-        # Tái xếp hạng bằng Cross-Encoder nếu được cấu hình
         if self.use_reranker and self.reranker:
             return self.reranker.rerank(clean_query, fused_candidates, top_k=top_k)
 
         return fused_candidates[:top_k]
 
     def close(self):
-        """Giải phóng các socket kết nối CSDL."""
         try:
             self.milvus_client.close()
             self.neo4j_driver.close()

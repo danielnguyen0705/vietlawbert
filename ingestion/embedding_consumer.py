@@ -10,7 +10,6 @@ import sys
 import time
 import json
 import signal
-import logging
 import argparse
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
@@ -21,6 +20,7 @@ import html2text
 
 from configs.paths import ROOT_DIR
 from configs.config import config
+from configs.logging_config import get_subsystem_logger
 from database.milvus_client import MilvusClientWrapper, EmbeddingEngine
 from database.neo4j_client import Neo4jClient
 from artifacts.canonical import decode_kafka_envelope
@@ -32,7 +32,7 @@ from preprocess.text_cleaner import (
     extract_effective_date,
 )
 
-logger = logging.getLogger("VietLawBERT_EmbeddingConsumer")
+logger = get_subsystem_logger("streaming", "ingestion")
 
 
 class LawEventConsumer:
@@ -57,7 +57,7 @@ class LawEventConsumer:
             "group.id": self.group_id,
             "session.timeout.ms": 60000,
             "auto.offset.reset": "earliest",
-            "enable.auto.commit": False,  # Bắt buộc cam kết offset thủ công để tránh thất thoát dữ liệu
+            "enable.auto.commit": False,
             "max.poll.interval.ms": int(os.getenv("KAFKA_MAX_POLL_INTERVAL_MS", "1800000")),
         }
         self.consumer = Consumer(conf)
@@ -65,12 +65,10 @@ class LawEventConsumer:
 
         logger.info(f"Kết nối Kafka Ingestion Consumer tới topic [{self.topic}] (Group: {self.group_id})")
 
-        # Khởi tạo các client lưu trữ phân tán
         self.milvus_client = MilvusClientWrapper()
         self.encoder = EmbeddingEngine.get_instance()
         self.neo_client = Neo4jClient()
 
-        # Bộ đệm tạm trên RAM phục vụ Micro-batching
         self.pending_milvus_rows: List[Dict[str, Any]] = []
         self.pending_milvus_texts: List[str] = []
         self.pending_neo_batch: List[Dict[str, Any]] = []
@@ -141,7 +139,6 @@ class LawEventConsumer:
             logger.warning(f"[BỎ QUA] Văn bản {doc_number} (ID: {item_id}) không có nội dung HTML.")
             return
 
-        # Làm sạch HTML thô
         soup = BeautifulSoup(html_raw, "html.parser")
         for tag in soup(["script", "style", "nav", "footer", "header", "noscript", "button", "iframe"]):
             tag.decompose()
@@ -225,7 +222,6 @@ class LawEventConsumer:
         for row, vec in zip(rows, vectors):
             milvus_data.append({**row, "embedding": vec})
 
-        # Ghi dữ liệu đồng thời với tính chất lũy thừa (Idempotent Upsert)
         self.milvus_client.insert_batch(milvus_data)
         self.neo_client.insert_structural_batch(neo_rows)
 
@@ -271,7 +267,6 @@ class LawEventConsumer:
                 inserted_rels = self.neo_client.insert_semantic_relations_batch(self.pending_relations_batch)
                 logger.info(f"[ĐỒ THỊ] Đã nạp {inserted_rels} quan hệ ngữ nghĩa mới vào Neo4j.")
 
-            # CHỈ THỰC HIỆN COMMIT KHI CẢ HAI CSDL ĐÃ GHI NGUYÊN TỬ THÀNH CÔNG
             if self.pending_messages:
                 self._commit_pending_messages()
 
@@ -325,7 +320,6 @@ class LawEventConsumer:
                 idle_started_at = None
                 raw_val = msg.value()
 
-                # Tương thích cả phong bì nén Gzip v1 lẫn chuỗi JSON thuần
                 try:
                     payload = decode_kafka_envelope(raw_val)
                     data = json.loads(payload.decode("utf-8"))

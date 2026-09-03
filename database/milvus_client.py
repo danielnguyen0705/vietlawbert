@@ -7,16 +7,15 @@ from __future__ import annotations
 
 import os
 import sys
-import logging
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 
 import torch
 from pymilvus import MilvusClient, DataType
 
-from configs.paths import get_log_path
 from configs.config import config
+from configs.logging_config import get_subsystem_logger
 
-logger = logging.getLogger("VietLawBERT_MilvusClient")
+logger = get_subsystem_logger("database", "database")
 
 
 class EmbeddingEngine:
@@ -63,7 +62,6 @@ class EmbeddingEngine:
         if not texts:
             return []
 
-        all_embeddings: List[List[float]] = []
         ordered_indices = sorted(range(len(texts)), key=lambda i: len(texts[i]))
         ordered_embeddings: List[Optional[List[float]]] = [None] * len(texts)
 
@@ -82,7 +80,6 @@ class EmbeddingEngine:
 
             with torch.inference_mode():
                 outputs = self.model(**encoded)
-                # CLS token representation kết hợp L2 normalization
                 cls_rep = outputs.last_hidden_state[:, 0, :]
                 norm_rep = torch.nn.functional.normalize(cls_rep, p=2, dim=1)
 
@@ -105,7 +102,7 @@ class MilvusClientWrapper:
         self.uri = uri or getattr(config, "MILVUS_URI", "http://localhost:19530")
         self.collection_name = collection_name or getattr(config, "MILVUS_COLLECTION_NAME", "vietlawbert_chunks")
         self.vector_dim = vector_dim or int(getattr(config, "EMBEDDING_DIM", 1024))
-        
+
         logger.info(f"Kết nối Milvus RPC tại {self.uri} (Collection: {self.collection_name})")
         self.client = MilvusClient(uri=self.uri)
         self._ensure_collection()
@@ -121,7 +118,6 @@ class MilvusClientWrapper:
         schema.add_field("doc_id", DataType.VARCHAR, max_length=256)
         schema.add_field("doc_number", DataType.VARCHAR, max_length=256)
         schema.add_field("effective_date", DataType.VARCHAR, max_length=128)
-        # Mở rộng giới hạn lên 2048 ký tự giải quyết triệt để lỗi độ dài tên văn bản
         schema.add_field("source_doc", DataType.VARCHAR, max_length=2048)
         schema.add_field("hierarchy", DataType.VARCHAR, max_length=2048)
         schema.add_field("original_text", DataType.VARCHAR, max_length=65535)
@@ -196,7 +192,6 @@ class MilvusClientWrapper:
         self.client.close()
 
 
-# Định danh tương thích ngược
 MilvusStore = MilvusClientWrapper
 
 

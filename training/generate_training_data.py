@@ -12,36 +12,26 @@ import re
 import json
 import math
 import argparse
-import logging
 from pathlib import Path
 from collections import defaultdict
 from typing import Dict, Any, List, Tuple, Optional
 
 from rank_bm25 import BM25Okapi
 
-from configs.paths import ROOT_DIR, DATA_STORAGE_ROOT, ARTIFACTS_DIR, get_log_path
+from configs.paths import ROOT_DIR, DATA_STORAGE_ROOT, ARTIFACTS_DIR
 from configs.config import config
+from configs.logging_config import get_subsystem_logger
 from artifacts.canonical import read_jsonl
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | [%(levelname)s] | %(name)s - %(message)s",
-    handlers=[
-        logging.FileHandler(get_log_path("generate_training_data"), encoding="utf-8", mode="a"),
-        logging.StreamHandler(sys.stdout),
-    ],
-)
-logger = logging.getLogger("VietLawBERT_GGSLM")
+logger = get_subsystem_logger("training", "model_training")
 
 
 def tokenize_vietnamese(text: str) -> List[str]:
-    """Tách từ vựng cơ bản chuẩn hóa cho tiếng Việt, loại bỏ ký tự đặc biệt."""
     text_clean = re.sub(r"[^\w\s]", " ", str(text).lower())
     return [w for w in text_clean.split() if w]
 
 
 def load_chunks_unified(file_path: Path | str) -> List[Dict[str, Any]]:
-    """Đọc dữ liệu chunks hỗ trợ cả .jsonl, .jsonl.gz và .parquet."""
     path = Path(file_path)
     if not path.exists():
         raise FileNotFoundError(f"Không tìm thấy tệp dữ liệu chunks: {path}")
@@ -60,7 +50,6 @@ def load_chunks_unified(file_path: Path | str) -> List[Dict[str, Any]]:
 
 
 def load_diagram_edges(diagram_dir: Path | str) -> Dict[str, List[Dict[str, Any]]]:
-    """Nạp danh bạ cạnh quan hệ pháp lý từ thư mục diagrams hoặc tệp tổng hợp."""
     edges: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     d_path = Path(diagram_dir)
     if not d_path.exists():
@@ -86,12 +75,6 @@ def load_diagram_edges(diagram_dir: Path | str) -> Dict[str, List[Dict[str, Any]
 
 
 def build_indices(chunks: List[Dict[str, Any]]) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, List[str]], Dict[Tuple[str, str], List[str]]]:
-    """
-    Xây dựng chỉ mục tìm kiếm nhanh trên RAM:
-    - chunk_by_id: Tra cứu thực thể chunk theo chunk_id.
-    - chunks_by_doc: Tra cứu danh sách chunk theo doc_id (Chiến lược Neighbor).
-    - chunks_by_dieu: Tra cứu danh sách chunk theo cặp (doc_id, điều) (Chiến lược Sibling).
-    """
     chunk_by_id: Dict[str, Dict[str, Any]] = {}
     chunks_by_doc: Dict[str, List[str]] = defaultdict(list)
     chunks_by_dieu: Dict[Tuple[str, str], List[str]] = defaultdict(list)
@@ -129,12 +112,6 @@ def get_candidate_set(
     diagram_edges: Dict[str, List[Dict[str, Any]]],
     strategy: str = "all",
 ) -> List[Tuple[str, str, int]]:
-    """
-    Tầng 1 (Graph Topology): Khai thác tập ứng viên Negative dựa trên khoảng cách đồ thị tri thức:
-    - dist = 1 (Sibling): Thuộc cùng một Điều luật nhưng khác Khoản/Điểm.
-    - dist = 2 (Neighbor): Thuộc cùng văn bản pháp lý nhưng quy định ở Điều khác.
-    - dist = 3 (Referential): Thuộc văn bản khác nhưng có quan hệ dẫn chiếu/sửa đổi/hướng dẫn.
-    """
     meta = pos_chunk.get("metadata") or {}
     pos_id = str(pos_chunk.get("chunk_id", ""))
     doc_id = str(meta.get("doc_id") or pos_chunk.get("doc_id") or "")
@@ -143,13 +120,11 @@ def get_candidate_set(
 
     candidates: List[Tuple[str, str, int]] = []
 
-    # 1. Sibling Strategy (dist = 1)
     if strategy in ("all", "sibling") and dieu:
         for cid in chunks_by_dieu.get((doc_id, dieu), []):
             if cid != pos_id:
                 candidates.append((cid, "sibling", 1))
 
-    # 2. Neighbor Strategy (dist = 2)
     if strategy in ("all", "neighbor"):
         for cid in chunks_by_doc.get(doc_id, []):
             if cid == pos_id:
@@ -159,7 +134,6 @@ def get_candidate_set(
             if ck_dieu != dieu:
                 candidates.append((cid, "neighbor", 2))
 
-    # 3. Referential Strategy (dist = 3)
     if strategy in ("all", "reference"):
         edges = diagram_edges.get(doc_id, [])
         ref_doc_ids = set()
@@ -183,10 +157,6 @@ def score_hardness(
     chunk_by_id: Dict[str, Dict[str, Any]],
     gamma: float = 0.6,
 ) -> List[Tuple[str, str, float]]:
-    """
-    Tầng 2 (Lexical Scoring): Tính toán điểm mẫu khó Hardness Score:
-    Score_Hardness(h) = gamma * BM25_norm(q, h) + (1 - gamma) * exp(-dist_graph(P, h))
-    """
     if not candidates:
         return []
 
@@ -208,13 +178,11 @@ def score_hardness(
         score = (gamma * bm25_norm) + ((1.0 - gamma) * graph_component)
         scored.append((cid, strat, round(score, 6)))
 
-    # Sắp xếp giảm dần theo điểm khó
     scored.sort(key=lambda x: x[2], reverse=True)
     return scored
 
 
 def generate_query_from_llm(chunk_text: str, model: str) -> Optional[str]:
-    """Sinh câu hỏi pháp lý giả lập qua OpenAI-compatible API."""
     try:
         from openai import OpenAI
         client = OpenAI(
@@ -242,7 +210,6 @@ def generate_query_from_llm(chunk_text: str, model: str) -> Optional[str]:
 
 
 def make_query(chunk: Dict[str, Any], use_llm: bool = False, model: Optional[str] = None) -> str:
-    """Tạo câu hỏi truy vấn: Ưu tiên LLM Synthetic Query, Fallback sang cấu trúc Điều/Khoản."""
     text = chunk.get("contextualized_text") or chunk.get("original_text", "")
 
     if use_llm:
@@ -261,7 +228,6 @@ def make_query(chunk: Dict[str, Any], use_llm: bool = False, model: Optional[str
         scope = f"{dieu}, {khoan}" if khoan else dieu
         return f"Quy định pháp lý tại {scope} của {doc_number} là gì?"
 
-    # Fallback trích xuất tiêu đề ngắn
     raw_preview = chunk.get("original_text", "")[:120].strip()
     return f"Nội dung quy định liên quan đến: {raw_preview}?"
 
@@ -277,7 +243,6 @@ def run_pipeline(
     use_llm_query: bool = False,
     llm_model: Optional[str] = None,
 ) -> Dict[str, int]:
-    """Điều phối toàn bộ chu trình khai phá mẫu khó đối lập GG-SLM."""
     chunks = load_chunks_unified(chunks_path)
     diagram_edges = load_diagram_edges(diagram_dir)
     chunk_by_id, chunks_by_doc, chunks_by_dieu = build_indices(chunks)
@@ -309,7 +274,6 @@ def run_pipeline(
 
             scored = score_hardness(query, candidates, chunk_by_id, gamma=gamma)
 
-            # Lọc Semi-Hard Negatives trong dải [tau, tau_max] (tau_max=0.85 ngăn cản false negatives)
             tau_max = 0.85
             best = next(((cid, strat, sc) for cid, strat, sc in scored if tau <= sc <= tau_max), None)
 

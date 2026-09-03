@@ -1,6 +1,6 @@
 """
 law_spider.py - Con nhện thu thập toàn diện văn bản pháp luật Việt Nam (VBPL).
-Tích hợp Next.js Server Action, Playwright Context, PyMuPDF, OCR Failsafe và Backpressure Queue.
+Tích hợp Next.js Server Action, Playwright Context, PyMuPDF, OCR Failsafe và Stats-based Backpressure Queue.
 """
 
 from __future__ import annotations
@@ -22,8 +22,11 @@ import scrapy
 from scrapy import signals
 from bs4 import BeautifulSoup
 
-from configs.paths import ARTIFACTS_DIR, RAW_PDFS_DIR
+from configs.paths import ARTIFACTS_DIR
 from configs.config import config
+from configs.logging_config import get_subsystem_logger
+
+logger = get_subsystem_logger("crawler", "crawler")
 
 try:
     from crawler.items import HTMLStatus
@@ -73,19 +76,6 @@ class LawSpider(scrapy.Spider):
     allowed_domains = ["vbpl.vn", "moj.gov.vn", "vbpl-bientap-gateway.moj.gov.vn", "fptcloud.com"]
     handle_httpstatus_list = [403]
 
-    custom_settings = {
-        'LOG_LEVEL': 'INFO',
-        'LOG_STDOUT': True,
-        'DOWNLOAD_DELAY': float(os.getenv('CRAWLER_DOWNLOAD_DELAY', '0.1')),
-        'CONCURRENT_REQUESTS': int(os.getenv('CRAWLER_CONCURRENCY', '8')),
-        'CONCURRENT_REQUESTS_PER_DOMAIN': int(os.getenv('CRAWLER_CONCURRENCY', '8')),
-        'COOKIES_ENABLED': True,
-        'RETRY_TIMES': 3,
-        'RETRY_HTTP_CODES': [500, 502, 503, 504, 408, 429],
-        'DOWNLOAD_TIMEOUT': 45,
-        'HTTPCACHE_ENABLED': False,
-    }
-
     def __init__(
         self,
         start_page: int = 1,
@@ -106,31 +96,30 @@ class LawSpider(scrapy.Spider):
         self.max_items = max(1, int(limit)) if limit else None
         self.page_size = max(1, min(int(page_size), 100))
         self.keyword = keyword.strip()
-        self.agency_ids = [v.strip() for v in agency_ids.split(',') if v.strip()]
-        self.requested_doc_ids = [v.strip() for v in doc_ids.split(',') if v.strip()]
+        self.agency_ids = [v.strip() for v in agency_ids.split(",") if v.strip()]
+        self.requested_doc_ids = [v.strip() for v in doc_ids.split(",") if v.strip()]
         self.group_vbpl = str(group_vbpl).strip().lower() not in {"0", "false", "no"}
-        
+
         self.excluded_doc_type_codes = {
-            v.strip().upper() for v in exclude_doc_type_codes.split(',') if v.strip()
+            v.strip().upper() for v in exclude_doc_type_codes.split(",") if v.strip()
         }
         self.server_doc_type_ids = [
             doc_type_id
             for code, doc_type_id in OFFICIAL_DOC_TYPE_IDS.items()
             if code not in self.excluded_doc_type_codes
         ]
-        
+
         self.skipped_doc_types: Dict[str, int] = {}
         self.successful_ids: Set[str] = set()
         self.scheduled_ids: Set[str] = set()
         self.current_failed_ids: Set[str] = set()
-        
+
         self.search_action: Optional[str] = os.getenv("VBPL_SEARCH_ACTION")
         self.action_tokens: List[str] = []
-        
-        # Đường dẫn thư mục đồng bộ hóa trung tâm
+
         self.artifacts_dir = Path(ARTIFACTS_DIR)
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
-        self.failed_file = self.artifacts_dir / 'crawl_failures.jsonl'
+        self.failed_file = self.artifacts_dir / "crawl_failures.jsonl"
         self._ocr_semaphore: Optional[asyncio.Semaphore] = None
 
     @classmethod
@@ -138,6 +127,28 @@ class LawSpider(scrapy.Spider):
         spider = super().from_crawler(crawler, *args, **kwargs)
         crawler.signals.connect(spider.spider_closed, signal=signals.spider_closed)
         return spider
+
+    def _get_in_flight_count(self) -> int:
+        """Đo đạc chính xác số lượng request đang tồn đọng trong toàn bộ Scrapy Engine."""
+        if hasattr(self, "crawler") and self.crawler.stats:
+            enqueued = self.crawler.stats.get_value("scheduler/enqueued", 0) or 0
+            dequeued = self.crawler.stats.get_value("scheduler/dequeued", 0) or 0
+            diff = enqueued - dequeued
+            if diff > 0:
+                return diff
+
+        try:
+            engine = getattr(self.crawler, "engine", None)
+            if engine and engine.slot:
+                sched = getattr(engine.slot, "scheduler", None)
+                down = getattr(engine.slot, "downloader", None)
+                s_len = len(sched) if sched is not None else 0
+                d_len = len(down.active) if down and hasattr(down, "active") else 0
+                return s_len + d_len
+        except Exception:
+            pass
+
+        return 0
 
     async def start(self):
         if self.requested_doc_ids:
@@ -147,10 +158,10 @@ class LawSpider(scrapy.Spider):
                 yield scrapy.Request(
                     url=f"{SEARCH_API}/{doc_id}",
                     method="GET",
-                    headers={'Origin': 'https://vbpl.vn', 'Referer': 'https://vbpl.vn/', 'Accept': 'application/json'},
+                    headers={"Origin": "https://vbpl.vn", "Referer": "https://vbpl.vn/", "Accept": "application/json"},
                     callback=self.parse_detail,
                     errback=self.handle_failure,
-                    cb_kwargs={'item': {'item_id': doc_id, 'doc_number': doc_id, 'metadata_api': {}}},
+                    cb_kwargs={"item": {"item_id": doc_id, "doc_number": doc_id, "metadata_api": {}}},
                 )
             return
 
@@ -203,20 +214,8 @@ class LawSpider(scrapy.Spider):
             total_pages = None
 
             while total_pages is None or page_number <= total_pages:
-                # =========================================================================
-                # CƠ CHẾ BACKPRESSURE: Kiểm soát tràn RAM (OOM Crash khi vượt 4GB)
-                # Tạm hoãn duyệt trang tìm kiếm mới nếu hàng đợi Scrapy vượt quá 500 requests
-                # =========================================================================
-                while True:
-                    try:
-                        if self.crawler.engine and self.crawler.engine.slot and self.crawler.engine.slot.scheduler:
-                            pending = len(self.crawler.engine.slot.scheduler)
-                            if pending >= 500:
-                                await asyncio.sleep(2.0)
-                                continue
-                    except Exception:
-                        pass
-                    break
+                while self._get_in_flight_count() >= 120:
+                    await asyncio.sleep(1.5)
 
                 self.logger.info("[TÌM KIẾM] Quét trang %d%s", page_number, f"/{total_pages}" if total_pages else "")
                 result_text = await page.evaluate(
@@ -243,7 +242,7 @@ class LawSpider(scrapy.Spider):
                 )
 
                 data = self._decode_search_payload(result_text)
-                documents = data.get('items', [])
+                documents = data.get("items", [])
                 if not documents:
                     self.logger.warning("[TÌM KIẾM] Không còn văn bản ở trang %d. Kết thúc tìm kiếm.", page_number)
                     break
@@ -251,7 +250,7 @@ class LawSpider(scrapy.Spider):
                 for request in self._build_detail_requests(documents):
                     yield request
 
-                total = int(data.get('total') or 0)
+                total = int(data.get("total") or 0)
                 total_pages = max(1, (total + self.page_size - 1) // self.page_size)
                 if self.max_pages:
                     total_pages = min(total_pages, self.start_page + self.max_pages - 1)
@@ -287,7 +286,7 @@ class LawSpider(scrapy.Spider):
             "optionDoc": "title",
             "matchMode": "all_words",
             "effFromBegin": "$undefined",
-            "effFromEnd": "$undefined"
+            "effFromEnd": "$undefined",
         }
         return json.dumps([item], ensure_ascii=False)
 
@@ -308,10 +307,10 @@ class LawSpider(scrapy.Spider):
         if not html_raw:
             return HTMLStatus.EMPTY, "", None
 
-        html_dom = BeautifulSoup(html_raw, 'html.parser')
-        for embedded in html_dom.find_all(src=re.compile(r'^data:', re.I)):
+        html_dom = BeautifulSoup(html_raw, "html.parser")
+        for embedded in html_dom.find_all(src=re.compile(r"^data:", re.I)):
             embedded.decompose()
-        for embedded in html_dom.find_all(data=re.compile(r'^data:', re.I)):
+        for embedded in html_dom.find_all(data=re.compile(r"^data:", re.I)):
             embedded.decompose()
 
         text_content = html_dom.get_text(" ", strip=True)
@@ -367,7 +366,14 @@ class LawSpider(scrapy.Spider):
     def _ocr_pdf(body: bytes) -> Tuple[str, str]:
         if not body or len(body) < 10:
             return "", "OCR_EMPTY_BODY"
+
         executable = shutil.which("tesseract")
+        if not executable:
+            for fallback_path in ("/usr/bin/tesseract", "/usr/local/bin/tesseract", "/bin/tesseract"):
+                if os.path.isfile(fallback_path) and os.access(fallback_path, os.X_OK):
+                    executable = fallback_path
+                    break
+
         if not executable:
             return "", "OCR_ENGINE_UNAVAILABLE"
 
@@ -422,8 +428,8 @@ class LawSpider(scrapy.Spider):
         for doc in documents:
             if self.max_items and len(self.scheduled_ids) >= self.max_items:
                 return
-            doc_id = str(doc.get('id', '')).strip()
-            doc_type_code = str((doc.get('docType') or {}).get('code') or '').strip().upper()
+            doc_id = str(doc.get("id", "")).strip()
+            doc_type_code = str((doc.get("docType") or {}).get("code") or "").strip().upper()
             if doc_type_code in self.excluded_doc_type_codes:
                 self.skipped_doc_types[doc_type_code] = self.skipped_doc_types.get(doc_type_code, 0) + 1
                 continue
@@ -432,59 +438,59 @@ class LawSpider(scrapy.Spider):
 
             self.scheduled_ids.add(doc_id)
             item = {
-                'item_id': doc_id,
-                'doc_number': doc.get('docNum', 'Unknown'),
-                'metadata_api': doc,
+                "item_id": doc_id,
+                "doc_number": doc.get("docNum", "Unknown"),
+                "metadata_api": doc,
             }
             yield scrapy.Request(
                 url=f"{SEARCH_API}/{doc_id}",
                 method="GET",
-                headers={'Origin': 'https://vbpl.vn', 'Referer': 'https://vbpl.vn/', 'Accept': 'application/json'},
+                headers={"Origin": "https://vbpl.vn", "Referer": "https://vbpl.vn/", "Accept": "application/json"},
                 callback=self.parse_detail,
                 errback=self.handle_failure,
-                cb_kwargs={'item': item},
+                cb_kwargs={"item": item},
             )
 
     def parse_detail(self, response, item: dict):
         try:
             data = json.loads(response.text)
-            doc_data = data.get('data', {})
+            doc_data = data.get("data", {})
         except Exception:
-            self.logger.error("[LỖI] Không parse được JSON cho Document %s", item.get('item_id'))
+            self.logger.error("[LỖI] Không parse được JSON cho Document %s", item.get("item_id"))
             self.handle_failure_internal(item)
             return
 
-        doc_content = doc_data.get('documentContent')
-        html_raw = (doc_content or {}).get('content', '')
-        if not item.get('metadata_api'):
-            item['metadata_api'] = {
+        doc_content = doc_data.get("documentContent")
+        html_raw = (doc_content or {}).get("content", "")
+        if not item.get("metadata_api"):
+            item["metadata_api"] = {
                 key: doc_data.get(key)
                 for key in (
-                    'id', 'title', 'docNum', 'docType', 'issueDate', 'effFrom', 'effTo',
-                    'effStatus', 'agencyIds', 'agencyName', 'isLw'
+                    "id", "title", "docNum", "docType", "issueDate", "effFrom", "effTo",
+                    "effStatus", "agencyIds", "agencyName", "isLw"
                 )
             }
-            item['doc_number'] = doc_data.get('docNum') or item.get('doc_number') or item['item_id']
+            item["doc_number"] = doc_data.get("docNum") or item.get("doc_number") or item["item_id"]
 
         html_status, prepared_html, html_dom = self._prepare_html(html_raw)
         if html_status != HTMLStatus.VALID:
-            self.logger.warning("[THIẾU HTML] Văn bản %s không có nội dung HTML sẵn.", item['item_id'])
-            item['html_status'] = HTMLStatus.EMPTY
-            item['html_raw'] = ""
+            self.logger.warning("[THIẾU HTML] Văn bản %s không có nội dung HTML sẵn.", item["item_id"])
+            item["html_status"] = HTMLStatus.EMPTY
+            item["html_raw"] = ""
         else:
-            item['html_status'] = HTMLStatus.VALID
-            item['html_raw'] = prepared_html
-            item['content_source'] = "detail_html"
+            item["html_status"] = HTMLStatus.VALID
+            item["html_raw"] = prepared_html
+            item["content_source"] = "detail_html"
 
         metadata_detail = dict(doc_data)
         if isinstance(doc_content, dict):
-            metadata_detail['documentContent'] = {
-                key: value for key, value in doc_content.items() if key != 'content'
+            metadata_detail["documentContent"] = {
+                key: value for key, value in doc_content.items() if key != "content"
             }
-        item['metadata_detail'] = metadata_detail
+        item["metadata_detail"] = metadata_detail
 
-        if item['html_status'] != HTMLStatus.VALID:
-            if str(item['item_id']).isdigit() and os.getenv("LEGACY_FALLBACK_ENABLED", "0") == "1":
+        if item["html_status"] != HTMLStatus.VALID:
+            if str(item["item_id"]).isdigit() and os.getenv("LEGACY_FALLBACK_ENABLED", "0") == "1":
                 yield self._legacy_print_request(item)
             else:
                 yield self._rescue_browser_request(item)
@@ -528,7 +534,7 @@ class LawSpider(scrapy.Spider):
             meta=self._playwright_rescue_meta(),
             callback=self.parse_legacy_print,
             errback=self.handle_legacy_print_failure,
-            cb_kwargs={'item': item},
+            cb_kwargs={"item": item},
             dont_filter=True,
         )
 
@@ -538,11 +544,11 @@ class LawSpider(scrapy.Spider):
             content_html = response.css("#content").get() or ""
             status, prepared_html, html_dom = self._prepare_html(content_html)
             if status == HTMLStatus.VALID:
-                item['html_status'] = status
-                item['html_raw'] = prepared_html
-                item['content_source'] = "legacy_print_html"
-                item['rescue_status'] = "LEGACY_HTML_RECOVERED"
-                self.logger.info("[CỨU HỘ LEGACY] %s thành công.", item['item_id'])
+                item["html_status"] = status
+                item["html_raw"] = prepared_html
+                item["content_source"] = "legacy_print_html"
+                item["rescue_status"] = "LEGACY_HTML_RECOVERED"
+                self.logger.info("[CỨU HỘ LEGACY] %s thành công.", item["item_id"])
                 yield self._diagram_request(item, html_dom)
                 return
             yield self._rescue_browser_request(item)
@@ -551,7 +557,7 @@ class LawSpider(scrapy.Spider):
                 await page.close()
 
     async def handle_legacy_print_failure(self, failure):
-        item = failure.request.cb_kwargs['item']
+        item = failure.request.cb_kwargs["item"]
         page = failure.request.meta.get("playwright_page")
         if page is not None:
             try:
@@ -566,47 +572,46 @@ class LawSpider(scrapy.Spider):
             meta=self._playwright_rescue_meta(),
             callback=self.fetch_file_list_in_browser,
             errback=self.handle_file_list_failure,
-            cb_kwargs={'item': item, 'rescue_attempt': attempt},
+            cb_kwargs={"item": item, "rescue_attempt": attempt},
             dont_filter=True,
         )
 
     def _diagram_request(self, item: dict, html_dom=None):
-        doc_id = item['item_id']
+        doc_id = item["item_id"]
         return scrapy.Request(
             url=f"{SEARCH_API}/{doc_id}/diagram",
             method="GET",
-            headers={'Origin': 'https://vbpl.vn', 'Referer': 'https://vbpl.vn/', 'Accept': 'application/json'},
+            headers={"Origin": "https://vbpl.vn", "Referer": "https://vbpl.vn/", "Accept": "application/json"},
             callback=self.parse_diagram,
             errback=self.handle_failure,
-            cb_kwargs={'item': item},
-            meta={'html_dom': html_dom},
+            cb_kwargs={"item": item},
+            meta={"html_dom": html_dom},
         )
 
     def _next_file_request(self, item: dict, files: list):
         if not files:
-            item['rescue_status'] = item.get('rescue_status') or "FILE_NOT_FOUND"
+            item["rescue_status"] = item.get("rescue_status") or "FILE_NOT_FOUND"
             return self._diagram_request(item)
 
         current, *remaining = files
-        item['rescue_file'] = {
+        item["rescue_file"] = {
             "fileName": current.get("fileName"),
             "size": current.get("size"),
             "relatedType": current.get("relatedType"),
         }
 
-        # Nhận diện file mẫu template.pdf trắng
         file_name = str(current.get("fileName") or "").lower()
         if "template.pdf" in file_name:
-            item['rescue_status'] = "UPSTREAM_TEMPLATE"
-            item['upstream_content_unavailable'] = True
+            item["rescue_status"] = "UPSTREAM_TEMPLATE"
+            item["upstream_content_unavailable"] = True
             return self._next_file_request(item, remaining) if remaining else self._diagram_request(item)
 
         return scrapy.Request(
-            url=current['presignedUrl'],
+            url=current["presignedUrl"],
             method="GET",
             callback=self.parse_fallback_file,
             errback=self.handle_fallback_file_failure,
-            cb_kwargs={'item': item, 'file_info': current, 'remaining_files': remaining},
+            cb_kwargs={"item": item, "file_info": current, "remaining_files": remaining},
             dont_filter=True,
         )
 
@@ -632,7 +637,7 @@ class LawSpider(scrapy.Spider):
                 {
                     "action": FILES_ACTION,
                     "routerTree": ROUTER_TREE,
-                    "body": json.dumps([item['item_id'], None]),
+                    "body": json.dumps([item["item_id"], None]),
                 },
             )
             files = self._decode_action_value(result_text)
@@ -643,11 +648,11 @@ class LawSpider(scrapy.Spider):
                 ],
                 key=self._fallback_file_priority,
             )
-            item['rescue_files_found'] = len(candidates)
+            item["rescue_files_found"] = len(candidates)
             yield self._next_file_request(item, candidates)
         except Exception as exc:
-            item['rescue_status'] = "FILE_LIST_ERROR"
-            self.logger.warning("[CỨU HỘ FILE LIST BROWSER] %s thất bại: %s", item['item_id'], exc)
+            item["rescue_status"] = "FILE_LIST_ERROR"
+            self.logger.warning("[CỨU HỘ FILE LIST BROWSER] %s thất bại: %s", item["item_id"], exc)
             yield self._diagram_request(item)
         finally:
             if page is not None:
@@ -661,11 +666,11 @@ class LawSpider(scrapy.Spider):
                 raw_html = response.body.decode("utf-8", errors="replace")
                 status, prepared_html, html_dom = self._prepare_html(raw_html)
                 if status == HTMLStatus.VALID:
-                    item['html_status'] = status
-                    item['html_raw'] = prepared_html
-                    item['content_source'] = "fallback_html"
-                    item['rescue_status'] = "HTML_RECOVERED"
-                    self.logger.info("[CỨU HỘ HTML THÀNH CÔNG] %s từ %s", item['item_id'], file_info.get('fileName'))
+                    item["html_status"] = status
+                    item["html_raw"] = prepared_html
+                    item["content_source"] = "fallback_html"
+                    item["rescue_status"] = "HTML_RECOVERED"
+                    self.logger.info("[CỨU HỘ HTML THÀNH CÔNG] %s từ %s", item["item_id"], file_info.get("fileName"))
                     yield self._diagram_request(item, html_dom)
                     return
             elif name.endswith(".docx"):
@@ -682,38 +687,43 @@ class LawSpider(scrapy.Spider):
 
                 if len(extracted_text.strip()) < 100 and ocr_enabled:
                     if not inline_ocr:
-                        item['ocr_status'] = "OCR_PENDING"
-                        item['rescue_status'] = "OCR_PENDING"
+                        item["ocr_status"] = "OCR_PENDING"
+                        item["rescue_status"] = "OCR_PENDING"
                     else:
                         extracted_text, ocr_status = await self._ocr_pdf_async(response.body)
                         if ocr_status == "OCR_COMPLETED" and len(extracted_text.strip()) < 100:
                             ocr_status = "OCR_EMPTY"
-                        item['ocr_status'] = ocr_status
-                        if len(extracted_text.strip()) >= 100:
-                            source = "fallback_pdf_ocr"
-                            status_name = "PDF_OCR_RECOVERED"
+
+                        if ocr_status == "OCR_ENGINE_UNAVAILABLE":
+                            item["ocr_status"] = "OCR_PENDING"
+                            item["rescue_status"] = "OCR_PENDING"
                         else:
-                            item['rescue_status'] = ocr_status
+                            item["ocr_status"] = ocr_status
+                            if len(extracted_text.strip()) >= 100:
+                                source = "fallback_pdf_ocr"
+                                status_name = "PDF_OCR_RECOVERED"
+                            else:
+                                item["rescue_status"] = ocr_status
 
             if len(extracted_text.strip()) >= 100:
                 recovered_html = "<html><body><pre>" + html_lib.escape(extracted_text) + "</pre></body></html>"
-                item['html_status'] = HTMLStatus.VALID
-                item['html_raw'] = recovered_html
-                item['content_source'] = source
-                item['rescue_status'] = status_name
-                self.logger.info("[CỨU HỘ VĂN BẢN THÀNH CÔNG] %s từ %s", item['item_id'], file_info.get('fileName'))
-                yield self._diagram_request(item, BeautifulSoup(recovered_html, 'html.parser'))
+                item["html_status"] = HTMLStatus.VALID
+                item["html_raw"] = recovered_html
+                item["content_source"] = source
+                item["rescue_status"] = status_name
+                self.logger.info("[CỨU HỘ VĂN BẢN THÀNH CÔNG] %s từ %s", item["item_id"], file_info.get("fileName"))
+                yield self._diagram_request(item, BeautifulSoup(recovered_html, "html.parser"))
                 return
         except Exception as exc:
-            self.logger.warning("[LỖI XỬ LÝ FILE ĐÍNH KÈM] %s: %s", item['item_id'], exc)
+            self.logger.warning("[LỖI XỬ LÝ FILE ĐÍNH KÈM] %s: %s", item["item_id"], exc)
 
         if name.endswith(".pdf") and not remaining_files:
-            item['rescue_status'] = item.get('rescue_status') or "OCR_REQUIRED"
+            item["rescue_status"] = item.get("rescue_status") or "OCR_REQUIRED"
         yield self._next_file_request(item, remaining_files)
 
     async def handle_file_list_failure(self, failure):
-        item = failure.request.cb_kwargs['item']
-        attempt = int(failure.request.cb_kwargs.get('rescue_attempt', 1))
+        item = failure.request.cb_kwargs["item"]
+        attempt = int(failure.request.cb_kwargs.get("rescue_attempt", 1))
         page = failure.request.meta.get("playwright_page")
         if page is not None:
             try:
@@ -725,41 +735,58 @@ class LawSpider(scrapy.Spider):
         if attempt < max_attempts:
             return self._rescue_browser_request(item, attempt + 1)
 
-        item['rescue_status'] = "FILE_LIST_REQUEST_FAILED"
+        item["rescue_status"] = "FILE_LIST_REQUEST_FAILED"
         return self._diagram_request(item)
 
     def handle_fallback_file_failure(self, failure):
-        item = failure.request.cb_kwargs['item']
-        remaining_files = failure.request.cb_kwargs['remaining_files']
+        item = failure.request.cb_kwargs["item"]
+        remaining_files = failure.request.cb_kwargs["remaining_files"]
         return self._next_file_request(item, remaining_files)
 
     def parse_diagram(self, response, item: dict):
         try:
             diagram_data = json.loads(response.text)
-            item['diagram_json'] = diagram_data.get('data', {})
+            item["diagram_json"] = diagram_data.get("data", {})
         except json.JSONDecodeError:
-            item['diagram_json'] = None
+            item["diagram_json"] = None
 
-        doc_id = item['item_id']
+        doc_id = item["item_id"]
         self.successful_ids.add(doc_id)
-        self.logger.info("[HOÀN TẤT VĂN BẢN] %s (ID: %s)", item.get('doc_number'), doc_id)
+        self.logger.info("[HOÀN TẤT VĂN BẢN] %s (ID: %s)", item.get("doc_number"), doc_id)
         yield item
 
     def handle_failure(self, failure):
-        item = failure.request.cb_kwargs.get('item')
-        if item and 'item_id' in item:
+        item = failure.request.cb_kwargs.get("item")
+        if item and "item_id" in item:
             self.handle_failure_internal(item)
 
     def handle_failure_internal(self, item: dict):
-        doc_id = str(item['item_id'])
+        doc_id = str(item["item_id"])
         self.current_failed_ids.add(doc_id)
         self.logger.error("[THẤT BẠI] Document ID: %s", doc_id)
-        with open(self.failed_file, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(item, ensure_ascii=False) + '\n')
+        with open(self.failed_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
     def spider_closed(self, spider):
+        finish_reason = spider.crawler.stats.get_value("finish_reason", "unknown")
+        stats_data = {
+            "finish_reason": finish_reason,
+            "successful_count": len(self.successful_ids),
+            "scheduled_count": len(self.scheduled_ids),
+            "failed_count": len(self.current_failed_ids),
+            "pages_crawled": spider.crawler.stats.get_value("response_received_count", 0),
+        }
+
+        status_path = self.artifacts_dir / "crawler_status.json"
+        try:
+            with open(status_path, "w", encoding="utf-8") as f:
+                json.dump(stats_data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
         self.logger.info(
-            "Chiến dịch kết thúc: Đã thu thập thành công %d/%d văn bản. Thất bại: %d.",
+            "Chiến dịch kết thúc: Lý do=%s | Đã thu thập: %d/%d văn bản | Thất bại: %d.",
+            finish_reason,
             len(self.successful_ids),
             len(self.scheduled_ids),
             len(self.current_failed_ids),
