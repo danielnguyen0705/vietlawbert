@@ -10,6 +10,7 @@ import sys
 import json
 import argparse
 import subprocess
+import logging
 from pathlib import Path
 from typing import List
 
@@ -17,6 +18,8 @@ from configs.paths import ROOT_DIR, ARTIFACTS_DIR
 from artifacts.canonical import read_jsonl, write_jsonl
 from artifacts.merge import merge_records_streaming
 from crawler.shard_runner import write_json_atomic
+
+logger = logging.getLogger("VietLawBERT_OCRRunner")
 
 
 def pending_ids(path: Path) -> List[str]:
@@ -44,7 +47,7 @@ def chunks(values: List[str], size: int):
         yield values[start : start + size]
 
 
-def run_batch(root_dir: Path, ids: List[str], output: Path, log: Path, env: dict) -> None:
+def run_batch(root_dir: Path, ids: List[str], output: Path, log: Path, env: dict) -> bool:
     command = [
         sys.executable,
         "-m",
@@ -58,8 +61,12 @@ def run_batch(root_dir: Path, ids: List[str], output: Path, log: Path, env: dict
         "-O",
         os.path.relpath(output, root_dir),
     ]
-    # Khóa cwd=root_dir để Scrapy định vị chính xác scrapy.cfg
-    subprocess.run(command, cwd=root_dir, env=env, check=True)
+    try:
+        subprocess.run(command, cwd=root_dir, env=env, check=True)
+        return True
+    except subprocess.CalledProcessError as err:
+        logger.error(f"[LỖI LÔ OCR] Tiến trình con Scrapy thất bại cho lô {output.name}: {err}")
+        return False
 
 
 def main() -> int:
@@ -115,7 +122,9 @@ def main() -> int:
 
             if not output.exists():
                 print(f"[TIẾN HÀNH OCR] {stem} lô {index}: {len(batch)} tài liệu...", flush=True)
-                run_batch(ROOT_DIR, batch, output, log, env)
+                success = run_batch(ROOT_DIR, batch, output, log, env)
+                if not success and not output.exists():
+                    output.touch()
             else:
                 print(f"[BỎ QUA LÔ OCR] {output.name} đã tồn tại.", flush=True)
 
@@ -129,32 +138,51 @@ def main() -> int:
             if record.get("html_status") == "VALID" and len(str(record.get("html_raw") or "").strip()) >= 100
         ]
         recovered_ids = {str(r.get("item_id")) for r in recovered}
-        unresolved = [record for record in results if str(record.get("item_id")) not in recovered_ids]
+
+        # Bảo toàn tất cả ID chưa xử lý thành công (kể cả khi scrapy bị rơi rớt record)
+        all_ids_set = set(ids)
+        unresolved_ids = all_ids_set - recovered_ids
+
+        raw_unresolved_map = {str(r.get("item_id")): r for r in results if str(r.get("item_id")) in unresolved_ids}
+        unresolved = []
+        for missing_id in sorted(unresolved_ids):
+            if missing_id in raw_unresolved_map:
+                unresolved.append(raw_unresolved_map[missing_id])
+            else:
+                unresolved.append({
+                    "item_id": missing_id,
+                    "ocr_status": "OCR_FAILED_CRASH",
+                    "html_status": "CORRUPTED",
+                    "html_raw": "",
+                })
 
         recovered_path = output_dir / f"{stem}.ocr_recovered.jsonl"
         unresolved_path = output_dir / f"{stem}.ocr_unresolved.jsonl"
         write_jsonl(recovered_path, recovered)
         write_jsonl(unresolved_path, unresolved)
 
-        # Hợp nhất an toàn vào Shard đã cứu hộ (.rescued.jsonl.gz)
         base = base_artifact_for(quarantine)
         rescued = rescued_artifact_for(quarantine)
 
+        gate = None
         if base.exists():
             merge_records_streaming(base_path=base, overlay_paths=[recovered_path], output_path=rescued)
             gate = audit_crawl(rescued, allow_upstream_missing=True, allow_ocr_pending=True)
-            entry = {
-                "quarantine": str(quarantine),
-                "base": str(base),
-                "rescued": str(rescued),
-                "pending": len(ids),
-                "recovered": len(recovered),
-                "unresolved": len(unresolved),
-                "gate": gate,
-            }
-            state.append(entry)
-            write_json_atomic(state_path, {"shards": state})
-            print(json.dumps(entry, ensure_ascii=False), flush=True)
+        else:
+            logger.warning(f"Không tìm thấy base artifact tương ứng: {base}")
+
+        entry = {
+            "quarantine": str(quarantine),
+            "base": str(base),
+            "rescued": str(rescued),
+            "pending": len(ids),
+            "recovered": len(recovered),
+            "unresolved": len(unresolved),
+            "gate": gate,
+        }
+        state.append(entry)
+        write_json_atomic(state_path, {"shards": state})
+        print(json.dumps(entry, ensure_ascii=False), flush=True)
 
     return 0
 

@@ -15,6 +15,7 @@ import subprocess
 from pathlib import Path
 
 from configs.logging_config import setup_hierarchical_logging, get_subsystem_logger
+from configs.paths import RAW_SHARDS_DIR
 
 setup_hierarchical_logging()
 logger = get_subsystem_logger("master", "main_master")
@@ -22,20 +23,20 @@ logger = get_subsystem_logger("master", "main_master")
 
 def wait_for_port(host: str, port: int, service_name: str, timeout: int = 60) -> bool:
     start_time = time.time()
-    logger.info(f"Đang kiểm tra kết nối cổng socket {service_name} ({host}:{port})...")
+    logger.info("Đang kiểm tra kết nối cổng socket %s (%s:%d)...", service_name, host, port)
     while time.time() - start_time < timeout:
         try:
             with socket.create_connection((host, port), timeout=2):
-                logger.info(f"✓ Dịch vụ {service_name} đã sẵn sàng tiếp nhận kết nối.")
+                logger.info("✓ Dịch vụ %s đã sẵn sàng tiếp nhận kết nối.", service_name)
                 return True
         except (socket.timeout, ConnectionRefusedError, OSError):
             time.sleep(2)
-    logger.error(f"✗ Quá thời gian chờ ({timeout}s): Dịch vụ {service_name} chưa sẵn sàng!")
+    logger.error("✗ Quá thời gian chờ (%ds): Dịch vụ %s chưa sẵn sàng!", timeout, service_name)
     return False
 
 
 def run_command(command: list, description: str, background: bool = False, cwd: Path = None, env: dict = None):
-    logger.info(f"[BẮT ĐẦU] {description}")
+    logger.info("[BẮT ĐẦU] %s", description)
     current_env = os.environ.copy()
     if env:
         current_env.update(env)
@@ -47,9 +48,9 @@ def run_command(command: list, description: str, background: bool = False, cwd: 
 
     result = subprocess.run(command, cwd=cwd, env=current_env)
     if result.returncode != 0:
-        logger.error(f"✗ Thất bại: {description} (Exit Code: {result.returncode})")
+        logger.error("✗ Thất bại: %s (Exit Code: %d)", description, result.returncode)
         return False
-    logger.info(f"✓ Hoàn tất: {description}")
+    logger.info("✓ Hoàn tất: %s", description)
     return True
 
 
@@ -74,7 +75,7 @@ def main():
             logger.error("Hạ tầng phân tán chưa sẵn sàng. Dừng kịch bản thực thi.")
             sys.exit(1)
 
-    # 3. Kích hoạt Consumer xử lý luồng
+    # 3. Kích hoạt Consumer xử lý luồng (chế độ non-blocking)
     logger.info("Khởi động Kafka Ingestion Consumer (Background Processing)...")
     consumer_cmd = [
         sys.executable,
@@ -96,7 +97,7 @@ def main():
         crawler_cmd = ["scrapy", "crawl", "law_spider"]
         crawler_success = run_command(crawler_cmd, "Crawler Ingestion Engine", cwd=project_root)
 
-        # 5. Đối soát trạng thái kết thúc thực tế
+        # 5. Đối soát trạng thái kết thúc thực tế và Shards đã lưu
         status_file = project_root / "artifacts" / "crawler_status.json"
         if status_file.exists():
             try:
@@ -104,23 +105,31 @@ def main():
                 finish_reason = status_data.get("finish_reason")
                 scraped = status_data.get("successful_count", 0)
                 scheduled = status_data.get("scheduled_count", 0)
+                shards_count = status_data.get("shards_exported", 0)
+
+                shards_on_disk = len(list(Path(RAW_SHARDS_DIR).glob("crawl_pages_*.jsonl.gz")))
 
                 if finish_reason == "finished":
-                    logger.info(f"✓ Crawler đã hoàn thành trọn vẹn toàn bộ danh mục ({scraped:,}/{scheduled:,} văn bản).")
+                    logger.info(
+                        "✓ Crawler hoàn thành trọn vẹn danh mục (%d/%d văn bản | Đã đóng gói: %d shards đĩa cứng).",
+                        scraped,
+                        scheduled,
+                        shards_on_disk,
+                    )
                 else:
                     logger.warning(
-                        f"⚠ Crawler dừng trước hạn (Lý do: '{finish_reason}' | Đã cào: {scraped:,} văn bản)."
+                        "⚠ Crawler dừng trước hạn! (Lý do: '%s' | Đã cào: %d văn bản | Shards bảo toàn trên đĩa: %d).",
+                        finish_reason,
+                        scraped,
+                        shards_on_disk,
                     )
-            except Exception:
-                if crawler_success:
-                    logger.info("Crawler đã hoàn tất lượt chạy hiện tại.")
-                else:
-                    logger.warning("Crawler dừng lại với cảnh báo. Kiểm tra crawler.log.")
+            except Exception as e:
+                logger.warning("Không thể đọc trạng thái crawler (%s).", e)
         else:
             if not crawler_success:
                 logger.warning("Crawler dừng lại với cảnh báo. Kiểm tra crawler.log.")
 
-        # 6. Chờ Consumer hoàn tất xả đệm Kafka
+        # 6. Chờ Consumer hoàn tất xả đệm Kafka vào CSDL
         logger.info("Đang chờ Consumer xử lý nốt các bản ghi tồn đọng trong Kafka...")
         consumer_process.wait()
         logger.info("✓ Toàn bộ dữ liệu luồng đã được ghi nhất quán vào Milvus & Neo4j.")

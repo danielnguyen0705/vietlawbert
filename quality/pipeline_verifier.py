@@ -12,7 +12,7 @@ import uuid
 import argparse
 import logging
 from pathlib import Path
-from typing import Dict, Any, Tuple, Set
+from typing import Dict, Any, Tuple, Optional
 
 from confluent_kafka import Consumer, TopicPartition
 from neo4j import GraphDatabase
@@ -35,7 +35,6 @@ logger = logging.getLogger("VietLawBERT_LineageVerifier")
 
 
 def write_json_atomic(path: Path, value: dict) -> None:
-    """Ghi báo cáo nguyên tử thông qua tệp đệm tạm."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_suffix(f"{path.suffix}.tmp_{os.getpid()}")
     temp_path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -44,8 +43,7 @@ def write_json_atomic(path: Path, value: dict) -> None:
 
 def read_kafka_manifest(broker: str, topic: str) -> Tuple[Dict[str, str], Dict[int, int], int]:
     """
-    Quét toàn bộ bản tin trên Topic Kafka mà không kích hoạt commit offset.
-    Chịu lỗi nếu producer retry tạo ra bản tin trùng lặp.
+    Quét toàn bộ bản tin trên Topic Kafka. Tính toán chính xác dung lượng dựa trên khoảng cách (high - low).
     """
     consumer = Consumer({
         "bootstrap.servers": broker,
@@ -64,24 +62,27 @@ def read_kafka_manifest(broker: str, topic: str) -> Tuple[Dict[str, str], Dict[i
             raise ValueError(f"Topic [{topic}] không tồn tại trên Kafka Broker!")
 
         partitions = sorted(metadata.topics[topic].partitions.keys())
-        assignments = [TopicPartition(topic, p, 0) for p in partitions]
-        consumer.assign(assignments)
+        assignments = []
+        total_expected_messages = 0
 
         for p in partitions:
-            _, high = consumer.get_watermark_offsets(TopicPartition(topic, p), timeout=10)
+            tp = TopicPartition(topic, p)
+            low, high = consumer.get_watermark_offsets(tp, timeout=10)
             high_watermarks[p] = high
+            assignments.append(TopicPartition(topic, p, low))
+            total_expected_messages += max(0, high - low)
 
-        total_expected_messages = sum(high_watermarks.values())
-        logger.info(f"Tổng số bản tin trên topic [{topic}]: {total_expected_messages} (trên {len(partitions)} phân vùng)")
+        consumer.assign(assignments)
+        logger.info(f"Tổng số bản tin khả dụng trên topic [{topic}]: {total_expected_messages} (trên {len(partitions)} phân vùng)")
 
         messages_read = 0
         while messages_read < total_expected_messages:
-            msg = consumer.poll(5.0)
+            msg = consumer.poll(3.0)
             if msg is None:
-                logger.warning("Đã chạm giới hạn timeout khi đọc Kafka, kết thúc quét sớm.")
+                logger.warning("Chạm giới hạn poll timeout, hoàn tất đọc các bản tin hiện hữu.")
                 break
             if msg.error():
-                logger.error(f"Lỗi đọc partition Kafka: {msg.error()}")
+                logger.error(f"Lỗi phân vùng Kafka: {msg.error()}")
                 continue
 
             doc_id = msg.key().decode("utf-8") if msg.key() else f"unknown_offset_{msg.offset()}"
@@ -112,7 +113,7 @@ def verify_pipeline_lineage(
     expect_shards: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
-    Tiến hành đối soát mã băm SHA-256 và tập định danh ID giữa:
+    Tiến hành đối soát mã băm SHA-256 đối xứng và tập định danh ID giữa:
     1. Disk Shards (Artifacts)
     2. Kafka Topic Messages
     3. Neo4j RawLawDocument Nodes
@@ -122,16 +123,16 @@ def verify_pipeline_lineage(
     neo_user = getattr(config, "NEO4J_USER", "neo4j")
     neo_pwd = getattr(config, "NEO4J_PASSWORD", "vietlawbert")
 
-    logger.info("1. Đang tính toán mã băm Deterministic Manifest từ Disk Shards...")
+    logger.info("1. Đang tính toán Deterministic Manifest từ Disk Shards...")
     paths = canonical_artifacts(input_dir.resolve(), expect_shards)
     artifacts = artifact_manifest(paths)
     logger.info(f"✓ Shards Manifest: {len(artifacts)} văn bản duy nhất.")
 
-    logger.info(f"2. Đang quét và kiểm toán toàn bộ bản tin trên Kafka [{topic}]...")
+    logger.info(f"2. Đang kiểm toán toàn bộ bản tin trên Kafka [{topic}]...")
     kafka_manifest, high_watermarks, dup_keys = read_kafka_manifest(broker, topic)
     logger.info(f"✓ Kafka Manifest: {len(kafka_manifest)} văn bản duy nhất (Trùng lặp: {dup_keys}).")
 
-    logger.info(f"3. Đang truy vấn đối soát kho lưu trữ thô Neo4j (Dataset: {dataset_id})...")
+    logger.info(f"3. Đang đối soát kho lưu trữ đồ thị Neo4j (Dataset: {dataset_id})...")
     driver = GraphDatabase.driver(neo_uri, auth=(neo_user, neo_pwd))
     database_manifest: Dict[str, str] = {}
     html_statuses: Dict[str, int] = {}
@@ -155,15 +156,15 @@ def verify_pipeline_lineage(
         driver.close()
     logger.info(f"✓ Neo4j Manifest: {len(database_manifest)} văn bản.")
 
-    # So sánh tập khóa (IDs)
     art_keys = set(artifacts.keys())
     kafka_keys = set(kafka_manifest.keys())
     db_keys = set(database_manifest.keys())
 
     missing_in_kafka = list(art_keys - kafka_keys)[:10]
+    extra_in_kafka = list(kafka_keys - art_keys)[:10]
     missing_in_db = list(art_keys - db_keys)[:10]
+    extra_in_db = list(db_keys - art_keys)[:10]
 
-    # So sánh mã băm (Cryptographic Hash Matching)
     hash_diff_kafka = [k for k in art_keys & kafka_keys if artifacts[k] != kafka_manifest[k]][:10]
     hash_diff_db = [k for k in art_keys & db_keys if artifacts[k] != database_manifest[k]][:10]
 
@@ -198,7 +199,9 @@ def verify_pipeline_lineage(
         },
         "diagnostics": {
             "missing_in_kafka_samples": missing_in_kafka,
+            "extra_in_kafka_samples": extra_in_kafka,
             "missing_in_db_samples": missing_in_db,
+            "extra_in_db_samples": extra_in_db,
             "hash_mismatch_kafka_samples": hash_diff_kafka,
             "hash_mismatch_db_samples": hash_diff_db,
         },

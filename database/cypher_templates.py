@@ -7,7 +7,6 @@ from typing import Tuple, Dict, Any
 
 # ==============================================================================
 # Kịch bản 1: Truy vết Đạo luật Gốc (Hierarchical Root Tracing)
-# Đi ngược hướng INCOMING của quan hệ căn cứ ban hành từ 1 đến 3 chặng
 # ==============================================================================
 TRACE_HIERARCHICAL_ROOT = """
 MATCH path = (sub_doc:LawDocument {doc_id: $doc_id})<-[:CAN_CU_BAN_HANH|CAN_CO_BAN_HANH*1..3]-(root_doc:LawDocument)
@@ -19,7 +18,6 @@ ORDER BY Depth DESC
 
 # ==============================================================================
 # Kịch bản 2: Hiệu ứng Domino Hủy bỏ Hiệu lực (Temporal-Operational Impact)
-# Phát hiện các văn bản có nguy cơ mất căn cứ pháp lý khi văn bản cha bị thay thế/bãi bỏ
 # ==============================================================================
 FIND_CASCADE_IMPACT = """
 MATCH (luat_moi:LawDocument)-[:THAY_THE|BAI_BO|VAN_BAN_DUOC_THAY_THE]->(luat_cu:LawDocument)
@@ -35,7 +33,6 @@ ORDER BY Total_Affected_Count DESC
 
 # ==============================================================================
 # Kịch bản 3: Mở rộng Đồ thị 1-hop xung quanh Văn bản (Graph Expansion cho RAG)
-# Thu thập toàn bộ ngữ cảnh quan hệ đa tầng phục vụ Reciprocal Rank Fusion
 # ==============================================================================
 GET_NEIGHBORS = """
 MATCH (d:LawDocument {doc_id: $doc_id})-[r]-(n:LawDocument)
@@ -49,14 +46,14 @@ LIMIT $limit
 """
 
 # ==============================================================================
-# Kịch bản 4: Khai phá Mẫu Khó GG-SLM (Graph-Guided Sentence-Law Mining)
-# Đóng góp cốt lõi của bài báo: Khai thác Anchor, Positive và Hard Negative
-# từ cùng cấu trúc cây phân cấp (Cùng Chương/Cùng Luật nhưng khác Điều)
+# Kịch bản 4: Khai phá Mẫu Khó GG-SLM trực tiếp trên Đồ thị Tri thức
+# Khớp chính xác quan hệ dẫn chiếu cấp văn bản và cấu trúc Điều/Khoản
 # ==============================================================================
 GG_SLM_TRIPLET_MINING = """
-MATCH (doc:LawDocument)-[:HAS_CHAPTER]->(ch:Chapter)-[:HAS_ARTICLE]->(art_pos:Article)-[:HAS_CHUNK]->(ck_pos:Chunk)
-MATCH (art_pos)-[:REFERENCES]->(art_target:Article)-[:HAS_CHUNK]->(ck_anchor:Chunk)
-MATCH (ch)-[:HAS_ARTICLE]->(art_neg:Article)-[:HAS_CHUNK]->(ck_neg:Chunk)
+MATCH (doc_pos:LawDocument)-[:HAS_CHAPTER]->(ch_pos:Chapter)-[:HAS_ARTICLE]->(art_pos:Article)-[:HAS_CHUNK]->(ck_pos:Chunk)
+MATCH (doc_pos)-[:DAN_CHIEU|CAN_CU_BAN_HANH|VAN_BAN_AP_DUNG]->(doc_anchor:LawDocument)
+MATCH (doc_anchor)-[:HAS_CHAPTER]->()-[:HAS_ARTICLE]->()-[:HAS_CHUNK]->(ck_anchor:Chunk)
+MATCH (ch_pos)-[:HAS_ARTICLE]->(art_neg:Article)-[:HAS_CHUNK]->(ck_neg:Chunk)
 WHERE art_pos <> art_neg
   AND ck_pos.text IS NOT NULL 
   AND ck_anchor.text IS NOT NULL 
@@ -67,8 +64,8 @@ RETURN ck_anchor.chunk_id AS anchor_id,
        ck_pos.text AS positive_text,
        ck_neg.chunk_id AS negative_id,
        ck_neg.text AS negative_text,
-       doc.doc_id AS doc_id,
-       ch.name AS chapter_name,
+       doc_pos.doc_id AS doc_id,
+       ch_pos.name AS chapter_name,
        art_pos.name AS positive_article,
        art_neg.name AS negative_article
 LIMIT $limit

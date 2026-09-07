@@ -63,15 +63,24 @@ class LegalOntologyMappingPipeline:
         )
 
     def close_spider(self, spider):
+        flush_error = None
         if self.kafka_producer is not None:
             remaining = self.kafka_producer.flush(30)
             if remaining or self.delivery_errors:
-                raise RuntimeError(
+                flush_error = RuntimeError(
                     f"Thất thoát bản tin Kafka khi đóng spider: tồn đọng={remaining}, lỗi={len(self.delivery_errors)}"
                 )
+
+        # Đảm bảo lưu cache ontology ngoại trừ trường hợp dừng khẩn cấp
         if self.dynamic_maps:
-            self.save_dynamic_mappings()
+            try:
+                self.save_dynamic_mappings()
+            except Exception as exc:
+                self.logger.error("Lỗi khi lưu dynamic ontology cache: %s", exc)
+
         self.logger.info("[PIPELINE ĐÓNG] Hoàn tất xả bộ đệm an toàn.")
+        if flush_error:
+            raise flush_error
 
     def _delivery_report(self, err, msg):
         if err is not None:
@@ -79,12 +88,24 @@ class LegalOntologyMappingPipeline:
             self.logger.error("Giao dịch phát Kafka thất bại: %s", err)
 
     def _load_system_ontology(self) -> Tuple[dict, dict, dict]:
+        if not self.ontology_path.exists():
+            return {}, {}, {}
+
         with open(self.ontology_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         scoped_mapping = {}
+
+        # 1. Nạp mapping tĩnh theo nhóm
         for group_name in ["documentNamesByType", "documentNamesBySource"]:
             for raw_key, edge_type in data.get(group_name, {}).items():
                 scoped_mapping[(group_name, str(raw_key))] = edge_type
+
+        # 2. Nạp mapping động đã lưu từ các lượt crawl trước
+        for full_key, edge_type in data.get("dynamic_keys", {}).items():
+            if ":" in full_key:
+                group_name, raw_key = full_key.split(":", 1)
+                scoped_mapping[(group_name, str(raw_key))] = edge_type
+
         return (
             scoped_mapping,
             data.get("relationship_templates", {}),
@@ -94,8 +115,10 @@ class LegalOntologyMappingPipeline:
     def save_dynamic_mappings(self):
         """Ghi nhận các khóa quan hệ mới theo cơ chế ghi tệp nguyên tử (.tmp -> replace)."""
         temp_path = self.ontology_path.with_suffix(".tmp")
-        with open(self.ontology_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = {}
+        if self.ontology_path.exists():
+            with open(self.ontology_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
 
         data.setdefault("dynamic_keys", {}).update(self.dynamic_maps)
 
@@ -146,13 +169,14 @@ class LegalOntologyMappingPipeline:
 
     @staticmethod
     def _extract_doc_number_only(text: str) -> str:
-        match = re.search(r"(\d+/\d+/[a-z\-đdđcphuqd]+)", text.lower())
+        text_lower = text.lower()
+        match = re.search(r"(\d+/\d+/[a-z0-9\-đcphuqd]+)", text_lower)
         if match:
             return match.group(1).replace(" ", "")
-        match_cp = re.search(r"(\d+/[cphqd]+)", text.lower())
+        match_cp = re.search(r"(\d+/[a-z0-9\-đcphuqd]+)", text_lower)
         if match_cp:
             return match_cp.group(1).replace(" ", "")
-        return text
+        return text_lower.strip()
 
     def _jaccard_fallback(self, raw_key: str, html_dom: Any, json_docs_list: list) -> Tuple[str, float]:
         json_set = set(self._extract_doc_number_only(d.get("name") or d.get("title") or "") for d in json_docs_list)
@@ -187,7 +211,6 @@ class LegalOntologyMappingPipeline:
         if normalized in self.category_aliases:
             return self.category_aliases[normalized]
 
-        # Khử dấu Unicode sang chuẩn UPPER_CASE
         ascii_text = unicodedata.normalize("NFD", category_name).encode("ascii", "ignore").decode("ascii")
         ascii_text = re.sub(r"[^A-Za-z0-9]+", "_", ascii_text).strip("_").upper()
         return ascii_text or "UNKNOWN_RELATION"
@@ -202,6 +225,9 @@ class LegalOntologyMappingPipeline:
         if direction not in {"INCOMING", "OUTGOING"}:
             return None
 
+        source_doc_id = str(source_item.get("item_id", "") if hasattr(source_item, "get") else "")
+        source_doc_number = str(source_item.get("doc_number", "") if hasattr(source_item, "get") else "")
+
         return {
             "target_id": target_id,
             "target_name": doc.get("name") or doc.get("title") or "",
@@ -209,8 +235,8 @@ class LegalOntologyMappingPipeline:
             "direction": direction,
             "graph_layer": graph_layer,
             "extraction_method": method,
-            "source_doc_id": str(source_item.get("item_id")),
-            "source_doc_number": source_item.get("doc_number", ""),
+            "source_doc_id": source_doc_id,
+            "source_doc_number": source_doc_number,
         }
 
     def process_diagram(self, item: Any, html_dom: Any = None) -> Any:
@@ -245,6 +271,7 @@ class LegalOntologyMappingPipeline:
 
                     if method == "dynamic_jaccard":
                         self.dynamic_maps[f"{group_name}:{raw_key}"] = edge_type
+                        self.static_mapping[(group_name, raw_key)] = edge_type
 
                 for doc in docs_list or []:
                     rel = self._to_standard_relation(doc, edge_type, direction, method, item)
@@ -263,8 +290,9 @@ class LegalOntologyMappingPipeline:
         return item
 
     def process_item(self, item: Any, spider: Any) -> Any:
-        # 1. Bóc tách lược đồ quan hệ pháp lý
-        item = self.process_diagram(item, item.get("html_dom"))
+        # 1. Bóc tách quan hệ đồ thị
+        html_dom = item.get("html_dom") if hasattr(item, "get") else None
+        item = self.process_diagram(item, html_dom)
 
         # 2. Kiểm tra chất lượng nội dung tối thiểu
         html_status = getattr(item.get("html_status"), "value", item.get("html_status"))
@@ -278,7 +306,7 @@ class LegalOntologyMappingPipeline:
                 self.crawler.stats.inc_value("kafka/quarantined_empty")
             return item
 
-        # 3. Chuẩn hóa Item thành dictionary sạch, loại bỏ html_dom tránh lỗi tuần tự hóa
+        # 3. Chuẩn hóa Item thành dictionary sạch, loại bỏ các trường DOM không thể tuần tự hóa
         if isinstance(item, VietLawItem):
             clean_record = item.to_clean_dict()
         else:

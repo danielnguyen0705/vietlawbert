@@ -8,21 +8,19 @@ from __future__ import annotations
 import os
 import sys
 import json
-import gzip
 import re
 import argparse
-import logging
 from collections import Counter
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Set, Iterator
 
-from configs.paths import ROOT_DIR, ARTIFACTS_DIR, get_log_path
+from configs.paths import ROOT_DIR, ARTIFACTS_DIR
 from configs.config import config
+from configs.logging_config import get_subsystem_logger
 from artifacts.canonical import read_jsonl
 
-logger = logging.getLogger("VietLawBERT_CrawlAudit")
+logger = get_subsystem_logger("quality", "audit")
 
-# Tập hợp các ký tự tiếng Việt có dấu chuẩn Unicode dựng sẵn và tổ hợp
 VIETNAMESE_CHARS = set(
     "àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ"
     "ÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬÈÉẺẼẸÊỀẾỂỄỆÌÍỈĨỊÒÓỎÕỌÔỒỐỔỖỘƠỜỚỞỠỢÙÚỦŨỤƯỪỨỬỮỰỲÝỶỸỴĐ"
@@ -36,7 +34,6 @@ BOILERPLATE = re.compile(
 
 
 def evaluate_linguistic_quality(text: str) -> Dict[str, Any]:
-    """Kiểm tra tỷ lệ nguyên âm tiếng Việt và phát hiện lỗi vỡ bảng mã Unicode."""
     if not text:
         return {"vietnamese_ratio": 0.0, "has_encoding_error": False, "is_valid": False}
 
@@ -62,10 +59,6 @@ def audit_crawl(
     allow_upstream_missing: bool = False,
     allow_ocr_pending: bool = False,
 ) -> Dict[str, Any]:
-    """
-    Kiểm toán toàn diện một tệp Shard (.jsonl hoặc .jsonl.gz).
-    Bảo đảm không giữ payload HTML trong RAM để tối ưu hóa bộ nhớ O(1).
-    """
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"Không tìm thấy tệp artifact: {p}")
@@ -89,13 +82,11 @@ def audit_crawl(
         counters["html_status_valid"] += status_valid
         counters["html_valid"] += content_valid
 
-        # Kiểm định chất lượng ngôn ngữ học
         if content_valid:
             ling_eval = evaluate_linguistic_quality(html_raw)
             if not ling_eval["is_valid"]:
                 counters["linguistic_quality_rejected"] += 1
 
-        # Phân tích nguyên nhân thiếu văn bản
         rescue_file = record.get("rescue_file") or {}
         upstream_missing = (
             not content_valid
@@ -173,59 +164,44 @@ def audit_crawl(
 
 
 def fetch_all_milvus_rows(client, collection_name: str) -> Iterator[Dict[str, Any]]:
-    """Trích xuất dữ liệu Milvus theo lô lớn có kiểm soát bộ nhớ."""
+    """Trích xuất dữ liệu Milvus an toàn qua Keyset Pagination, không bị giới hạn 16.384 bản ghi."""
     output_fields = ["chunk_id", "doc_id", "hierarchy", "original_text"]
-    try:
-        # Sử dụng Query Iterator của PyMilvus nếu khả dụng
-        iterator = client.query_iterator(
+    last_id = ""
+    limit = 2000
+
+    while True:
+        filter_expr = f'chunk_id > "{last_id}"' if last_id else 'chunk_id != ""'
+        batch = client.query(
             collection_name=collection_name,
-            batch_size=1000,
-            filter="chunk_id != ''",
+            filter=filter_expr,
             output_fields=output_fields,
+            limit=limit,
         )
-        while True:
-            batch = iterator.next()
-            if not batch:
-                iterator.close()
-                break
-            for item in batch:
-                yield item
-    except Exception:
-        # Fallback phân trang bằng LIMIT/OFFSET an toàn
-        offset = 0
-        limit = 10000
-        while True:
-            batch = client.query(
-                collection_name=collection_name,
-                filter="chunk_id != ''",
-                output_fields=output_fields,
-                limit=limit,
-                offset=offset,
-            )
-            if not batch:
-                break
-            for item in batch:
-                yield item
-            if len(batch) < limit:
-                break
-            offset += limit
+        if not batch:
+            break
+
+        # Sắp xếp để lấy con trỏ kế tiếp
+        batch_sorted = sorted(batch, key=lambda x: str(x.get("chunk_id", "")))
+        for item in batch_sorted:
+            yield item
+
+        new_last_id = str(batch_sorted[-1].get("chunk_id", ""))
+        if new_last_id == last_id or len(batch) < limit:
+            break
+        last_id = new_last_id
 
 
 def audit_databases(
     expected_documents: Optional[int] = None,
     document_ids: Optional[Set[str]] = None,
 ) -> Dict[str, Any]:
-    """
-    Kiểm toán tính nhất quán 1:1 giữa Milvus (Vector) và Neo4j (Graph).
-    Phát hiện Chunks mồ côi, văn bản dính boilerplate và lệch cấu trúc phân cấp.
-    """
     from pymilvus import MilvusClient
     from neo4j import GraphDatabase
 
     collection = getattr(config, "MILVUS_COLLECTION_NAME", "vietlawbert_chunks")
     milvus_uri = getattr(config, "MILVUS_URI", "http://localhost:19530")
 
-    logger.info(f"Đang kết nối Milvus [{milvus_uri}] và đối soát collection [{collection}]...")
+    logger.info("Đang kết nối Milvus [%s] và đối soát collection [%s]...", milvus_uri, collection)
     milvus = MilvusClient(uri=milvus_uri)
     if not milvus.has_collection(collection_name=collection):
         return {
@@ -236,6 +212,7 @@ def audit_databases(
 
     milvus.flush(collection_name=collection)
     rows = list(fetch_all_milvus_rows(milvus, collection))
+    milvus.close()
 
     if document_ids is not None:
         rows = [row for row in rows if str(row.get("doc_id")) in document_ids]
@@ -261,38 +238,36 @@ def audit_databases(
         empty_chunks += len(text) == 0
         oversized_chunks += len(text) > max_chunk_chars
 
-    # Kết nối Neo4j đối soát cấu trúc
     driver = GraphDatabase.driver(
         getattr(config, "NEO4J_URI", "bolt://localhost:7687"),
         auth=(getattr(config, "NEO4J_USER", "neo4j"), getattr(config, "NEO4J_PASSWORD", "vietlawbert")),
     )
-    with driver.session() as session:
-        neo_ids = {
-            record["id"]
-            for record in session.run(
-                "MATCH (c:Chunk) "
-                "WHERE $doc_ids IS NULL OR c.doc_id IN $doc_ids "
-                "RETURN c.chunk_id AS id",
+    try:
+        with driver.session() as session:
+            neo_ids = {
+                record["id"]
+                for record in session.run(
+                    "MATCH (c:Chunk) "
+                    "WHERE $doc_ids IS NULL OR c.doc_id IN $doc_ids "
+                    "RETURN c.chunk_id AS id",
+                    doc_ids=sorted(list(document_ids)) if document_ids is not None else None,
+                )
+            }
+
+            orphan_chunks = session.run(
+                "MATCH (c:Chunk) WHERE NOT ()-[:HAS_CHUNK]->(c) RETURN count(c) AS total"
+            ).single()["total"]
+
+            duplicate_relations = session.run(
+                "MATCH (a:LawDocument)-[r]->(b:LawDocument) "
+                "WHERE $doc_ids IS NULL OR a.doc_id IN $doc_ids "
+                "WITH a.doc_id AS source, type(r) AS kind, b.doc_id AS target, count(r) AS copies "
+                "WHERE copies > 1 "
+                "RETURN count(*) AS groups, coalesce(sum(copies - 1), 0) AS extras",
                 doc_ids=sorted(list(document_ids)) if document_ids is not None else None,
-            )
-        }
-
-        # Kiểm tra Chunk mồ côi (không gắn với Article nào)
-        orphan_chunks = session.run(
-            "MATCH (c:Chunk) WHERE NOT ()-[:HAS_CHUNK]->(c) RETURN count(c) AS total"
-        ).single()["total"]
-
-        # Kiểm tra trùng lặp cạnh quan hệ ngữ nghĩa
-        duplicate_relations = session.run(
-            "MATCH (a:LawDocument)-[r]->(b:LawDocument) "
-            "WHERE $doc_ids IS NULL OR a.doc_id IN $doc_ids "
-            "WITH a.doc_id AS source, type(r) AS kind, b.doc_id AS target, count(r) AS copies "
-            "WHERE copies > 1 "
-            "RETURN count(*) AS groups, coalesce(sum(copies - 1), 0) AS extras",
-            doc_ids=sorted(list(document_ids)) if document_ids is not None else None,
-        ).single()
-
-    driver.close()
+            ).single()
+    finally:
+        driver.close()
 
     failures = []
     if milvus_ids != neo_ids:
