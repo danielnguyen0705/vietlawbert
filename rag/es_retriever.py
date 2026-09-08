@@ -20,7 +20,7 @@ class LegalElasticsearchRetriever:
     ):
         self.hosts = hosts or ["http://localhost:9200"]
         self.index_name = index_name
-        self.client = Elasticsearch(self.hosts, request_timeout=30)
+        self.client = Elasticsearch(self.hosts, request_timeout=60)
         self._ensure_index_and_analyzer()
 
     def _ensure_index_and_analyzer(self) -> None:
