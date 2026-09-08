@@ -16,6 +16,11 @@ from typing import List, Dict, Any, Optional
 from bs4 import BeautifulSoup
 
 import torch
+try:
+    # Khống chế intra-op threads để nhường CPU cho OS và giao diện
+    torch.set_num_threads(2)
+except Exception:
+    pass
 from sentence_transformers import SentenceTransformer
 
 from configs.config import config
@@ -25,11 +30,6 @@ from rag.es_retriever import LegalElasticsearchRetriever
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | [%(levelname)s] | %(message)s")
 logger = logging.getLogger("VietLawBERT_IngestPipeline")
-
-# Khóa trần số nhân CPU của PyTorch để nhường tài nguyên cho HĐH và giao diện người dùng
-torch.set_num_threads(2)
-torch.set_num_interop_threads(1)
-
 
 class IngestPipelineWorker:
     def __init__(

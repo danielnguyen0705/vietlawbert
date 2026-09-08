@@ -1,7 +1,7 @@
 """
 evaluate_rrf.py - Bộ công cụ đánh giá thực nghiệm động cơ truy xuất lai (Hybrid RRF).
 Hiện thực hóa chuẩn đánh giá IR quốc tế (Hit-Rate@K, MRR@K, NDCG@K, MAP@K) phục vụ
-bộ chuẩn VietLawBench (Single-hop & Multi-hop), hỗ trợ Ablation Study cho bài báo khoa học Q1.
+bộ chuẩn VietLawBench (Single-hop & Multi-hop), hỗ trợ Ablation Study.
 """
 
 from __future__ import annotations

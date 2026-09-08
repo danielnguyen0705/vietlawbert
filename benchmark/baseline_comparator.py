@@ -1,6 +1,6 @@
 """
 baseline_comparator.py - Hệ thống thực nghiệm đối chứng trực diện (Head-to-Head Baseline Comparison).
-Đo đạc hiệu năng IR và kiểm định ý nghĩa thống kê (Paired Student's t-test, p-value) theo chuẩn công bố Q1.
+Đo đạc hiệu năng IR và kiểm định ý nghĩa thống kê (Paired Student's t-test, p-value).
 """
 
 from __future__ import annotations
