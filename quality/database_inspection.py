@@ -1,6 +1,6 @@
 """
-database_inspection.py - Công cụ kiểm tra nhanh tình trạng và tính sẵn sàng của cụm CSDL.
-Kiểm định toàn diện Milvus (Vector), Neo4j (Knowledge Graph) và MongoDB (Document Store).
+database_inspection.py - Công cụ kiểm tra nhanh tình trạng và tính sẵn sàng của cụm CSDL lai.
+Kiểm định toàn diện: MongoDB, Neo4j (HIN), Qdrant (Dense 256d), Elasticsearch (Sparse) và Redis Cache.
 """
 
 from __future__ import annotations
@@ -16,31 +16,28 @@ from configs.config import config
 logger = logging.getLogger("VietLawBERT_DBInspect")
 
 
-def inspect_milvus() -> Dict[str, Any]:
-    """Kiểm tra chỉ mục HNSW, cấu trúc Schema và số lượng vector trong Milvus."""
-    from pymilvus import MilvusClient
+def inspect_mongodb() -> Dict[str, Any]:
+    """Kiểm tra kết nối và số lượng tài liệu thô trong MongoDB."""
+    from pymongo import MongoClient
 
-    uri = getattr(config, "MILVUS_URI", "http://localhost:19530")
-    collection = getattr(config, "MILVUS_COLLECTION_NAME", "vietlawbert_chunks")
-    result: Dict[str, Any] = {"status": "ERROR", "uri": uri, "collection": collection}
+    uri = getattr(config, "MONGO_URI", "mongodb://localhost:27017/")
+    db_name = getattr(config, "MONGO_DB_NAME", "vietlawbert_db")
+    result: Dict[str, Any] = {"status": "ERROR", "uri": uri, "database": db_name}
 
     try:
-        client = MilvusClient(uri=uri)
-        if client.has_collection(collection_name=collection):
-            client.flush(collection_name=collection)
-            stats = client.get_collection_stats(collection_name=collection)
-            row_count = int(stats.get("row_count") or 0)
-            
-            # Trích xuất thông tin chỉ mục
-            index_info = client.list_indexes(collection_name=collection)
-            result.update({
-                "status": "HEALTHY",
-                "exists": True,
-                "row_count": row_count,
-                "indexes": index_info,
-            })
-        else:
-            result.update({"status": "WARNING", "exists": False, "message": "Collection chưa được tạo"})
+        client = MongoClient(uri, serverSelectionTimeoutMS=3000)
+        client.admin.command("ping")
+        db = client[db_name]
+        collections = db.list_collection_names()
+        coll_stats = {coll: db[coll].count_documents({}) for coll in collections}
+        total_docs = sum(coll_stats.values())
+
+        result.update({
+            "status": "HEALTHY",
+            "collections": collections,
+            "document_counts": coll_stats,
+            "total_documents": total_docs,
+        })
         client.close()
     except Exception as exc:
         result["error"] = str(exc)
@@ -49,12 +46,12 @@ def inspect_milvus() -> Dict[str, Any]:
 
 
 def inspect_neo4j() -> Dict[str, Any]:
-    """Kiểm tra số lượng nút phân cấp, cạnh quan hệ ngữ nghĩa và ràng buộc duy nhất trên Neo4j."""
+    """Kiểm tra số lượng nút LawDocument/Chunk, 22 loại quan hệ và chỉ mục trên Neo4j."""
     from neo4j import GraphDatabase
 
     uri = getattr(config, "NEO4J_URI", "bolt://localhost:7687")
     user = getattr(config, "NEO4J_USER", "neo4j")
-    pwd = getattr(config, "NEO4J_PASSWORD", "vietlawbert")
+    pwd = getattr(config, "NEO4J_PASSWORD", "vietlawbert2026")
     result: Dict[str, Any] = {"status": "ERROR", "uri": uri}
 
     try:
@@ -62,22 +59,17 @@ def inspect_neo4j() -> Dict[str, Any]:
         driver.verify_connectivity()
 
         with driver.session() as session:
-            # Đếm số node theo Label
             node_counts = {}
             for record in session.run("MATCH (n) RETURN labels(n) AS labels, count(*) AS total"):
                 lbl = ":".join(record["labels"]) if record["labels"] else "Unlabeled"
                 node_counts[lbl] = record["total"]
 
-            # Đếm số edge theo Type
             edge_counts = {}
             for record in session.run("MATCH ()-[r]->() RETURN type(r) AS rel_type, count(*) AS total"):
                 edge_counts[record["rel_type"]] = record["total"]
 
-            # Đếm tổng quan
             total_nodes = session.run("MATCH (n) RETURN count(n) AS total").single()["total"]
             total_edges = session.run("MATCH ()-[r]->() RETURN count(r) AS total").single()["total"]
-
-            # Kiểm tra ràng buộc
             constraints = [rec["name"] for rec in session.run("SHOW CONSTRAINTS")]
 
             result.update({
@@ -95,27 +87,83 @@ def inspect_neo4j() -> Dict[str, Any]:
     return result
 
 
-def inspect_mongodb() -> Dict[str, Any]:
-    """Kiểm tra kết nối và số lượng tài liệu thô trong MongoDB."""
-    from pymongo import MongoClient
+def inspect_qdrant() -> Dict[str, Any]:
+    """Kiểm tra Collection vector lát cắt Matryoshka d=256 và Payload Indices trên Qdrant."""
+    from qdrant_client import QdrantClient
 
-    uri = getattr(config, "MONGO_URI", "mongodb://localhost:27017/")
-    db_name = getattr(config, "MONGO_DB_NAME", "vietlawbert_db")
-    result: Dict[str, Any] = {"status": "ERROR", "uri": uri, "database": db_name}
+    host = getattr(config, "QDRANT_HOST", "localhost")
+    port = getattr(config, "QDRANT_PORT", 6333)
+    collection = getattr(config, "QDRANT_COLLECTION_NAME", "vietlawbert_chunks")
+    result: Dict[str, Any] = {"status": "ERROR", "host": host, "port": port, "collection": collection}
 
     try:
-        client = MongoClient(uri, serverSelectionTimeoutMS=3000)
-        client.admin.command("ping")
-        db = client[db_name]
-        collections = db.list_collection_names()
-        coll_stats = {coll: db[coll].count_documents({}) for coll in collections}
+        client = QdrantClient(host=host, port=port, timeout=3.0)
+        collections = [c.name for c in client.get_collections().collections]
+        if collection in collections:
+            info = client.get_collection(collection_name=collection)
+            result.update({
+                "status": "HEALTHY",
+                "exists": True,
+                "vector_dim": info.config.params.vectors.size,
+                "distance_metric": str(info.config.params.vectors.distance),
+                "points_count": info.points_count,
+                "payload_schema": list(info.payload_schema.keys()) if info.payload_schema else [],
+            })
+        else:
+            result.update({"status": "WARNING", "exists": False, "message": f"Collection '{collection}' chưa được tạo"})
+    except Exception as exc:
+        result["error"] = str(exc)
+
+    return result
+
+
+def inspect_elasticsearch() -> Dict[str, Any]:
+    """Kiểm tra chỉ mục Sparse Retrieval và Custom Vietnamese Analyzer trên Elasticsearch."""
+    from elasticsearch import Elasticsearch
+
+    es_host = getattr(config, "ES_HOST", "http://localhost:9200")
+    index_name = getattr(config, "ES_INDEX_NAME", "vietlaw_sparse_idx")
+    result: Dict[str, Any] = {"status": "ERROR", "host": es_host, "index": index_name}
+
+    try:
+        es = Elasticsearch([es_host], request_timeout=3)
+        if not es.ping():
+            result["error"] = "Ping Elasticsearch thất bại"
+            return result
+
+        exists = es.indices.exists(index=index_name)
+        doc_count = 0
+        if exists:
+            res = es.count(index=index_name)
+            doc_count = res.get("count", 0)
 
         result.update({
             "status": "HEALTHY",
-            "collections": collections,
-            "document_counts": coll_stats,
+            "exists": bool(exists),
+            "docs_indexed": doc_count,
         })
-        client.close()
+    except Exception as exc:
+        result["error"] = str(exc)
+
+    return result
+
+
+def inspect_redis() -> Dict[str, Any]:
+    """Kiểm tra In-Memory Cache lưu trữ Vector Đồ thị 128 chiều trên Redis."""
+    import redis
+
+    host = getattr(config, "REDIS_HOST", "localhost")
+    port = getattr(config, "REDIS_PORT", 6379)
+    db = getattr(config, "REDIS_DB", 0)
+    result: Dict[str, Any] = {"status": "ERROR", "host": host, "port": port}
+
+    try:
+        r = redis.Redis(host=host, port=port, db=db, socket_timeout=2)
+        r.ping()
+        result.update({
+            "status": "HEALTHY",
+            "cached_keys": r.dbsize(),
+        })
     except Exception as exc:
         result["error"] = str(exc)
 
@@ -123,11 +171,13 @@ def inspect_mongodb() -> Dict[str, Any]:
 
 
 def inspect_database(json_format: bool = False, verbose: bool = False) -> int:
-    """Điều phối kiểm tra toàn bộ 3 tầng lưu trữ và in báo cáo."""
+    """Điều phối kiểm tra toàn bộ 5 tầng lưu trữ và xuất báo cáo chuẩn xác."""
     report = {
-        "milvus": inspect_milvus(),
-        "neo4j": inspect_neo4j(),
         "mongodb": inspect_mongodb(),
+        "neo4j": inspect_neo4j(),
+        "qdrant": inspect_qdrant(),
+        "elasticsearch": inspect_elasticsearch(),
+        "redis": inspect_redis(),
     }
 
     all_healthy = all(sec.get("status") == "HEALTHY" for sec in report.values())
@@ -137,54 +187,64 @@ def inspect_database(json_format: bool = False, verbose: bool = False) -> int:
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if all_healthy else 1
 
-    print("\n=======================================================")
-    print("      BÁO CÁO KIỂM TRA HẠ TẦNG CƠ SỞ DỮ LIỆU VIETLAWBERT")
-    print("=======================================================")
-
-    # In kết quả Milvus
-    m = report["milvus"]
-    m_icon = "✓" if m["status"] == "HEALTHY" else "✗"
-    print(f"\n[{m_icon}] MILVUS VECTOR STORE: {m['status']}")
-    if m["status"] == "HEALTHY":
-        print(f"  * Collection: {m['collection']}")
-        print(f"  * Tổng số Vector Chunks: {m['row_count']:,}")
-    else:
-        print(f"  * Chi tiết lỗi: {m.get('error') or m.get('message')}")
-
-    # In kết quả Neo4j
-    n = report["neo4j"]
-    n_icon = "✓" if n["status"] == "HEALTHY" else "✗"
-    print(f"\n[{n_icon}] NEO4J GRAPH STORE: {n['status']}")
-    if n["status"] == "HEALTHY":
-        print(f"  * Tổng số Nodes: {n['total_nodes']:,}")
-        print(f"  * Tổng số Cạnh quan hệ: {n['total_relationships']:,}")
-        if verbose:
-            print("  * Phân phối Nodes:", json.dumps(n["node_distribution"], ensure_ascii=False))
-            print("  * Phân phối Cạnh:", json.dumps(n["edge_distribution"], ensure_ascii=False))
-    else:
-        print(f"  * Chi tiết lỗi: {n.get('error')}")
+    print("\n" + "=" * 72)
+    print("      BÁO CÁO KIỂM TRA HẠ TẦNG CƠ SỞ DỮ LIỆU LAI VIETLAWBERT (v3)")
+    print("=" * 72)
 
     # In kết quả MongoDB
     mg = report["mongodb"]
-    mg_icon = "✓" if mg["status"] == "HEALTHY" else "✗"
-    print(f"\n[{mg_icon}] MONGODB DOCUMENT STORE: {mg['status']}")
+    print(f"\n[{'✓' if mg['status'] == 'HEALTHY' else '✗'}] MONGODB DOCUMENT STORE: {mg['status']}")
     if mg["status"] == "HEALTHY":
-        print(f"  * Database: {mg['database']}")
-        print(f"  * Thống kê Collections:", json.dumps(mg["document_counts"], ensure_ascii=False))
+        print(f"  * Tổng số tài liệu: {mg.get('total_documents', 0):,}")
     else:
-        print(f"  * Chi tiết lỗi: {mg.get('error')}")
+        print(f"  * Lỗi: {mg.get('error')}")
 
-    print("\n-------------------------------------------------------")
-    print(f"KẾT LUẬN CHUNG: {'HẠ TẦNG ĐÃ SẴN SÀNG 100%' if all_healthy else 'CẦN KHẮC PHỤC DỊCH VỤ LỖI'}")
-    print("=======================================================\n")
+    # In kết quả Neo4j
+    n = report["neo4j"]
+    print(f"\n[{'✓' if n['status'] == 'HEALTHY' else '✗'}] NEO4J HIN GRAPH STORE: {n['status']}")
+    if n["status"] == "HEALTHY":
+        print(f"  * Tổng số Nodes: {n['total_nodes']:,} | Cạnh quan hệ: {n['total_relationships']:,}")
+        if verbose:
+            print("  * Chi tiết Nodes:", json.dumps(n["node_distribution"], ensure_ascii=False))
+            print("  * Chi tiết Cạnh:", json.dumps(n["edge_distribution"], ensure_ascii=False))
+    else:
+        print(f"  * Lỗi: {n.get('error')}")
+
+    # In kết quả Qdrant
+    q = report["qdrant"]
+    print(f"\n[{'✓' if q['status'] == 'HEALTHY' else '✗'}] QDRANT DENSE VECTOR STORE (d={q.get('vector_dim', 256)}): {q['status']}")
+    if q["status"] == "HEALTHY":
+        print(f"  * Collection: {q['collection']} | Active Points: {q.get('points_count', 0):,}")
+    else:
+        print(f"  * Lỗi: {q.get('error') or q.get('message')}")
+
+    # In kết quả Elasticsearch
+    es = report["elasticsearch"]
+    print(f"\n[{'✓' if es['status'] == 'HEALTHY' else '✗'}] ELASTICSEARCH SPARSE RETRIEVER: {es['status']}")
+    if es["status"] == "HEALTHY":
+        print(f"  * Index: {es['index']} | Chunks đã lập chỉ mục: {es.get('docs_indexed', 0):,}")
+    else:
+        print(f"  * Lỗi: {es.get('error')}")
+
+    # In kết quả Redis
+    rd = report["redis"]
+    print(f"\n[{'✓' if rd['status'] == 'HEALTHY' else '✗'}] REDIS COMPILE-TIME GRAPH CACHE: {rd['status']}")
+    if rd["status"] == "HEALTHY":
+        print(f"  * Số lượng Graph Vector 128d trong RAM Cache: {rd.get('cached_keys', 0):,}")
+    else:
+        print(f"  * Lỗi: {rd.get('error')}")
+
+    print("\n" + "-" * 72)
+    print(f"KẾT LUẬN: {'HẠ TẦNG HOÀN TOÀN SẴN SÀNG' if all_healthy else 'CẦN KHẮC PHỤC CÁC DỊCH VỤ OFFLINE'}")
+    print("=" * 72 + "\n")
 
     return 0 if all_healthy else 1
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Kiểm tra trạng thái cụm CSDL VietLawBERT")
+    parser = argparse.ArgumentParser(description="Kiểm tra trạng thái cụm CSDL lai VietLawBERT")
     parser.add_argument("--json", action="store_true", help="Xuất báo cáo định dạng JSON")
-    parser.add_argument("--verbose", action="store_true", help="Hiển thị chi tiết thống kê schema và phân phối nhãn")
+    parser.add_argument("--verbose", action="store_true", help="Hiển thị chi tiết phân phối nhãn")
     args = parser.parse_args()
     return inspect_database(json_format=args.json, verbose=args.verbose)
 

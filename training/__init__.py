@@ -1,30 +1,33 @@
 """
 vietlawbert.training
 ~~~~~~~~~~~~~~~~~~~~
-Phân hệ khai phá mẫu khó và huấn luyện biểu diễn nhúng pháp lý VietLawBERT-MRL:
-- generate_training_data: Thuật toán Graph-Guided Semantic-Lexical Mining (GG-SLM).
-- train_mrl: Động cơ huấn luyện Matryoshka Representation Learning tích hợp InfoNCE Loss.
-- fine_tune: Điểm vào tương thích ngược (Backward-Compatible Fine-tuning Wrapper).
+Phân hệ khai phá mẫu khó trên đồ thị dị thể và huấn luyện biểu diễn nhúng VietLawBERT-MRL (v3):
+- HINTripletMiner: Khai phá Hard Negatives qua Random Walk with Restart (RWR) trên ma trận kề thưa.
+- HierarchyAwareMatryoshkaLoss: Hàm mất mát MRL InfoNCE kết hợp phạt phân cụm vĩ mô d=64.
+- VietLawBERTMRL: Kiến trúc Bi-Encoder Transformer kết hợp Mean Pooling và Linear Projection.
+- compute_graph_embeddings: Tiền tính toán véc-tơ đồ thị 128 chiều phục vụ Reranking Compile-time.
 """
 
-from .generate_training_data import (
-    score_hardness,
-    get_candidate_set,
-    run_pipeline as run_triplet_mining,
+from .generate_hin_triplets import (
+    HINTripletMiner,
+    mine_and_export_hin_triplets,
 )
 from .train_mrl import (
-    load_triplets,
-    compute_matryoshka_weights,
-    train as train_mrl_model,
+    HierarchyAwareMatryoshkaLoss,
+    VietLawBERTMRL,
+    train as train_mrl,
+    main as train_mrl_main,
 )
-from .fine_tune import main as fine_tune_main
+from .compute_graph_embeddings import (
+    compute_and_export_embeddings,
+)
 
 __all__ = [
-    "score_hardness",
-    "get_candidate_set",
-    "run_triplet_mining",
-    "load_triplets",
-    "compute_matryoshka_weights",
-    "train_mrl_model",
-    "fine_tune_main",
+    "HINTripletMiner",
+    "mine_and_export_hin_triplets",
+    "HierarchyAwareMatryoshkaLoss",
+    "VietLawBERTMRL",
+    "train_mrl",
+    "train_mrl_main",
+    "compute_and_export_embeddings",
 ]

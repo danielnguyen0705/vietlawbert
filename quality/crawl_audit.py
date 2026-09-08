@@ -1,6 +1,6 @@
 """
-crawl_audit.py - Công cụ kiểm toán chất lượng văn bản và tính nhất quán giữa các CSDL.
-Triển khai các tiêu chuẩn kiểm định chặt chẽ phục vụ công bố khoa học (ACL/EMNLP Data Sanity).
+crawl_audit.py - Công cụ kiểm toán chất lượng văn bản và tính nhất quán giữa Qdrant và Neo4j.
+Triển khai các tiêu chuẩn kiểm định chặt chẽ.
 """
 
 from __future__ import annotations
@@ -10,16 +10,16 @@ import sys
 import json
 import re
 import argparse
+import logging
 from collections import Counter
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Set, Iterator
 
 from configs.paths import ROOT_DIR, ARTIFACTS_DIR
 from configs.config import config
-from configs.logging_config import get_subsystem_logger
 from artifacts.canonical import read_jsonl
 
-logger = get_subsystem_logger("quality", "audit")
+logger = logging.getLogger("VietLawBERT_CrawlAudit")
 
 VIETNAMESE_CHARS = set(
     "àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ"
@@ -34,6 +34,7 @@ BOILERPLATE = re.compile(
 
 
 def evaluate_linguistic_quality(text: str) -> Dict[str, Any]:
+    """Kiểm tra tỷ lệ nguyên âm tiếng Việt và phát hiện lỗi vỡ bảng mã Unicode."""
     if not text:
         return {"vietnamese_ratio": 0.0, "has_encoding_error": False, "is_valid": False}
 
@@ -59,6 +60,10 @@ def audit_crawl(
     allow_upstream_missing: bool = False,
     allow_ocr_pending: bool = False,
 ) -> Dict[str, Any]:
+    """
+    Kiểm toán toàn diện một tệp Shard (.jsonl hoặc .jsonl.gz).
+    Bảo đảm không giữ payload HTML trong RAM để tối ưu hóa bộ nhớ O(1).
+    """
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"Không tìm thấy tệp artifact: {p}")
@@ -163,61 +168,60 @@ def audit_crawl(
     return result
 
 
-def fetch_all_milvus_rows(client, collection_name: str) -> Iterator[Dict[str, Any]]:
-    """Trích xuất dữ liệu Milvus an toàn qua Keyset Pagination, không bị giới hạn 16.384 bản ghi."""
-    output_fields = ["chunk_id", "doc_id", "hierarchy", "original_text"]
-    last_id = ""
-    limit = 2000
-
+def fetch_all_qdrant_points(client, collection_name: str) -> Iterator[Dict[str, Any]]:
+    """Cuộn (scroll) toàn bộ bản ghi từ Qdrant theo phân trang an toàn bộ nhớ."""
+    offset = None
+    limit = 1000
     while True:
-        filter_expr = f'chunk_id > "{last_id}"' if last_id else 'chunk_id != ""'
-        batch = client.query(
+        records, next_offset = client.scroll(
             collection_name=collection_name,
-            filter=filter_expr,
-            output_fields=output_fields,
             limit=limit,
+            offset=offset,
+            with_payload=True,
+            with_vectors=False,
         )
-        if not batch:
+        for r in records:
+            yield {
+                "chunk_id": (r.payload or {}).get("chunk_id", ""),
+                "doc_id": (r.payload or {}).get("doc_id", ""),
+                "hierarchy_path": (r.payload or {}).get("hierarchy_path", ""),
+                "content": (r.payload or {}).get("content", ""),
+            }
+        if next_offset is None:
             break
-
-        # Sắp xếp để lấy con trỏ kế tiếp
-        batch_sorted = sorted(batch, key=lambda x: str(x.get("chunk_id", "")))
-        for item in batch_sorted:
-            yield item
-
-        new_last_id = str(batch_sorted[-1].get("chunk_id", ""))
-        if new_last_id == last_id or len(batch) < limit:
-            break
-        last_id = new_last_id
+        offset = next_offset
 
 
 def audit_databases(
     expected_documents: Optional[int] = None,
     document_ids: Optional[Set[str]] = None,
 ) -> Dict[str, Any]:
-    from pymilvus import MilvusClient
+    """
+    Kiểm toán tính nhất quán 1:1 giữa Qdrant (Dense Vector) và Neo4j (HIN Graph).
+    Phát hiện Chunks mồ côi, văn bản dính boilerplate và lệch cấu trúc phân cấp.
+    """
+    from qdrant_client import QdrantClient
     from neo4j import GraphDatabase
 
-    collection = getattr(config, "MILVUS_COLLECTION_NAME", "vietlawbert_chunks")
-    milvus_uri = getattr(config, "MILVUS_URI", "http://localhost:19530")
+    collection = getattr(config, "QDRANT_COLLECTION_NAME", "vietlawbert_chunks")
+    qdrant_host = getattr(config, "QDRANT_HOST", "localhost")
+    qdrant_port = getattr(config, "QDRANT_PORT", 6333)
 
-    logger.info("Đang kết nối Milvus [%s] và đối soát collection [%s]...", milvus_uri, collection)
-    milvus = MilvusClient(uri=milvus_uri)
-    if not milvus.has_collection(collection_name=collection):
+    logger.info("Đang kết nối Qdrant [%s:%d] để đối soát collection [%s]...", qdrant_host, qdrant_port, collection)
+    q_client = QdrantClient(host=qdrant_host, port=qdrant_port, timeout=10.0)
+    existing_cols = [c.name for c in q_client.get_collections().collections]
+    if collection not in existing_cols:
         return {
             "passed": False,
-            "error": f"Collection '{collection}' không tồn tại trong Milvus!",
+            "error": f"Collection '{collection}' không tồn tại trong Qdrant!",
             "failures": [f"Collection '{collection}' missing"],
         }
 
-    milvus.flush(collection_name=collection)
-    rows = list(fetch_all_milvus_rows(milvus, collection))
-    milvus.close()
-
+    rows = list(fetch_all_qdrant_points(q_client, collection))
     if document_ids is not None:
         rows = [row for row in rows if str(row.get("doc_id")) in document_ids]
 
-    milvus_ids = {str(row.get("chunk_id")) for row in rows}
+    qdrant_chunk_ids = {str(row.get("chunk_id")) for row in rows if row.get("chunk_id")}
     source_doc_ids = {str(row.get("doc_id")) for row in rows if row.get("doc_id")}
 
     hierarchy_mismatches = 0
@@ -227,21 +231,20 @@ def audit_databases(
     oversized_chunks = 0
 
     for row in rows:
-        text = str(row.get("original_text") or "").strip()
-        try:
-            hierarchy = json.loads(row.get("hierarchy") or "{}")
-        except Exception:
-            hierarchy = {}
+        text = str(row.get("content") or "").strip()
+        h_path = str(row.get("hierarchy_path") or "")
 
-        hierarchy_mismatches += bool(ARTICLE_HEADING.match(text) and not hierarchy.get("điều"))
+        hierarchy_mismatches += bool(ARTICLE_HEADING.match(text) and "điều" not in h_path.lower())
         boilerplate_chunks += bool(BOILERPLATE.search(text))
         empty_chunks += len(text) == 0
         oversized_chunks += len(text) > max_chunk_chars
 
-    driver = GraphDatabase.driver(
-        getattr(config, "NEO4J_URI", "bolt://localhost:7687"),
-        auth=(getattr(config, "NEO4J_USER", "neo4j"), getattr(config, "NEO4J_PASSWORD", "vietlawbert")),
-    )
+    # Kết nối Neo4j đối soát cấu trúc
+    neo_uri = getattr(config, "NEO4J_URI", "bolt://localhost:7687")
+    neo_user = getattr(config, "NEO4J_USER", "neo4j")
+    neo_pwd = getattr(config, "NEO4J_PASSWORD", "vietlawbert2026")
+
+    driver = GraphDatabase.driver(neo_uri, auth=(neo_user, neo_pwd))
     try:
         with driver.session() as session:
             neo_ids = {
@@ -259,9 +262,9 @@ def audit_databases(
             ).single()["total"]
 
             duplicate_relations = session.run(
-                "MATCH (a:LawDocument)-[r]->(b:LawDocument) "
+                "MATCH (a:LawDocument)-[r:LEGAL_RELATION]->(b:LawDocument) "
                 "WHERE $doc_ids IS NULL OR a.doc_id IN $doc_ids "
-                "WITH a.doc_id AS source, type(r) AS kind, b.doc_id AS target, count(r) AS copies "
+                "WITH a.doc_id AS source, r.type AS kind, b.doc_id AS target, count(r) AS copies "
                 "WHERE copies > 1 "
                 "RETURN count(*) AS groups, coalesce(sum(copies - 1), 0) AS extras",
                 doc_ids=sorted(list(document_ids)) if document_ids is not None else None,
@@ -270,14 +273,14 @@ def audit_databases(
         driver.close()
 
     failures = []
-    if milvus_ids != neo_ids:
+    if qdrant_chunk_ids != neo_ids:
         failures.append(
-            f"Tập Chunk ID giữa Milvus ({len(milvus_ids)}) và Neo4j ({len(neo_ids)}) không khớp!"
+            f"Tập Chunk ID giữa Qdrant ({len(qdrant_chunk_ids)}) và Neo4j ({len(neo_ids)}) không khớp!"
         )
     if expected_documents is not None and len(source_doc_ids) != expected_documents:
         failures.append(f"Kỳ vọng {expected_documents} văn bản nguồn, thực tế chỉ có {len(source_doc_ids)}")
     if orphan_chunks > 0:
-        failures.append(f"Phát hiện {orphan_chunks} Chunk mồ côi (không kết nối vào Article)")
+        failures.append(f"Phát hiện {orphan_chunks} Chunk mồ côi (không kết nối vào LawDocument)")
     if duplicate_relations["groups"] > 0:
         failures.append(f"Tồn tại {duplicate_relations['groups']} nhóm quan hệ ngữ nghĩa bị trùng lặp trên Neo4j")
     if hierarchy_mismatches > 0:
@@ -290,10 +293,10 @@ def audit_databases(
         failures.append(f"{oversized_chunks} chunks vượt quá độ dài quy định {max_chunk_chars} ký tự")
 
     return {
-        "milvus_chunks": len(milvus_ids),
+        "qdrant_chunks": len(qdrant_chunk_ids),
         "neo4j_chunks": len(neo_ids),
-        "milvus_only_chunks": len(milvus_ids - neo_ids),
-        "neo4j_only_chunks": len(neo_ids - milvus_ids),
+        "qdrant_only_chunks": len(qdrant_chunk_ids - neo_ids),
+        "neo4j_only_chunks": len(neo_ids - qdrant_chunk_ids),
         "source_documents": len(source_doc_ids),
         "orphan_chunks": orphan_chunks,
         "duplicate_relation_groups": duplicate_relations["groups"],
@@ -310,7 +313,7 @@ def audit_databases(
 def main():
     parser = argparse.ArgumentParser(description="Bộ kiểm toán chất lượng kho ngữ liệu VietLawBERT")
     parser.add_argument("--crawl-file", type=Path, help="Đường dẫn file shard cần kiểm toán")
-    parser.add_argument("--databases", action="store_true", help="Kiểm tra đối soát Milvus và Neo4j")
+    parser.add_argument("--databases", action="store_true", help="Kiểm tra đối soát Qdrant và Neo4j")
     parser.add_argument("--expect-documents", type=int, help="Số lượng văn bản kỳ vọng")
     parser.add_argument("--allow-upstream-missing", action="store_true", help="Chấp nhận template rỗng cách ly")
     parser.add_argument("--allow-ocr-pending", action="store_true", help="Chấp nhận PDF chờ OCR")

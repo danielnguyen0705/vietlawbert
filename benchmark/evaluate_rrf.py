@@ -12,10 +12,11 @@ import re
 import json
 import math
 import argparse
+import logging
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 
-from configs.paths import ROOT_DIR
+from configs.paths import ROOT_DIR, BENCHMARK_DIR
 from configs.logging_config import get_subsystem_logger
 
 logger = get_subsystem_logger("benchmark", "eval_rrf")
@@ -33,7 +34,7 @@ def normalize_legal_identifier(text: Optional[str]) -> str:
 
 
 def extract_article_number(article_str: Optional[str]) -> Optional[str]:
-    """Trích xuất duy nhất số thứ tự Điều luật (VD: 'Điều 15.' -> '15')."""
+    """Trích xuất duy nhất số thứ tự Điều luật (VD: 'Điều 15.' hoặc 'Điều 15 > Khoản 1' -> '15')."""
     if not article_str:
         return None
     match = re.search(r"điều\s+(\d+[a-zA-Z]?)", article_str.lower())
@@ -41,9 +42,16 @@ def extract_article_number(article_str: Optional[str]) -> Optional[str]:
 
 
 def is_ground_truth_match(candidate: Dict[str, Any], gt_doc_num: str, gt_article: str) -> bool:
-    """Kiểm tra ứng viên truy xuất có khớp chính xác cả Số hiệu văn bản và Điều luật hay không."""
-    cand_doc = normalize_legal_identifier(candidate.get("doc_number") or candidate.get("source_doc") or "")
-    cand_art = normalize_legal_identifier(candidate.get("article") or "")
+    """
+    Kiểm tra ứng viên truy xuất có khớp chính xác cả Số hiệu văn bản và Điều luật.
+    Bóc tách linh hoạt từ doc_number, hierarchy_path, content.
+    """
+    cand_doc = normalize_legal_identifier(
+        candidate.get("doc_number") or candidate.get("source_doc") or candidate.get("doc_id") or ""
+    )
+    # Bóc tách Điều luật từ hierarchy_path (ví dụ: 'Điều 6 > Khoản 3') hoặc trường article
+    cand_art_str = candidate.get("hierarchy_path") or candidate.get("article") or ""
+    cand_art = normalize_legal_identifier(cand_art_str)
 
     target_doc = normalize_legal_identifier(gt_doc_num)
     target_art = normalize_legal_identifier(gt_article)
@@ -59,7 +67,7 @@ def is_ground_truth_match(candidate: Dict[str, Any], gt_doc_num: str, gt_article
         if target_num and cand_num:
             art_matched = (target_num == cand_num)
         else:
-            art_matched = (target_art == cand_art)
+            art_matched = (target_art in cand_art)
 
     return doc_matched and art_matched
 
@@ -127,53 +135,13 @@ def evaluate_query(
     return query_metrics
 
 
-def ensure_benchmark_templates(benchmark_dir: Path):
-    """Tự động tạo tệp mẫu đối chuẩn nếu thư mục benchmark chưa có dữ liệu."""
-    benchmark_dir.mkdir(parents=True, exist_ok=True)
-    single_hop_file = benchmark_dir / "single_hop.jsonl"
-    multi_hop_file = benchmark_dir / "multi_hop.jsonl"
-
-    if not single_hop_file.exists():
-        sample_single = [
-            {
-                "query": "Thời hiệu xử phạt vi phạm hành chính trong lĩnh vực giao thông đường bộ là bao lâu?",
-                "ground_truth_doc_number": "100/2019/NĐ-CP",
-                "ground_truth_article": "Điều 5",
-            },
-            {
-                "query": "Quy định về bảo hiểm cháy nổ bắt buộc đối với cơ sở có nguy hiểm về cháy nổ?",
-                "ground_truth_doc_number": "23/2018/NĐ-CP",
-                "ground_truth_article": "Điều 4",
-            },
-        ]
-        with open(single_hop_file, "w", encoding="utf-8") as f:
-            for s in sample_single:
-                f.write(json.dumps(s, ensure_ascii=False) + "\n")
-        logger.info(f"✓ Đã tạo tập mẫu kiểm chuẩn ban đầu: {single_hop_file.name}")
-
-    if not multi_hop_file.exists():
-        sample_multi = [
-            {
-                "query": "Mức phạt tiền đối với hành vi điều khiển xe máy vượt đèn đỏ theo quy định hiện hành sửa đổi bổ sung?",
-                "ground_truth_docs": [
-                    {"doc_number": "100/2019/NĐ-CP", "article": "Điều 6"},
-                    {"doc_number": "123/2021/NĐ-CP", "article": "Điều 2"},
-                ],
-            }
-        ]
-        with open(multi_hop_file, "w", encoding="utf-8") as f:
-            for s in sample_multi:
-                f.write(json.dumps(s, ensure_ascii=False) + "\n")
-        logger.info(f"✓ Đã tạo tập mẫu kiểm chuẩn ban đầu: {multi_hop_file.name}")
-
-
 def load_benchmark(benchmark_dir: str | Path) -> Dict[str, List[Dict[str, Any]]]:
+    """Nạp dữ liệu kiểm chuẩn từ thư mục benchmark."""
     datasets = {}
-    bench_path = Path(benchmark_dir)
-    ensure_benchmark_templates(bench_path)
+    b_path = Path(benchmark_dir)
 
-    for filename in ["single_hop.jsonl", "multi_hop.jsonl"]:
-        file_path = bench_path / filename
+    for filename in ["single_hop.jsonl", "multi_hop.jsonl", "vietlawbench_1000.jsonl"]:
+        file_path = b_path / filename
         if not file_path.exists():
             continue
 
@@ -195,26 +163,18 @@ def load_benchmark(benchmark_dir: str | Path) -> Dict[str, List[Dict[str, Any]]]
 
 
 def retrieve_by_mode(retriever: Any, query: str, top_k: int, mode: str) -> List[Dict[str, Any]]:
-    """Thực thi truy xuất theo chế độ phân tích thành phần (Ablation Mode)."""
+    """Thực thi truy xuất phân tích bóc tách thành phần (Ablation Mode) tương thích v3."""
     if mode == "dense_only":
         return retriever._search_dense(query, top_k=top_k)
     elif mode == "sparse_only":
-        return retriever._search_sparse_bm25(query, top_k=top_k)
-    elif mode == "graph_only":
-        return retriever._search_exact_neo4j(query, top_k=top_k)
-    elif mode == "reranked":
-        orig_rerank = retriever.use_reranker
-        retriever.use_reranker = True
-        hits = retriever.search_context(query, top_k=top_k)
-        retriever.use_reranker = orig_rerank
-        return hits
+        return retriever._search_sparse_es(query, top_k=top_k)
     else:
-        # Mặc định: Hybrid RRF
-        return retriever.search_context(query, top_k=top_k)
+        # Mặc định: Full Hybrid RRF + Graph Reranking
+        return retriever.retrieve(query, top_k=top_k)
 
 
 def run_benchmark_evaluation(
-    benchmark_dir: str | Path = ROOT_DIR / "benchmark",
+    benchmark_dir: str | Path = BENCHMARK_DIR,
     output_dir: Optional[str | Path] = ROOT_DIR / "benchmark" / "results",
     k_list: Optional[List[int]] = None,
     mode: str = "hybrid",
@@ -226,14 +186,34 @@ def run_benchmark_evaluation(
     if retriever_instance is not None:
         retriever = retriever_instance
     else:
-        from rag.retriever import LegalRetriever
-        retriever = LegalRetriever()
+        # Khởi tạo retriever lai kết nối Qdrant và Elasticsearch
+        from database.qdrant_client import QdrantClientWrapper
+        from rag.es_retriever import LegalElasticsearchRetriever
+        from rag.retriever import LegalHybridRetriever
+        from sentence_transformers import SentenceTransformer
+        from configs.config import config
+
+        qdrant = QdrantClientWrapper(host=config.QDRANT_HOST, port=config.QDRANT_PORT)
+        es = LegalElasticsearchRetriever(hosts=[config.ES_HOST], index_name=config.ES_INDEX_NAME)
+        encoder = SentenceTransformer(config.BASE_MODEL_NAME)
+        retriever = LegalHybridRetriever(qdrant_wrapper=qdrant, es_client=es.client, encoder_model=encoder)
 
     datasets = load_benchmark(benchmark_dir)
+    if not datasets:
+        logger.warning("Chưa có tập benchmark, đang kích hoạt sinh mẫu tự động...")
+        from benchmark.build_vietlawbench import VietLawBenchBuilder
+        builder = VietLawBenchBuilder()
+        builder.build_and_export_all(600, 400)
+        builder.close()
+        datasets = load_benchmark(benchmark_dir)
+
     all_dataset_results = {}
     sample_level_metrics = {}
 
     for ds_name, samples in datasets.items():
+        if ds_name == "vietlawbench_1000" and ("single_hop" in datasets and "multi_hop" in datasets):
+            continue
+
         logger.info(f"\n=======================================================")
         logger.info(f"ĐÁNH GIÁ: {ds_name.upper()} | Chế độ: [{mode.upper()}] | Số mẫu: {len(samples)}")
         logger.info(f"=======================================================")
@@ -249,7 +229,7 @@ def run_benchmark_evaluation(
             metrics = evaluate_query(retrieved_docs, sample, k_thresholds)
             dataset_query_scores.append(metrics)
 
-            if idx % 20 == 0 or idx == len(samples):
+            if idx % 50 == 0 or idx == len(samples):
                 logger.info(f"Tiến độ: {idx}/{len(samples)} câu hỏi...")
 
         total_samples = len(dataset_query_scores)
@@ -287,15 +267,10 @@ def run_benchmark_evaluation(
 
 def main():
     parser = argparse.ArgumentParser(description="Chương trình kiểm chuẩn truy xuất VietLawBERT-MRL")
-    parser.add_argument("--benchmark-dir", default=str(ROOT_DIR / "benchmark"), help="Thư mục chứa dữ liệu test")
-    parser.add_argument("--output-dir", default=str(ROOT_DIR / "benchmark" / "results"), help="Thư mục xuất báo cáo")
-    parser.add_argument("--k-list", nargs="+", type=int, default=[1, 3, 5, 10], help="Các mốc K đánh giá")
-    parser.add_argument(
-        "--mode",
-        choices=["hybrid", "dense_only", "sparse_only", "graph_only", "reranked"],
-        default="hybrid",
-        help="Chế độ đánh giá bóc tách thành phần (Ablation Study)",
-    )
+    parser.add_argument("--benchmark-dir", default=str(BENCHMARK_DIR))
+    parser.add_argument("--output-dir", default=str(ROOT_DIR / "benchmark" / "results"))
+    parser.add_argument("--k-list", nargs="+", type=int, default=[1, 3, 5, 10])
+    parser.add_argument("--mode", choices=["hybrid", "dense_only", "sparse_only"], default="hybrid")
     args = parser.parse_args()
 
     run_benchmark_evaluation(

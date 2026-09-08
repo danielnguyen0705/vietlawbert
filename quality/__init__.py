@@ -1,10 +1,10 @@
 """
 vietlawbert.quality
 ~~~~~~~~~~~~~~~~~~~
-Phân hệ kiểm soát chất lượng và kiểm toán toàn vẹn dữ liệu cho VietLawBERT:
-- Crawl Audit: Kiểm toán Shard nén Gzip, phân vùng cách ly và phát hiện rác dữ liệu.
-- Database Inspection: Giám sát trạng thái hoạt động của Milvus, Neo4j và MongoDB.
-- Pipeline Verifier: Đối soát toàn vẹn 3 chiều (Artifacts == Kafka == Neo4j Raw Archive).
+Phân hệ kiểm soát chất lượng và kiểm toán toàn vẹn dữ liệu cho VietLawBERT (Kiến trúc v3):
+- Crawl Audit: Kiểm toán Shard nén Gzip, tỷ lệ ký tự tiếng Việt và phát hiện phôi rác Template.
+- Database Inspection: Giám sát trạng thái 5 tầng lưu trữ lai (Mongo, Neo4j, Qdrant, ES, Redis).
+- Pipeline Verifier: Đối soát toàn vẹn 4 chiều (Disk Shards == Neo4j HIN == Qdrant == Elasticsearch).
 """
 
 from .crawl_audit import audit_crawl, audit_databases

@@ -13,6 +13,9 @@ from .evaluate_rrf import (
     extract_article_number,
     run_benchmark_evaluation,
 )
+from .build_vietlawbench import VietLawBenchBuilder
+from .baseline_comparator import BaselineComparator
+from .evaluate_rqs import ScientificBenchmarkRunner
 
 __all__ = [
     "load_benchmark",
@@ -21,4 +24,7 @@ __all__ = [
     "normalize_legal_identifier",
     "extract_article_number",
     "run_benchmark_evaluation",
+    "VietLawBenchBuilder",
+    "BaselineComparator",
+    "ScientificBenchmarkRunner",
 ]

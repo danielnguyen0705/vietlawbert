@@ -1,6 +1,6 @@
 """
 law_spider.py - Con nhện thu thập toàn diện văn bản pháp luật Việt Nam (VBPL).
-Tích hợp Next.js Server Action, Playwright Context, Page Refresh định kỳ và Disk Shards Staging.
+Tích hợp Next.js Server Action, Playwright Context, PyMuPDF, OCR Failsafe và Stats-based Backpressure Queue.
 """
 
 from __future__ import annotations
@@ -9,7 +9,6 @@ import io
 import os
 import re
 import json
-import gzip
 import shutil
 import asyncio
 import zipfile
@@ -23,7 +22,7 @@ import scrapy
 from scrapy import signals
 from bs4 import BeautifulSoup
 
-from configs.paths import RAW_SHARDS_DIR, ARTIFACTS_DIR
+from configs.paths import ARTIFACTS_DIR
 from configs.config import config
 from configs.logging_config import get_subsystem_logger
 
@@ -121,13 +120,6 @@ class LawSpider(scrapy.Spider):
         self.artifacts_dir = Path(ARTIFACTS_DIR)
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
         self.failed_file = self.artifacts_dir / "crawl_failures.jsonl"
-
-        # Khởi tạo phân vùng Staging Shards (1.000 văn bản / shard)
-        self.raw_shards_dir = Path(RAW_SHARDS_DIR)
-        self.raw_shards_dir.mkdir(parents=True, exist_ok=True)
-        self.current_shard_records: List[Dict[str, Any]] = []
-        self.shard_counter = 1
-
         self._ocr_semaphore: Optional[asyncio.Semaphore] = None
 
     @classmethod
@@ -136,27 +128,8 @@ class LawSpider(scrapy.Spider):
         crawler.signals.connect(spider.spider_closed, signal=signals.spider_closed)
         return spider
 
-    def _flush_shard_to_disk(self):
-        """Ghi đệm Shard hiện tại xuống tệp nén Gzip (.jsonl.gz) phục vụ Pipeline Staging."""
-        if not self.current_shard_records:
-            return
-
-        shard_filename = self.raw_shards_dir / f"crawl_pages_{self.shard_counter:05d}.jsonl.gz"
-        try:
-            with gzip.open(shard_filename, "wt", encoding="utf-8") as f:
-                for record in self.current_shard_records:
-                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
-            self.logger.info(
-                "[STAGING SHARD] Đã ghi thành công %d bản ghi vào %s",
-                len(self.current_shard_records),
-                shard_filename.name,
-            )
-            self.current_shard_records.clear()
-            self.shard_counter += 1
-        except Exception as exc:
-            self.logger.error("Lỗi ghi Shard xuống đĩa: %s", exc, exc_info=True)
-
     def _get_in_flight_count(self) -> int:
+        """Kiểm soát backpressure qua độ sâu hàng đợi request trong engine."""
         if hasattr(self, "crawler") and self.crawler.stats:
             enqueued = self.crawler.stats.get_value("scheduler/enqueued", 0) or 0
             dequeued = self.crawler.stats.get_value("scheduler/dequeued", 0) or 0
@@ -177,7 +150,8 @@ class LawSpider(scrapy.Spider):
 
         return 0
 
-    async def start(self):
+    def start_requests(self):
+        """Điểm vào chuẩn xác của Scrapy Spider để khởi tạo luồng cào dữ liệu."""
         if self.requested_doc_ids:
             self.logger.info("[MỤC TIÊU] Tải trực tiếp %d Document ID chỉ định.", len(self.requested_doc_ids))
             for doc_id in self.requested_doc_ids:
@@ -241,19 +215,12 @@ class LawSpider(scrapy.Spider):
             total_pages = None
 
             while total_pages is None or page_number <= total_pages:
-                # =========================================================================
-                # 1. BẢO VỆ CHỐNG RÒ RỈ BỘ NHỚ CHROMIUM (Periodic Page Refresh mỗi 500 trang)
-                # =========================================================================
                 if page_number > self.start_page and (page_number - self.start_page) % 500 == 0:
-                    self.logger.info("[PLAYWRIGHT REFRESH] Tái tạo Page Chromium để xả V8 Heap sau 500 trang...")
+                    self.logger.info("[PLAYWRIGHT REFRESH] Tái tạo Page Chromium để xả V8 Heap...")
                     browser_context = page.context
                     await page.close()
                     page = await browser_context.new_page()
-                    await self._init_rescue_page(page, None)
 
-                # =========================================================================
-                # 2. CƠ CHẾ BACKPRESSURE CHỦ ĐỘNG (Giữ hàng đợi engine < 120 requests)
-                # =========================================================================
                 while self._get_in_flight_count() >= 120:
                     await asyncio.sleep(1.5)
 
@@ -370,11 +337,7 @@ class LawSpider(scrapy.Spider):
             for paragraph in root.iter():
                 if not paragraph.tag.endswith("}p"):
                     continue
-                text = "".join(
-                    node.text or ""
-                    for node in paragraph.iter()
-                    if node.tag.endswith("}t")
-                ).strip()
+                text = "".join(node.text or "" for node in paragraph.iter() if node.tag.endswith("}t")).strip()
                 if text:
                     paragraphs.append(text)
             return "\n".join(paragraphs)
@@ -514,12 +477,13 @@ class LawSpider(scrapy.Spider):
 
         html_status, prepared_html, html_dom = self._prepare_html(html_raw)
         if html_status != HTMLStatus.VALID:
-            self.logger.warning("[THIẾU HTML] Văn bản %s không có nội dung HTML sẵn.", item["item_id"])
             item["html_status"] = HTMLStatus.EMPTY
             item["html_raw"] = ""
+            item["html_dom"] = None
         else:
             item["html_status"] = HTMLStatus.VALID
             item["html_raw"] = prepared_html
+            item["html_dom"] = html_dom
             item["content_source"] = "detail_html"
 
         metadata_detail = dict(doc_data)
@@ -536,7 +500,7 @@ class LawSpider(scrapy.Spider):
                 yield self._rescue_browser_request(item)
             return
 
-        yield self._diagram_request(item, html_dom)
+        yield self._diagram_request(item)
 
     @staticmethod
     def _playwright_rescue_meta() -> dict:
@@ -586,10 +550,10 @@ class LawSpider(scrapy.Spider):
             if status == HTMLStatus.VALID:
                 item["html_status"] = status
                 item["html_raw"] = prepared_html
+                item["html_dom"] = html_dom
                 item["content_source"] = "legacy_print_html"
                 item["rescue_status"] = "LEGACY_HTML_RECOVERED"
-                self.logger.info("[CỨU HỘ LEGACY] %s thành công.", item["item_id"])
-                yield self._diagram_request(item, html_dom)
+                yield self._diagram_request(item)
                 return
             yield self._rescue_browser_request(item)
         finally:
@@ -616,7 +580,7 @@ class LawSpider(scrapy.Spider):
             dont_filter=True,
         )
 
-    def _diagram_request(self, item: dict, html_dom=None):
+    def _diagram_request(self, item: dict):
         doc_id = item["item_id"]
         return scrapy.Request(
             url=f"{SEARCH_API}/{doc_id}/diagram",
@@ -625,7 +589,6 @@ class LawSpider(scrapy.Spider):
             callback=self.parse_diagram,
             errback=self.handle_failure,
             cb_kwargs={"item": item},
-            meta={"html_dom": html_dom},
         )
 
     def _next_file_request(self, item: dict, files: list):
@@ -708,10 +671,10 @@ class LawSpider(scrapy.Spider):
                 if status == HTMLStatus.VALID:
                     item["html_status"] = status
                     item["html_raw"] = prepared_html
+                    item["html_dom"] = html_dom
                     item["content_source"] = "fallback_html"
                     item["rescue_status"] = "HTML_RECOVERED"
-                    self.logger.info("[CỨU HỘ HTML THÀNH CÔNG] %s từ %s", item["item_id"], file_info.get("fileName"))
-                    yield self._diagram_request(item, html_dom)
+                    yield self._diagram_request(item)
                     return
             elif name.endswith(".docx"):
                 extracted_text = self._extract_docx_text(response.body)
@@ -749,10 +712,10 @@ class LawSpider(scrapy.Spider):
                 recovered_html = "<html><body><pre>" + html_lib.escape(extracted_text) + "</pre></body></html>"
                 item["html_status"] = HTMLStatus.VALID
                 item["html_raw"] = recovered_html
+                item["html_dom"] = BeautifulSoup(recovered_html, "html.parser")
                 item["content_source"] = source
                 item["rescue_status"] = status_name
-                self.logger.info("[CỨU HỘ VĂN BẢN THÀNH CÔNG] %s từ %s", item["item_id"], file_info.get("fileName"))
-                yield self._diagram_request(item, BeautifulSoup(recovered_html, "html.parser"))
+                yield self._diagram_request(item)
                 return
         except Exception as exc:
             self.logger.warning("[LỖI XỬ LÝ FILE ĐÍNH KÈM] %s: %s", item["item_id"], exc)
@@ -792,14 +755,6 @@ class LawSpider(scrapy.Spider):
 
         doc_id = item["item_id"]
         self.successful_ids.add(doc_id)
-
-        # =========================================================================
-        # 3. DUAL-WRITE STAGING SHARDS: Ghi song song bản ghi chuẩn vào Shard đĩa cứng
-        # =========================================================================
-        self.current_shard_records.append(item)
-        if len(self.current_shard_records) >= 1000:
-            self._flush_shard_to_disk()
-
         self.logger.info("[HOÀN TẤT VĂN BẢN] %s (ID: %s)", item.get("doc_number"), doc_id)
         yield item
 
@@ -816,9 +771,6 @@ class LawSpider(scrapy.Spider):
             f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
     def spider_closed(self, spider):
-        # Xả nốt phần Shard còn dở dang cuối cùng xuống đĩa
-        self._flush_shard_to_disk()
-
         finish_reason = spider.crawler.stats.get_value("finish_reason", "unknown")
         stats_data = {
             "finish_reason": finish_reason,
@@ -826,7 +778,6 @@ class LawSpider(scrapy.Spider):
             "scheduled_count": len(self.scheduled_ids),
             "failed_count": len(self.current_failed_ids),
             "pages_crawled": spider.crawler.stats.get_value("response_received_count", 0),
-            "shards_exported": self.shard_counter - 1,
         }
 
         status_path = self.artifacts_dir / "crawler_status.json"
@@ -837,11 +788,10 @@ class LawSpider(scrapy.Spider):
             pass
 
         self.logger.info(
-            "Chiến dịch kết thúc: Lý do=%s | Đã thu thập: %d/%d văn bản | Xuất: %d shards (.jsonl.gz) | Thất bại: %d.",
+            "Chiến dịch kết thúc: Lý do=%s | Đã thu thập: %d/%d văn bản | Thất bại: %d.",
             finish_reason,
             len(self.successful_ids),
             len(self.scheduled_ids),
-            self.shard_counter - 1,
             len(self.current_failed_ids),
         )
         if self.skipped_doc_types:

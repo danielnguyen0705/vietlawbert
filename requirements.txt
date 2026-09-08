@@ -10,8 +10,9 @@ html2text>=2024.2.26
 lxml>=5.1.0
 
 # ==========================================
-# 2. DATA PROCESSING & BIG DATA STORAGE (Parquet/NoSQL)
+# 2. DATA PROCESSING, AST PARSING & STORAGE
 # ==========================================
+lark>=1.1.9
 python-dotenv>=1.0.1
 pydantic>=2.7.0
 pymupdf>=1.24.0
@@ -19,38 +20,41 @@ tqdm>=4.66.0
 pandas>=2.2.0
 pyarrow>=15.0.0
 fastparquet>=2024.2.0
-docling>=2.0.0
 
 # ==========================================
-# 3. DATABASES & DISTRIBUTED STREAMING
+# 3. DATABASES & CACHING STACK (Qdrant, ES, Neo4j, Redis)
 # ==========================================
 pymongo>=4.6.0
-pymilvus>=2.4.0
+qdrant-client>=1.9.0
+elasticsearch>=8.13.0
 neo4j>=5.18.0
-confluent-kafka>=2.3.0
+redis>=5.0.3
 
 # ==========================================
-# 4. AI, EMBEDDINGS & CONTRASTIVE LEARNING (VietLawBERT Core)
+# 4. AI, EMBEDDINGS & CONTRASTIVE MRL LEARNING
 # ==========================================
 torch>=2.2.0
 torchvision>=0.17.0
 torchaudio>=2.2.0
+accelerate>=0.28.0
 transformers>=4.40.0
 sentence-transformers>=2.6.0
 openai>=1.20.0
-langchain-text-splitters>=0.0.1
 rank_bm25>=0.2.2
-scikit-learn>=1.4.0
 
 # ==========================================
-# 5. BENCHMARK & EVALUATION (Q1 Academic Standard)
+# 5. GRAPH ALGORITHMS & SCIENTIFIC COMPUTATION
+# ==========================================
+numpy>=1.26.0
+scipy>=1.12.0
+scikit-learn>=1.4.0
+gensim>=4.3.2
+
+# ==========================================
+# 6. BENCHMARK & SERVING (Q1 Academic Standard)
 # ==========================================
 ragas>=0.1.7
 deepeval>=0.21.0
-
-# ==========================================
-# 6. SERVING & API GATEWAY
-# ==========================================
 fastapi>=0.110.0
 uvicorn>=0.28.0
 chainlit>=1.0.500

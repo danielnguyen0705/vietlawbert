@@ -24,7 +24,6 @@ def test_chunk_id_semantic_preservation():
 """
     chunks = chunk_legal_document(raw_md, doc_id="ND_100")
     assert len(chunks) >= 2
-    # Đảm bảo mã định danh chứa thông tin Điều và Khoản
     assert "ND_100_Điều15_K1" in chunks[0].chunk_id
     assert chunks[0].hierarchy.dieu == "Điều 15"
     assert chunks[0].hierarchy.khoan == "Khoản 1"
@@ -37,7 +36,7 @@ def test_extract_cross_references_external_and_internal():
     )
     refs = extract_cross_references(text)
     assert len(refs) >= 2
-    
+
     external_refs = [r for r in refs if r["target_type"] == "Điều"]
     assert len(external_refs) >= 1
     assert external_refs[0]["target_number"] == "5"
@@ -56,4 +55,4 @@ def test_subword_boundary_split():
     for ck in chunks:
         assert len(ck.text) <= 400
         assert ck.hierarchy.dieu == "Điều 1"
-        assert "_P" in ck.chunk_id  # Đánh dấu phân đoạn an toàn
+        assert "_p" in ck.chunk_id.lower()

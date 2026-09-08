@@ -1,166 +1,240 @@
 """
-train_mrl.py - Động cơ huấn luyện VietLawBERT-MRL sử dụng Matryoshka Representation Learning.
-Tối ưu hóa đa tầng hàm mất mát InfoNCE trên không gian đa độ phân giải D = {64, 128, 256, 512, 768, 1024}.
+train_mrl.py - Động cơ huấn luyện VietLawBERT với Hierarchy-Aware Matryoshka InfoNCE Loss.
+Tối ưu hóa đa tầng biểu diễn lồng nhau và ràng buộc hình học vĩ mô ở chiều d=64.
 """
 
 from __future__ import annotations
 
-import os
-import sys
 import math
 import argparse
+import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 import torch
-from torch.utils.data import DataLoader
-from sentence_transformers import SentenceTransformer, InputExample, losses
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+from transformers import AutoModel, AutoTokenizer, get_cosine_schedule_with_warmup
 
-from configs.paths import ROOT_DIR, ARTIFACTS_DIR, MODELS_DIR
 from configs.config import config
-from configs.logging_config import get_subsystem_logger
-from artifacts.canonical import read_jsonl
+from configs.paths import MODELS_DIR, ARTIFACTS_DIR
 
-logger = get_subsystem_logger("training", "model_training")
-
-
-def compute_matryoshka_weights(dims: List[int]) -> List[float]:
-    raw_weights = [1.0 / math.log2(float(d) + 2.0) for d in dims]
-    total_w = sum(raw_weights)
-    normalized = [round(w / total_w, 4) for w in raw_weights]
-    logger.info(f"Phân bổ trọng số Matryoshka ({dims}): {normalized}")
-    return normalized
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | [%(levelname)s] | %(name)s - %(message)s")
+logger = logging.getLogger("VietLawBERT_HierarchyMRL")
 
 
-def load_triplets(file_path: Path | str, max_samples: Optional[int] = None) -> List[InputExample]:
-    path = Path(file_path)
-    if not path.exists():
-        logger.error(f"Không tìm thấy tệp huấn luyện: {path}")
-        return []
+class HierarchyAwareMatryoshkaLoss(nn.Module):
+    def __init__(
+        self,
+        matryoshka_dims: List[int] = [64, 128, 256, 512, 768, 1024],
+        temperature: float = 0.05,
+        hierarchy_weight: float = 0.15,
+    ):
+        super().__init__()
+        self.matryoshka_dims = matryoshka_dims
+        self.tau = temperature
+        self.gamma = hierarchy_weight
 
-    examples: List[InputExample] = []
+        # w_d = 1 / log2(d + 2), chuẩn hóa tổng về 1.0
+        raw_weights = [1.0 / math.log2(float(d) + 2.0) for d in self.matryoshka_dims]
+        total_w = sum(raw_weights)
+        self.weights = [w / total_w for w in raw_weights]
 
-    if path.suffix == ".parquet":
-        import pandas as pd
-        df = pd.read_parquet(path)
-        if max_samples:
-            df = df.iloc[:max_samples]
-        for _, row in df.iterrows():
-            examples.append(InputExample(texts=[str(row["query"]), str(row["positive"]), str(row["hard_negative"])]))
-    else:
-        for idx, record in enumerate(read_jsonl(path)):
-            if max_samples and idx >= max_samples:
-                break
-            q = record.get("query")
-            p = record.get("positive")
-            n = record.get("hard_negative")
-            if q and p and n:
-                examples.append(InputExample(texts=[str(q), str(p), str(n)]))
+    def forward(
+        self,
+        anchor_rep: torch.Tensor,
+        pos_rep: torch.Tensor,
+        neg_rep: torch.Tensor,
+        hierarchy_labels: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        anchor_rep, pos_rep, neg_rep: [B, D_max]
+        hierarchy_labels: [B] nhãn số nguyên định danh cấp Chương/Luật
+        """
+        B = anchor_rep.size(0)
+        labels = torch.arange(B, device=anchor_rep.device)
+        candidates = torch.cat([pos_rep, neg_rep], dim=0)  # [2B, D_max]
 
-    logger.info(f"✓ Đã nạp thành công {len(examples):,} bộ ba đối lập phục vụ huấn luyện.")
-    return examples
+        total_loss = torch.tensor(0.0, device=anchor_rep.device)
+
+        # 1. Multi-tier Matryoshka InfoNCE Loss
+        for dim, weight in zip(self.matryoshka_dims, self.weights):
+            sub_anchor = F.normalize(anchor_rep[:, :dim], p=2, dim=-1)
+            sub_candidates = F.normalize(candidates[:, :dim], p=2, dim=-1)
+
+            logits = torch.matmul(sub_anchor, sub_candidates.T) / self.tau  # [B, 2B]
+            loss_d = F.cross_entropy(logits, labels)
+            total_loss += weight * loss_d
+
+        # 2. Hierarchy Supervised Contrastive Loss tại chiều vĩ mô d=64
+        if hierarchy_labels is not None and self.gamma > 0:
+            sub_macro = F.normalize(anchor_rep[:, :64], p=2, dim=-1)  # [B, 64]
+            sim_macro = torch.matmul(sub_macro, sub_macro.T) / self.tau
+
+            label_mask = torch.eq(hierarchy_labels.unsqueeze(1), hierarchy_labels.unsqueeze(0)).float()
+            diag_mask = torch.eye(B, device=anchor_rep.device)
+            pos_mask = label_mask * (1.0 - diag_mask)
+
+            max_sim, _ = torch.max(sim_macro, dim=1, keepdim=True)
+            exp_sim = torch.exp(sim_macro - max_sim.detach()) * (1.0 - diag_mask)
+
+            denom = exp_sim.sum(dim=1, keepdim=True) + 1e-9
+            log_prob = (sim_macro - max_sim.detach()) - torch.log(denom)
+
+            num_positives = pos_mask.sum(dim=1)
+            valid_rows = num_positives > 0
+
+            if valid_rows.any():
+                sup_con = -(pos_mask * log_prob).sum(dim=1)[valid_rows] / num_positives[valid_rows]
+                total_loss += self.gamma * sup_con.mean()
+
+        return total_loss
 
 
-def train(
-    train_file: Path | str,
-    base_model_name: str = "BAAI/bge-m3",
-    output_dir: Path | str = MODELS_DIR / "vietlawbert_mrl_base",
-    epochs: int = 3,
-    batch_size: int = 16,
-    learning_rate: float = 2e-5,
-    max_samples: Optional[int] = None,
-    push_to_hub: bool = False,
-    hub_model_id: Optional[str] = None,
-    auto_terminate: bool = False,
-):
-    device = "cpu"
-    if torch.cuda.is_available():
-        device = "cuda"
-        gpu_name = torch.cuda.get_device_name(0)
-        logger.info(f"Kích hoạt huấn luyện trên NVIDIA GPU: {gpu_name} (CUDA v{torch.version.cuda})")
-    elif hasattr(torch, "xpu") and torch.xpu.is_available():
-        device = "xpu"
+class VietLawBERTMRL(nn.Module):
+    def __init__(self, base_model_name: str = "BAAI/bge-m3", output_dim: int = 1024):
+        super().__init__()
+        self.encoder = AutoModel.from_pretrained(base_model_name)
+        hidden_size = self.encoder.config.hidden_size
+        self.projection = nn.Linear(hidden_size, output_dim, bias=False) if hidden_size != output_dim else nn.Identity()
 
-    train_samples = load_triplets(train_file, max_samples=max_samples)
-    if not train_samples:
-        logger.error("Dữ liệu đầu vào rỗng. Hủy tiến trình huấn luyện.")
-        return
+    def _mean_pooling(self, last_hidden: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        input_mask = attention_mask.unsqueeze(-1).expand(last_hidden.size()).float()
+        sum_embeddings = torch.sum(last_hidden * input_mask, dim=1)
+        sum_mask = torch.clamp(input_mask.sum(dim=1), min=1e-9)
+        return sum_embeddings / sum_mask
 
-    train_dataloader = DataLoader(train_samples, shuffle=True, batch_size=batch_size, drop_last=True)
+    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor, **kwargs) -> torch.Tensor:
+        outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
+        pooled = self._mean_pooling(outputs.last_hidden_state, attention_mask)
+        return self.projection(pooled)
 
-    logger.info(f"Đang tải Backbone Encoder nền tảng: [{base_model_name}]...")
-    model = SentenceTransformer(base_model_name, device=device)
 
-    matryoshka_dims = [64, 128, 256, 512, 768, 1024]
-    matryoshka_weights = compute_matryoshka_weights(matryoshka_dims)
+class TripletParquetDataset(Dataset):
+    def __init__(self, parquet_path: str, tokenizer, max_length: int = 512):
+        df = pd.read_parquet(parquet_path)
+        self.anchors = df["anchor"].tolist()
+        self.positives = df["positive"].tolist()
+        self.negatives = df["negative"].tolist()
 
-    base_loss = losses.MultipleNegativesRankingLoss(model=model, scale=20.0)
+        if "hierarchy_label" in df.columns:
+            self.labels = df["hierarchy_label"].astype("category").cat.codes.tolist()
+        else:
+            self.labels = [0] * len(self.anchors)
 
-    train_loss = losses.MatryoshkaLoss(
-        model=model,
-        loss=base_loss,
-        matryoshka_dims=matryoshka_dims,
-        matryoshka_weights=matryoshka_weights,
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+
+    def __len__(self):
+        return len(self.anchors)
+
+    def __getitem__(self, idx):
+        return {
+            "anchor": self.anchors[idx],
+            "positive": self.positives[idx],
+            "negative": self.negatives[idx],
+            "label": self.labels[idx],
+        }
+
+
+def collate_fn_triplets(batch, tokenizer, max_len=512):
+    anchors = [x["anchor"] for x in batch]
+    positives = [x["positive"] for x in batch]
+    negatives = [x["negative"] for x in batch]
+    labels = torch.tensor([x["label"] for x in batch], dtype=torch.long)
+
+    a_tok = tokenizer(anchors, padding=True, truncation=True, max_length=max_len, return_tensors="pt")
+    p_tok = tokenizer(positives, padding=True, truncation=True, max_length=max_len, return_tensors="pt")
+    n_tok = tokenizer(negatives, padding=True, truncation=True, max_length=max_len, return_tensors="pt")
+
+    return a_tok, p_tok, n_tok, labels
+
+
+def train(args):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info("Khởi chạy huấn luyện mô hình trên thiết bị: %s", device)
+
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
+    model = VietLawBERTMRL(args.model_name, output_dim=args.output_dim).to(device)
+
+    dataset = TripletParquetDataset(args.train_parquet, tokenizer, max_length=args.max_seq_length)
+    dataloader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        drop_last=True,
+        collate_fn=lambda b: collate_fn_triplets(b, tokenizer, args.max_seq_length),
     )
 
-    out_path = Path(output_dir)
-    out_path.mkdir(parents=True, exist_ok=True)
-    warmup_steps = int(len(train_dataloader) * epochs * 0.1)
+    criterion = HierarchyAwareMatryoshkaLoss(
+        matryoshka_dims=list(config.MATRYOSHKA_DIMS),
+        temperature=args.tau,
+        hierarchy_weight=args.hierarchy_weight,
+    )
 
-    logger.info("=== BẮT ĐẦU QUÁ TRÌNH FINE-TUNING VIETLAWBERT-MRL ===")
-    logger.info(f"Tham số: Epochs={epochs} | BatchSize={batch_size} | LR={learning_rate} | WarmupSteps={warmup_steps}")
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
+    total_steps = len(dataloader) * args.epochs
+    scheduler = get_cosine_schedule_with_warmup(
+        optimizer, num_warmup_steps=int(total_steps * 0.1), num_training_steps=total_steps
+    )
 
-    try:
-        model.fit(
-            train_objectives=[(train_dataloader, train_loss)],
-            epochs=epochs,
-            warmup_steps=warmup_steps,
-            optimizer_params={"lr": learning_rate},
-            output_path=str(out_path),
-            show_progress_bar=True,
-            use_amp=True if device == "cuda" else False,
-        )
-        logger.info(f"✓ Huấn luyện thành công! Trọng số mô hình đã lưu tại: {out_path.resolve()}")
+    model.train()
+    for epoch in range(args.epochs):
+        epoch_loss = 0.0
+        for step, (a_tok, p_tok, n_tok, labels) in enumerate(dataloader):
+            a_tok = {k: v.to(device) for k, v in a_tok.items()}
+            p_tok = {k: v.to(device) for k, v in p_tok.items()}
+            n_tok = {k: v.to(device) for k, v in n_tok.items()}
+            labels = labels.to(device)
 
-        if push_to_hub and hub_model_id:
-            logger.info(f"Đang tải trọng số lên Hugging Face Hub: {hub_model_id}...")
-            model.save_to_hub(repo_id=hub_model_id, private=True)
-            logger.info(f"✓ Đã đưa mô hình lên Hugging Face Hub thành công: https://huggingface.co/{hub_model_id}")
+            optimizer.zero_grad()
+            a_rep = model(**a_tok)
+            p_rep = model(**p_tok)
+            n_rep = model(**n_tok)
 
-    finally:
-        if auto_terminate and getattr(config, "ENABLE_CLOUD_GPU", False):
-            logger.warning("[SAFETY] Kích hoạt tự hủy RunPod Pod sau khi hoàn tất...")
-            pod_id = os.environ.get("RUNPOD_POD_ID") or getattr(config, "CLOUD_GPU_INSTANCE_ID", "")
-            if pod_id:
-                os.system(f"runpodctl stop pod {pod_id} 2>/dev/null")
+            loss = criterion(a_rep, p_rep, n_rep, hierarchy_labels=labels)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            scheduler.step()
+
+            epoch_loss += loss.item()
+            if (step + 1) % 50 == 0 or (step + 1) == len(dataloader):
+                logger.info(
+                    "Epoch [%d/%d] | Step [%d/%d] | Loss: %.4f",
+                    epoch + 1,
+                    args.epochs,
+                    step + 1,
+                    len(dataloader),
+                    loss.item(),
+                )
+
+        avg_loss = epoch_loss / len(dataloader)
+        logger.info("=== Epoch %d Hoàn thành | Average Loss: %.4f ===", epoch + 1, avg_loss)
+
+    out_dir = Path(args.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    torch.save(model.state_dict(), out_dir / "vietlawbert_mrl.pt")
+    tokenizer.save_pretrained(out_dir)
+    logger.info("✓ Đã lưu thành công trọng số VietLawBERT-MRL tại: %s", out_dir.resolve())
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Chương trình huấn luyện VietLawBERT-MRL")
-    parser.add_argument("--train-file", default=ARTIFACTS_DIR / "triplet_training_data.jsonl", help="Đường dẫn tệp Triplet Dataset")
-    parser.add_argument("--model-name", default=getattr(config, "BASE_MODEL_NAME", "BAAI/bge-m3"), help="Mô hình Backbone")
-    parser.add_argument("--output-dir", default=MODELS_DIR / "vietlawbert_mrl_base", help="Thư mục xuất trọng số")
+    parser = argparse.ArgumentParser(description="Chương trình huấn luyện VietLawBERT với Hierarchy-Aware MRL Loss")
+    parser.add_argument("--train-parquet", default=str(ARTIFACTS_DIR / "triplets" / "hin_triplets.parquet"), help="Đường dẫn tệp Triplet Parquet")
+    parser.add_argument("--model-name", default=config.BASE_MODEL_NAME, help="Mô hình Backbone Bi-Encoder")
+    parser.add_argument("--output-dir", default=str(MODELS_DIR / "vietlawbert_mrl"), help="Thư mục xuất trọng số")
     parser.add_argument("--epochs", type=int, default=3, help="Số lượt huấn luyện")
-    parser.add_argument("--batch-size", type=int, default=16, help="Kích thước batch")
-    parser.add_argument("--lr", type=float, default=2e-5, help="Tốc độ học (Learning Rate)")
-    parser.add_argument("--max-samples", type=int, default=None, help="Giới hạn mẫu để test nhanh PoC")
-    parser.add_argument("--push-to-hub", action="store_true", help="Đẩy mô hình lên Hugging Face Hub")
-    parser.add_argument("--hub-id", default="vietlawbert/vietlawbert-mrl-base", help="Tên repo trên HF Hub")
-    parser.add_argument("--auto-terminate", action="store_true", help="Tự động hủy Cloud Pod khi hoàn thành")
+    parser.add_argument("--batch-size", type=int, default=config.EMBED_BATCH_SIZE, help="Kích thước batch")
+    parser.add_argument("--lr", type=float, default=2e-5, help="Tốc độ học")
+    parser.add_argument("--max-seq-length", type=int, default=config.MAX_SEQ_LENGTH, help="Độ dài chuỗi tối đa")
+    parser.add_argument("--output-dim", type=int, default=config.EMBEDDING_DIM, help="Số chiều vector tối đa")
+    parser.add_argument("--tau", type=float, default=config.TEMPERATURE, help="Nhiệt độ InfoNCE Loss")
+    parser.add_argument("--hierarchy-weight", type=float, default=config.HIERARCHY_WEIGHT, help="Trọng số phạt SupCon d=64")
     args = parser.parse_args()
 
-    train(
-        train_file=args.train_file,
-        base_model_name=args.model_name,
-        output_dir=args.output_dir,
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        learning_rate=args.lr,
-        max_samples=args.max_samples,
-        push_to_hub=args.push_to_hub,
-        hub_model_id=args.hub_id,
-        auto_terminate=args.auto_terminate,
-    )
+    train(args)
 
 
 if __name__ == "__main__":

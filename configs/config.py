@@ -1,6 +1,6 @@
 """
-config.py - Trung tâm điều phối tham số cấu hình hệ thống VietLawBERT.
-Nạp biến môi trường từ .env và đồng bộ với Docker Compose, Kafka, Milvus, Neo4j.
+config.py - Trung tâm điều phối tham số cấu hình hệ thống VietLawBERT (Kiến trúc v3).
+Nạp biến môi trường từ .env và đồng bộ với Docker Compose (Qdrant, ES, Neo4j, Redis, Mongo).
 """
 
 from __future__ import annotations
@@ -28,82 +28,69 @@ class Config:
     STORAGE_ROOT: Path = DATA_STORAGE_ROOT
 
     # ==========================================
-    # 2. CƠ SỞ DỮ LIỆU ĐỒ THỊ (NEO4J)
-    # ==========================================
-    NEO4J_URI: str = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-    NEO4J_USER: str = os.getenv("NEO4J_USER", "neo4j")
-    NEO4J_PASSWORD: str = os.getenv("NEO4J_PASSWORD", "vietlawbert")
-
-    # ==========================================
-    # 3. CƠ SỞ DỮ LIỆU VECTOR PHÂN TÁN (MILVUS)
-    # ==========================================
-    MILVUS_HOST: str = os.getenv("MILVUS_HOST", "localhost")
-    MILVUS_PORT: int = int(os.getenv("MILVUS_PORT", 19530))
-    MILVUS_URI: str = os.getenv("MILVUS_URI", f"http://{MILVUS_HOST}:{MILVUS_PORT}")
-    MILVUS_COLLECTION_NAME: str = os.getenv("MILVUS_COLLECTION_NAME", "vietlawbert_chunks")
-
-    # ==========================================
-    # 4. CƠ SỞ DỮ LIỆU TÀI LIỆU (MONGODB)
+    # 2. CƠ SỞ DỮ LIỆU TÀI LIỆU (MONGODB)
     # ==========================================
     MONGO_URI: str = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
     MONGO_DB_NAME: str = os.getenv("MONGO_DB_NAME", "vietlawbert_db")
 
     # ==========================================
-    # 5. ĐIỀU PHỐI LUỒNG SỰ KIỆN (KAFKA / REDPANDA)
+    # 3. CƠ SỞ DỮ LIỆU ĐỒ THỊ DỊ THỂ (NEO4J - HIN 22 QUAN HỆ)
     # ==========================================
-    KAFKA_BROKER: str = os.getenv("KAFKA_BROKER", "localhost:9092")
-    KAFKA_TOPIC: str = os.getenv("KAFKA_TOPIC", "law-documents-v5")
-    KAFKA_GROUP_ID: str = os.getenv("KAFKA_GROUP_ID", "vietlawbert-consumers-v5-bounded")
-    CONSUMER_DOC_BATCH_SIZE: int = int(os.getenv("CONSUMER_DOC_BATCH_SIZE", 10))
-    CONSUMER_CHUNK_BATCH_SIZE: int = int(os.getenv("CONSUMER_CHUNK_BATCH_SIZE", 64))
-    CONSUMER_FLUSH_INTERVAL_SECONDS: int = int(os.getenv("CONSUMER_FLUSH_INTERVAL_SECONDS", 5))
+    NEO4J_URI: str = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+    NEO4J_USER: str = os.getenv("NEO4J_USER", "neo4j")
+    NEO4J_PASSWORD: str = os.getenv("NEO4J_PASSWORD", "vietlawbert2026")
 
     # ==========================================
-    # 6. MÔ HÌNH NHÚNG VIETLAWBERT-MRL & HUẤN LUYỆN
+    # 4. DENSE VECTOR ENGINE (QDRANT - MRL d=256)
     # ==========================================
-    # Kiến trúc Bi-Encoder nền tảng BAAI/bge-m3 kết hợp Matryoshka Representation Learning
+    QDRANT_HOST: str = os.getenv("QDRANT_HOST", "localhost")
+    QDRANT_PORT: int = int(os.getenv("QDRANT_PORT", 6333))
+    QDRANT_COLLECTION_NAME: str = os.getenv("QDRANT_COLLECTION_NAME", "vietlawbert_chunks")
+    QDRANT_VECTOR_DIM: int = int(os.getenv("QDRANT_VECTOR_DIM", 256))
+
+    # ==========================================
+    # 5. SPARSE LEXICAL ENGINE (ELASTICSEARCH - CUSTOM ANALYZER)
+    # ==========================================
+    ES_HOST: str = os.getenv("ES_HOST", "http://localhost:9200")
+    ES_INDEX_NAME: str = os.getenv("ES_INDEX_NAME", "vietlaw_sparse_idx")
+
+    # ==========================================
+    # 6. IN-MEMORY GRAPH CACHE (REDIS - COMPILE-TIME EMBEDDINGS)
+    # ==========================================
+    REDIS_HOST: str = os.getenv("REDIS_HOST", "localhost")
+    REDIS_PORT: int = int(os.getenv("REDIS_PORT", 6379))
+    REDIS_DB: int = int(os.getenv("REDIS_DB", 0))
+
+    # ==========================================
+    # 7. MÔ HÌNH NHÚNG VIETLAWBERT-MRL & HUẤN LUYỆN
+    # ==========================================
     BASE_MODEL_NAME: str = os.getenv("BASE_MODEL_NAME", "BAAI/bge-m3")
     EMBEDDING_MODEL_NAME: str = os.getenv("EMBEDDING_MODEL_NAME", "BAAI/bge-m3")
     EMBEDDING_DIM: int = int(os.getenv("EMBEDDING_DIM", 1024))
     MATRYOSHKA_DIMS: Tuple[int, ...] = (64, 128, 256, 512, 768, 1024)
     TEMPERATURE: float = float(os.getenv("TEMPERATURE", 0.05))
+    HIERARCHY_WEIGHT: float = float(os.getenv("HIERARCHY_WEIGHT", 0.15))
     MAX_SEQ_LENGTH: int = int(os.getenv("MAX_SEQ_LENGTH", 512))
 
     # Cấu hình tính toán Embedding
-    EMBED_DEVICE: str = os.getenv("EMBED_DEVICE", "cpu")
-    EMBED_BATCH_SIZE: int = int(os.getenv("EMBED_BATCH_SIZE", 16))
-    EMBED_CPU_INT8: bool = os.getenv("EMBED_CPU_INT8", "1").lower() in ("1", "true", "yes")
+    EMBED_DEVICE: str = os.getenv("EMBED_DEVICE", "cuda")
+    EMBED_BATCH_SIZE: int = int(os.getenv("EMBED_BATCH_SIZE", 32))
 
     # ==========================================
-    # 7. CỤM TRÍ TUỆ NHÂN TẠO & PHỤC VỤ (LLM / RAG)
+    # 8. CỤM TRÍ TUỆ NHÂN TẠO & TRUY XUẤT LAI (RAG / LLM)
     # ==========================================
     LLM_API_BASE: str = os.getenv("LLM_API_BASE", "http://localhost:11434/v1")
     LLM_API_KEY: str = os.getenv("LLM_API_KEY", "ollama")
-    CONTEXTUALIZER_MODEL: str = os.getenv("CONTEXTUALIZER_MODEL", "qwen2.5:1.5b")
-    GENERATOR_MODEL: str = os.getenv("GENERATOR_MODEL", "qwen2.5:1.5b")
+    GENERATOR_MODEL: str = os.getenv("GENERATOR_MODEL", "Qwen/Qwen2.5-7B-Instruct")
 
-    # Hệ số dung hợp thông tin RRF (Reciprocal Rank Fusion)
+    # Siêu tham số hợp nhất RRF & Bơm điểm đồ thị
     RRF_K: int = int(os.getenv("RRF_K", 60))
     RETRIEVAL_TOP_K: int = int(os.getenv("RETRIEVAL_TOP_K", 5))
+    GRAPH_ALPHA: float = float(os.getenv("GRAPH_ALPHA", 0.2))
 
     # ==========================================
-    # 8. CẤU HÌNH OCR & BÓC TÁCH VĂN BẢN QUÉT
+    # 9. ĐIỀU PHỐI CLOUD GPU (NẾU SỬ DỤNG RUNPOD / SSH)
     # ==========================================
-    OCR_ENABLED: bool = os.getenv("OCR_ENABLED", "1") in ("1", "true", "yes")
-    OCR_INLINE_ENABLED: bool = os.getenv("OCR_INLINE_ENABLED", "1") in ("1", "true", "yes")
-    OCR_LANG: str = os.getenv("OCR_LANG", "vie+eng")
-    OCR_DPI: int = int(os.getenv("OCR_DPI", 200))
-    OCR_MAX_PAGES: int = int(os.getenv("OCR_MAX_PAGES", 200))
-    OCR_CONCURRENCY: int = int(os.getenv("OCR_CONCURRENCY", 2))
-
-    # ==========================================
-    # 9. KHÓA BẢO MẬT & DỊCH VỤ ĐÁM MÂY MỞ RỘNG
-    # ==========================================
-    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
-    GITHUB_TOKEN: str = os.getenv("GITHUB_TOKEN", "")
-    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-
-    # Điều phối Cloud GPU (RunPod / SSH Instance)
     ENABLE_CLOUD_GPU: bool = os.getenv("ENABLE_CLOUD_GPU", "false").lower() in ("true", "1", "yes")
     CLOUD_GPU_PROVIDER: str = os.getenv("CLOUD_GPU_PROVIDER", "runpod")
     CLOUD_GPU_INSTANCE_ID: str = os.getenv("CLOUD_GPU_INSTANCE_ID", "")

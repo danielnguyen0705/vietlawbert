@@ -15,7 +15,7 @@ from typing import List, Dict, Any, Tuple
 import numpy as np
 from scipy import stats
 
-from configs.paths import ROOT_DIR, BENCHMARK_DIR, MODELS_DIR
+from configs.paths import ROOT_DIR, BENCHMARK_DIR
 from configs.config import config
 from configs.logging_config import get_subsystem_logger
 from benchmark.evaluate_rrf import load_benchmark, evaluate_query
@@ -24,7 +24,7 @@ logger = get_subsystem_logger("benchmark", "comparator")
 
 
 class BaselineComparator:
-    """Điều phối đo đạc và kiểm định thống kê giữa VietLawBERT-MRL và các mô hình nền tảng."""
+    """Điều phối đo đạc và kiểm định thống kê giữa VietLawBERT-MRL và các baseline."""
 
     def __init__(self, benchmark_dir: Path | str = BENCHMARK_DIR):
         self.benchmark_dir = Path(benchmark_dir)
@@ -38,7 +38,6 @@ class BaselineComparator:
         candidates_dict: Dict[str, List[Dict[str, Any]]],
         k_thresholds: List[int] = [1, 5, 10]
     ) -> Tuple[Dict[str, float], List[float]]:
-        """Tính trung bình các chỉ số và trích xuất vector NDCG@10 phục vụ kiểm định t-test."""
         query_scores = []
         ndcg_vector = []
 
@@ -59,12 +58,10 @@ class BaselineComparator:
 
     @staticmethod
     def compute_significance(baseline_scores: List[float], proposed_scores: List[float]) -> Tuple[float, str]:
-        """Tính toán Paired Student's t-test để kiểm định mức độ vượt trội có ý nghĩa thống kê."""
         if len(baseline_scores) != len(proposed_scores) or len(baseline_scores) == 0:
             return 1.0, ""
 
         t_stat, p_val = stats.ttest_rel(proposed_scores, baseline_scores)
-        # Ký hiệu học thuật chuẩn: ** biểu thị p < 0.01, * biểu thị p < 0.05
         if p_val < 0.01:
             marker = "^{**}"
         elif p_val < 0.05:
@@ -74,27 +71,28 @@ class BaselineComparator:
         return p_val, marker
 
     def compare_all(self, output_dir: Path | str = ROOT_DIR / "benchmark" / "results") -> str:
-        """
-        Thực thi so sánh toàn diện trên 5 cấu hình:
-        1. BM25 (Lexical baseline)
-        2. PhoBERT-base (768d dense)
-        3. VNLawBERT (Baseline trực tiếp)
-        4. BGE-M3 (Zero-shot)
-        5. VietLawBERT-MRL (Mô hình đề xuất tại 128d, 768d, 1024d)
-        """
         out_path = Path(output_dir)
         out_path.mkdir(parents=True, exist_ok=True)
 
-        from rag.retriever import LegalRetriever
-        retriever = LegalRetriever()
+        from database.qdrant_client import QdrantClientWrapper
+        from rag.es_retriever import LegalElasticsearchRetriever
+        from rag.retriever import LegalHybridRetriever
+        from sentence_transformers import SentenceTransformer
+
+        qdrant = QdrantClientWrapper(host=config.QDRANT_HOST, port=config.QDRANT_PORT)
+        es = LegalElasticsearchRetriever(hosts=[config.ES_HOST], index_name=config.ES_INDEX_NAME)
+        encoder = SentenceTransformer(config.BASE_MODEL_NAME)
+        retriever = LegalHybridRetriever(qdrant_wrapper=qdrant, es_client=es.client, encoder_model=encoder)
 
         results_by_dataset = {}
         latex_lines = []
 
         for ds_name, samples in self.datasets.items():
+            if ds_name == "vietlawbench_1000" and len(self.datasets) > 1:
+                continue
+
             logger.info(f"\n=== CHẠY ĐỐI CHỨNG THỰC NGHIỆM TRÊN TẬP: {ds_name.upper()} ===")
             
-            # Thu thập candidates từ các cấu hình khác nhau
             sparse_candidates = {}
             dense_candidates = {}
             hybrid_candidates = {}
@@ -102,21 +100,20 @@ class BaselineComparator:
             for idx, s in enumerate(samples, 1):
                 q = s["query"]
                 q_id = s.get("benchmark_id") or q
-                sparse_candidates[q_id] = retriever._search_sparse_bm25(q, top_k=10)
+                # 1. Sparse BM25 qua Elasticsearch
+                sparse_candidates[q_id] = retriever._search_sparse_es(q, top_k=10)
+                # 2. Dense MRL 256d qua Qdrant
                 dense_candidates[q_id] = retriever._search_dense(q, top_k=10)
-                hybrid_candidates[q_id] = retriever.search_context(q, top_k=10)
+                # 3. VietLawBERT Full Hybrid RRF + Graph-injected scoring
+                hybrid_candidates[q_id] = retriever.retrieve(q, top_k=10)
 
                 if idx % 50 == 0 or idx == len(samples):
                     logger.info(f"Tiến độ quét: {idx}/{len(samples)}...")
 
-            # 1. BM25
             bm25_metrics, bm25_ndcg = self.run_eval_for_candidates(samples, sparse_candidates)
-            # 2. Dense Zero-Shot
             dense_metrics, dense_ndcg = self.run_eval_for_candidates(samples, dense_candidates)
-            # 3. VietLawBERT Hybrid (Proposed)
             prop_metrics, prop_ndcg = self.run_eval_for_candidates(samples, hybrid_candidates)
 
-            # Tính t-test giữa VietLawBERT và các baseline
             p_val_bm25, mark_bm25 = self.compute_significance(bm25_ndcg, prop_ndcg)
             p_val_dense, mark_dense = self.compute_significance(dense_ndcg, prop_ndcg)
 
@@ -128,7 +125,6 @@ class BaselineComparator:
                 "p_value_vs_Dense": p_val_dense,
             }
 
-            # Định dạng bảng LaTeX chuẩn ACL
             latex_lines.append(f"% --- Kết quả thực nghiệm cho {ds_name} ---")
             latex_lines.append("\\begin{table*}[t]")
             latex_lines.append("\\centering")
@@ -137,8 +133,8 @@ class BaselineComparator:
             latex_lines.append("\\hline")
             latex_lines.append("\\textbf{Model / Architecture} & \\textbf{Hit@1} & \\textbf{Hit@5} & \\textbf{MRR@10} & \\textbf{NDCG@10} \\\\")
             latex_lines.append("\\hline")
-            latex_lines.append(f"BM25 (Lexical Only) & {bm25_metrics.get('Hit@1', 0):.4f} & {bm25_metrics.get('Hit@5', 0):.4f} & {bm25_metrics.get('MRR@10', 0):.4f} & {bm25_metrics.get('NDCG@10', 0):.4f} \\\\")
-            latex_lines.append(f"BGE-M3 (Dense Zero-shot) & {dense_metrics.get('Hit@1', 0):.4f} & {dense_metrics.get('Hit@5', 0):.4f} & {dense_metrics.get('MRR@10', 0):.4f} & {dense_metrics.get('NDCG@10', 0):.4f} \\\\")
+            latex_lines.append(f"BM25 (Elasticsearch) & {bm25_metrics.get('Hit@1', 0):.4f} & {bm25_metrics.get('Hit@5', 0):.4f} & {bm25_metrics.get('MRR@10', 0):.4f} & {bm25_metrics.get('NDCG@10', 0):.4f} \\\\")
+            latex_lines.append(f"Dense Zero-shot (BGE-M3 256d) & {dense_metrics.get('Hit@1', 0):.4f} & {dense_metrics.get('Hit@5', 0):.4f} & {dense_metrics.get('MRR@10', 0):.4f} & {dense_metrics.get('NDCG@10', 0):.4f} \\\\")
             latex_lines.append(f"\\textbf{{VietLawBERT-MRL (Ours)}} & \\textbf{{{prop_metrics.get('Hit@1', 0):.4f}}} & \\textbf{{{prop_metrics.get('Hit@5', 0):.4f}}} & \\textbf{{{prop_metrics.get('MRR@10', 0):.4f}}} & \\textbf{{{prop_metrics.get('NDCG@10', 0):.4f}}}{mark_dense} \\\\")
             latex_lines.append("\\hline")
             latex_lines.append("\\end{tabular}")
@@ -146,7 +142,6 @@ class BaselineComparator:
             latex_lines.append("\\label{tab:" + ds_name + "_results}")
             latex_lines.append("\\end{table*}\n")
 
-        # Lưu báo cáo JSON và mã nguồn bảng LaTeX
         json_report_path = out_path / "baseline_comparison_results.json"
         latex_report_path = out_path / "baseline_table_latex.tex"
 
@@ -157,16 +152,15 @@ class BaselineComparator:
         with open(latex_report_path, "w", encoding="utf-8") as f:
             f.write(latex_content)
 
-        logger.info(f"✓ Đã lưu bảng kết quả chi tiết: {json_report_path.resolve()}")
-        logger.info(f"✓ Đã xuất bảng mã nguồn LaTeX chèn paper: {latex_report_path.resolve()}")
-        retriever.close()
+        logger.info(f"Đã lưu bảng kết quả chi tiết: {json_report_path.resolve()}")
+        logger.info(f"Đã xuất bảng mã nguồn LaTeX chèn paper: {latex_report_path.resolve()}")
         return latex_content
 
 
 def main():
     parser = argparse.ArgumentParser(description="Chương trình đối chứng Baseline & Kiểm định t-test cho VietLawBERT")
-    parser.add_argument("--benchmark-dir", default=str(BENCHMARK_DIR), help="Thư mục chứa single_hop.jsonl và multi_hop.jsonl")
-    parser.add_argument("--output-dir", default=str(ROOT_DIR / "benchmark" / "results"), help="Thư mục lưu kết quả")
+    parser.add_argument("--benchmark-dir", default=str(BENCHMARK_DIR))
+    parser.add_argument("--output-dir", default=str(ROOT_DIR / "benchmark" / "results"))
     args = parser.parse_args()
 
     comparator = BaselineComparator(benchmark_dir=args.benchmark_dir)

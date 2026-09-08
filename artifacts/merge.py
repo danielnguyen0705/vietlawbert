@@ -1,5 +1,6 @@
 """
-merge.py - Ghép nối overlay vào checkpoint JSONL.
+merge.py - Ghép nối overlay vào checkpoint JSONL streaming an toàn bộ nhớ.
+Cung cấp API cho pipeline và điểm vào CLI cho cli.merge_artifacts.
 """
 
 from __future__ import annotations
@@ -8,15 +9,21 @@ import os
 import sys
 import json
 import logging
+import argparse
 from pathlib import Path
 from typing import Dict, List, Any, Iterable
 
-from .canonical import read_jsonl, write_jsonl, extract_item_id
+# Hỗ trợ chạy cả chế độ package lẫn standalone script
+try:
+    from .canonical import read_jsonl, write_jsonl, extract_item_id
+except ImportError:
+    from canonical import read_jsonl, write_jsonl, extract_item_id
 
 logger = logging.getLogger("VietLawBERT_ArtifactMerge")
 
 
 def merge_records(base: Iterable[dict], overlays: Iterable[Iterable[dict]]) -> List[dict]:
+    """Hợp nhất danh sách bản ghi in-memory (dành cho tập dữ liệu nhỏ)."""
     records: Dict[str, dict] = {}
     order: List[str] = []
 
@@ -24,7 +31,7 @@ def merge_records(base: Iterable[dict], overlays: Iterable[Iterable[dict]]) -> L
         raw_id = record.get("item_id") or record.get("doc_id") or record.get("id")
         item_id = str(raw_id or "").strip()
         if not item_id:
-            raise ValueError("record không có item_id")
+            raise ValueError("Bản ghi khuyết item_id/doc_id hợp lệ")
         if item_id not in records:
             order.append(item_id)
         records[item_id] = record
@@ -42,6 +49,7 @@ def merge_records_streaming(
     overlay_paths: List[Path | str],
     output_path: Path | str
 ) -> Dict[str, int]:
+    """Hợp nhất stream tiết kiệm RAM: ghi đè bản ghi cũ và bổ sung bản ghi mới."""
     b_path = Path(base_path)
     out_path = Path(output_path)
 
@@ -51,6 +59,7 @@ def merge_records_streaming(
     for o_path in overlay_paths:
         p = Path(o_path)
         if not p.exists():
+            logger.warning(f"Bỏ qua overlay không tồn tại: {p}")
             continue
         for record in read_jsonl(p, require_item_id=True):
             item_id = extract_item_id(record)
@@ -64,24 +73,47 @@ def merge_records_streaming(
 
     def record_generator():
         nonlocal overwritten_count, base_count
-        for base_record in read_jsonl(b_path, require_item_id=True):
-            base_count += 1
-            item_id = extract_item_id(base_record)
-            if item_id in overlay_map:
-                yield overlay_map[item_id]
-                consumed_overlay_ids.add(item_id)
-                overwritten_count += 1
-            else:
-                yield base_record
+        if b_path.exists():
+            for base_record in read_jsonl(b_path, require_item_id=True):
+                base_count += 1
+                item_id = extract_item_id(base_record)
+                if item_id in overlay_map:
+                    yield overlay_map[item_id]
+                    consumed_overlay_ids.add(item_id)
+                    overwritten_count += 1
+                else:
+                    yield base_record
 
         for item_id in overlay_new_order:
             if item_id not in consumed_overlay_ids:
                 yield overlay_map[item_id]
 
     total_written = write_jsonl(out_path, record_generator())
-    return {
+    stats = {
         "base_records": base_count,
         "overwritten_records": overwritten_count,
-        "appended_records": total_written - base_count,
+        "appended_records": total_written - (base_count - overwritten_count),
         "total_final_records": total_written,
     }
+    logger.info(f"Hoàn tất hợp nhất: {stats}")
+    return stats
+
+
+def main() -> int:
+    """Điểm vào CLI phục vụ cli/merge_artifacts.py."""
+    parser = argparse.ArgumentParser(description="Hợp nhất các tệp overlay/retry vào Artifacts chuẩn")
+    parser.add_argument("--base", required=True, help="Đường dẫn file JSONL/GZ gốc")
+    parser.add_argument("--overlays", nargs="+", required=True, help="Danh sách các file overlay cần đè")
+    parser.add_argument("--output", required=True, help="Đường dẫn file kết quả đầu ra")
+    args = parser.parse_args()
+
+    try:
+        merge_records_streaming(args.base, args.overlays, args.output)
+        return 0
+    except Exception as exc:
+        logger.error(f"Lỗi hợp nhất artifacts: {exc}", exc_info=True)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

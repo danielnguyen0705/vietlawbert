@@ -1,6 +1,6 @@
 """
-pipeline_verifier.py - Bộ đối soát toàn vẹn dòng dữ liệu lớn (End-to-End Lineage Verifier).
-Xác thực tính tương đồng tuyệt đối: Shard Artifacts == Kafka Messages == Neo4j Archive Nodes.
+pipeline_verifier.py - Bộ đối soát toàn vẹn dòng dữ liệu lớn (Quad-Store Lineage Verifier).
+Xác thực tính toàn vẹn 1:1 giữa: Shard Artifacts == Neo4j HIN == Qdrant Vector == Elasticsearch Index.
 """
 
 from __future__ import annotations
@@ -8,23 +8,18 @@ from __future__ import annotations
 import os
 import sys
 import json
-import uuid
 import argparse
 import logging
 from pathlib import Path
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Set, List, Optional
 
-from confluent_kafka import Consumer, TopicPartition
 from neo4j import GraphDatabase
+from qdrant_client import QdrantClient
+from elasticsearch import Elasticsearch
 
-from configs.paths import ROOT_DIR, ARTIFACTS_DIR
+from configs.paths import ROOT_DIR, ARTIFACTS_DIR, RAW_SHARDS_DIR
 from configs.config import config
-from artifacts.canonical import (
-    artifact_manifest,
-    canonical_artifacts,
-    decode_kafka_envelope,
-    payload_hash,
-)
+from artifacts.canonical import read_jsonl, canonical_artifacts
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,169 +36,127 @@ def write_json_atomic(path: Path, value: dict) -> None:
     temp_path.replace(path)
 
 
-def read_kafka_manifest(broker: str, topic: str) -> Tuple[Dict[str, str], Dict[int, int], int]:
-    """
-    Quét toàn bộ bản tin trên Topic Kafka. Tính toán chính xác dung lượng dựa trên khoảng cách (high - low).
-    """
-    consumer = Consumer({
-        "bootstrap.servers": broker,
-        "group.id": f"lineage-verifier-{uuid.uuid4()}",
-        "enable.auto.commit": False,
-        "auto.offset.reset": "earliest",
-    })
+def collect_shard_ids(shards_dir: Path, expect_shards: Optional[int] = None) -> Set[str]:
+    """Thu thập toàn bộ doc_id duy nhất từ các tệp Shard .jsonl.gz trên đĩa cứng."""
+    paths = canonical_artifacts(shards_dir.resolve(), expect_shards)
+    doc_ids = set()
+    for p in paths:
+        for record in read_jsonl(p):
+            raw_id = record.get("doc_id") or record.get("item_id") or record.get("id")
+            if raw_id:
+                doc_ids.add(str(raw_id).strip())
+    return doc_ids
 
-    result: Dict[str, str] = {}
-    high_watermarks: Dict[int, int] = {}
-    duplicate_keys_count = 0
+
+def collect_neo4j_ids() -> Tuple[Set[str], Set[str]]:
+    """Thu thập toàn bộ doc_id và chunk_id từ cơ sở dữ liệu đồ thị Neo4j."""
+    uri = getattr(config, "NEO4J_URI", "bolt://localhost:7687")
+    user = getattr(config, "NEO4J_USER", "neo4j")
+    pwd = getattr(config, "NEO4J_PASSWORD", "vietlawbert2026")
+
+    driver = GraphDatabase.driver(uri, auth=(user, pwd))
+    doc_ids = set()
+    chunk_ids = set()
 
     try:
-        metadata = consumer.list_topics(topic, timeout=15)
-        if topic not in metadata.topics:
-            raise ValueError(f"Topic [{topic}] không tồn tại trên Kafka Broker!")
-
-        partitions = sorted(metadata.topics[topic].partitions.keys())
-        assignments = []
-        total_expected_messages = 0
-
-        for p in partitions:
-            tp = TopicPartition(topic, p)
-            low, high = consumer.get_watermark_offsets(tp, timeout=10)
-            high_watermarks[p] = high
-            assignments.append(TopicPartition(topic, p, low))
-            total_expected_messages += max(0, high - low)
-
-        consumer.assign(assignments)
-        logger.info(f"Tổng số bản tin khả dụng trên topic [{topic}]: {total_expected_messages} (trên {len(partitions)} phân vùng)")
-
-        messages_read = 0
-        while messages_read < total_expected_messages:
-            msg = consumer.poll(3.0)
-            if msg is None:
-                logger.warning("Chạm giới hạn poll timeout, hoàn tất đọc các bản tin hiện hữu.")
-                break
-            if msg.error():
-                logger.error(f"Lỗi phân vùng Kafka: {msg.error()}")
-                continue
-
-            doc_id = msg.key().decode("utf-8") if msg.key() else f"unknown_offset_{msg.offset()}"
-            try:
-                payload = decode_kafka_envelope(msg.value())
-                calc_hash = payload_hash(payload)
-            except Exception:
-                calc_hash = payload_hash(msg.value())
-
-            if doc_id in result:
-                duplicate_keys_count += 1
-            else:
-                result[doc_id] = calc_hash
-
-            messages_read += 1
-
+        with driver.session() as session:
+            for rec in session.run("MATCH (d:LawDocument) RETURN d.doc_id AS id"):
+                if rec["id"]:
+                    doc_ids.add(str(rec["id"]).strip())
+            for rec in session.run("MATCH (c:Chunk) RETURN c.chunk_id AS id"):
+                if rec["id"]:
+                    chunk_ids.add(str(rec["id"]).strip())
     finally:
-        consumer.close()
+        driver.close()
 
-    return result, high_watermarks, duplicate_keys_count
+    return doc_ids, chunk_ids
+
+
+def collect_qdrant_chunk_ids() -> Set[str]:
+    """Thu thập toàn bộ chunk_id từ Qdrant collection."""
+    client = QdrantClient(host=config.QDRANT_HOST, port=config.QDRANT_PORT, timeout=10.0)
+    collection = config.QDRANT_COLLECTION_NAME
+    chunk_ids = set()
+
+    offset = None
+    limit = 2000
+    while True:
+        records, next_offset = client.scroll(
+            collection_name=collection,
+            limit=limit,
+            offset=offset,
+            with_payload=["chunk_id"],
+            with_vectors=False,
+        )
+        for r in records:
+            cid = (r.payload or {}).get("chunk_id")
+            if cid:
+                chunk_ids.add(str(cid).strip())
+        if next_offset is None:
+            break
+        offset = next_offset
+
+    return chunk_ids
+
+
+def collect_elasticsearch_stats() -> int:
+    """Lấy số lượng bản ghi chunk đã được lập chỉ mục trong Elasticsearch."""
+    es = Elasticsearch([config.ES_HOST], request_timeout=5)
+    if not es.indices.exists(index=config.ES_INDEX_NAME):
+        return 0
+    res = es.count(index=config.ES_INDEX_NAME)
+    return int(res.get("count", 0))
 
 
 def verify_pipeline_lineage(
     input_dir: Path,
-    topic: str,
-    dataset_id: str,
     expect_documents: int,
     expect_shards: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """
-    Tiến hành đối soát mã băm SHA-256 đối xứng và tập định danh ID giữa:
-    1. Disk Shards (Artifacts)
-    2. Kafka Topic Messages
-    3. Neo4j RawLawDocument Nodes
-    """
-    broker = getattr(config, "KAFKA_BROKER", "localhost:9092")
-    neo_uri = getattr(config, "NEO4J_URI", "bolt://localhost:7687")
-    neo_user = getattr(config, "NEO4J_USER", "neo4j")
-    neo_pwd = getattr(config, "NEO4J_PASSWORD", "vietlawbert")
+    """Đối soát toàn vẹn 4 chiều: Disk Shards == Neo4j HIN == Qdrant == Elasticsearch."""
+    logger.info("1. Đang quét và kiểm toán ID từ Disk Shards tại %s...", input_dir)
+    shard_doc_ids = collect_shard_ids(input_dir, expect_shards)
+    logger.info("✓ Shards: Phát hiện %d văn bản duy nhất.", len(shard_doc_ids))
 
-    logger.info("1. Đang tính toán Deterministic Manifest từ Disk Shards...")
-    paths = canonical_artifacts(input_dir.resolve(), expect_shards)
-    artifacts = artifact_manifest(paths)
-    logger.info(f"✓ Shards Manifest: {len(artifacts)} văn bản duy nhất.")
+    logger.info("2. Đang kiểm toán Nodes từ Neo4j Graph...")
+    neo_doc_ids, neo_chunk_ids = collect_neo4j_ids()
+    logger.info("✓ Neo4j: %d LawDocument nodes | %d Chunk nodes.", len(neo_doc_ids), len(neo_chunk_ids))
 
-    logger.info(f"2. Đang kiểm toán toàn bộ bản tin trên Kafka [{topic}]...")
-    kafka_manifest, high_watermarks, dup_keys = read_kafka_manifest(broker, topic)
-    logger.info(f"✓ Kafka Manifest: {len(kafka_manifest)} văn bản duy nhất (Trùng lặp: {dup_keys}).")
+    logger.info("3. Đang quét Vector Points từ Qdrant (%s)...", config.QDRANT_COLLECTION_NAME)
+    qdrant_chunk_ids = collect_qdrant_chunk_ids()
+    logger.info("✓ Qdrant: %d chunk vectors (d=%d).", len(qdrant_chunk_ids), config.QDRANT_VECTOR_DIM)
 
-    logger.info(f"3. Đang đối soát kho lưu trữ đồ thị Neo4j (Dataset: {dataset_id})...")
-    driver = GraphDatabase.driver(neo_uri, auth=(neo_user, neo_pwd))
-    database_manifest: Dict[str, str] = {}
-    html_statuses: Dict[str, int] = {}
+    logger.info("4. Đang kiểm tra số lượng chỉ mục Elasticsearch (%s)...", config.ES_INDEX_NAME)
+    es_count = collect_elasticsearch_stats()
+    logger.info("✓ Elasticsearch: %d chunks đã được lập chỉ mục từ khóa.", es_count)
 
-    try:
-        with driver.session() as session:
-            for rec in session.run(
-                "MATCH (d:RawLawDocument {dataset_id: $dataset_id}) "
-                "RETURN d.doc_id AS doc_id, d.payload_sha256 AS payload_sha256",
-                dataset_id=dataset_id,
-            ):
-                database_manifest[str(rec["doc_id"])] = str(rec["payload_sha256"])
+    # Phân tích sai lệch
+    missing_docs_in_neo = list(shard_doc_ids - neo_doc_ids)[:10]
+    extra_docs_in_neo = list(neo_doc_ids - shard_doc_ids)[:10]
+    chunks_diff_qdrant_neo = list(qdrant_chunk_ids ^ neo_chunk_ids)[:10]
 
-            for rec in session.run(
-                "MATCH (d:RawLawDocument {dataset_id: $dataset_id}) "
-                "RETURN coalesce(d.html_status, 'UNKNOWN') AS status, count(d) AS total",
-                dataset_id=dataset_id,
-            ):
-                html_statuses[str(rec["status"])] = int(rec["total"])
-    finally:
-        driver.close()
-    logger.info(f"✓ Neo4j Manifest: {len(database_manifest)} văn bản.")
+    docs_match = (shard_doc_ids == neo_doc_ids) and (len(shard_doc_ids) == expect_documents)
+    chunks_match = (qdrant_chunk_ids == neo_chunk_ids) and (len(qdrant_chunk_ids) > 0)
+    es_aligned = (es_count == len(qdrant_chunk_ids))
 
-    art_keys = set(artifacts.keys())
-    kafka_keys = set(kafka_manifest.keys())
-    db_keys = set(database_manifest.keys())
-
-    missing_in_kafka = list(art_keys - kafka_keys)[:10]
-    extra_in_kafka = list(kafka_keys - art_keys)[:10]
-    missing_in_db = list(art_keys - db_keys)[:10]
-    extra_in_db = list(db_keys - art_keys)[:10]
-
-    hash_diff_kafka = [k for k in art_keys & kafka_keys if artifacts[k] != kafka_manifest[k]][:10]
-    hash_diff_db = [k for k in art_keys & db_keys if artifacts[k] != database_manifest[k]][:10]
-
-    id_match_kafka = art_keys == kafka_keys
-    id_match_db = art_keys == db_keys
-    hash_match_kafka = (len(hash_diff_kafka) == 0) and id_match_kafka
-    hash_match_db = (len(hash_diff_db) == 0) and id_match_db
-
-    passed = (
-        len(artifacts) == expect_documents
-        and len(kafka_manifest) == expect_documents
-        and len(database_manifest) == expect_documents
-        and hash_match_kafka
-        and hash_match_db
-    )
+    passed = docs_match and chunks_match and es_aligned
 
     report = {
-        "dataset_id": dataset_id,
-        "topic": topic,
         "expected_documents": expect_documents,
-        "artifact_documents": len(artifacts),
-        "kafka_unique_documents": len(kafka_manifest),
-        "kafka_duplicate_messages": dup_keys,
-        "database_documents": len(database_manifest),
-        "kafka_high_watermarks": high_watermarks,
-        "database_html_statuses": html_statuses,
+        "shard_unique_documents": len(shard_doc_ids),
+        "neo4j_law_documents": len(neo_doc_ids),
+        "neo4j_chunks": len(neo_chunk_ids),
+        "qdrant_chunks": len(qdrant_chunk_ids),
+        "elasticsearch_chunks": es_count,
         "matches": {
-            "artifact_kafka_id_match": id_match_kafka,
-            "artifact_database_id_match": id_match_db,
-            "artifact_kafka_hash_match": hash_match_kafka,
-            "artifact_database_hash_match": hash_match_db,
+            "shard_neo4j_docs_match": docs_match,
+            "qdrant_neo4j_chunks_match": chunks_match,
+            "elasticsearch_chunks_aligned": es_aligned,
         },
         "diagnostics": {
-            "missing_in_kafka_samples": missing_in_kafka,
-            "extra_in_kafka_samples": extra_in_kafka,
-            "missing_in_db_samples": missing_in_db,
-            "extra_in_db_samples": extra_in_db,
-            "hash_mismatch_kafka_samples": hash_diff_kafka,
-            "hash_mismatch_db_samples": hash_diff_db,
+            "missing_docs_in_neo_samples": missing_docs_in_neo,
+            "extra_docs_in_neo_samples": extra_docs_in_neo,
+            "chunk_mismatches_qdrant_vs_neo_samples": chunks_diff_qdrant_neo,
         },
         "passed": passed,
     }
@@ -212,10 +165,8 @@ def verify_pipeline_lineage(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Bộ đối soát toàn vẹn Shards = Kafka = Neo4j")
-    parser.add_argument("--input-dir", type=Path, default=ARTIFACTS_DIR / "full_crawl", help="Thư mục chứa Shards")
-    parser.add_argument("--topic", default=getattr(config, "KAFKA_TOPIC", "law-documents-v5"), help="Tên Kafka Topic")
-    parser.add_argument("--dataset-id", default="vietlaw_2026_q1", help="Mã định danh Dataset")
+    parser = argparse.ArgumentParser(description="Bộ đối soát toàn vẹn Shards = Neo4j = Qdrant = ES")
+    parser.add_argument("--input-dir", type=Path, default=Path(RAW_SHARDS_DIR), help="Thư mục chứa Shards")
     parser.add_argument("--expect-documents", type=int, required=True, help="Số lượng văn bản kỳ vọng")
     parser.add_argument("--expect-shards", type=int, help="Số lượng file Shards kỳ vọng")
     parser.add_argument("--output", type=Path, help="Đường dẫn lưu tệp báo cáo JSON")
@@ -224,8 +175,6 @@ def main() -> int:
     try:
         report = verify_pipeline_lineage(
             input_dir=args.input_dir,
-            topic=args.topic,
-            dataset_id=args.dataset_id,
             expect_documents=args.expect_documents,
             expect_shards=args.expect_shards,
         )
@@ -233,13 +182,13 @@ def main() -> int:
         rendered = json.dumps(report, ensure_ascii=False, indent=2)
         print(rendered)
 
-        out_path = args.output or (args.input_dir / "pipeline_lineage_report.json")
+        out_path = args.output or (args.input_dir / "quad_store_lineage_report.json")
         write_json_atomic(out_path, report)
-        logger.info(f"✓ Đã lưu biên bản đối soát tại: {out_path}")
+        logger.info("✓ Đã lưu biên bản đối soát toàn vẹn tại: %s", out_path)
 
         return 0 if report["passed"] else 1
     except Exception as exc:
-        logger.error(f"Thất bại trong quá trình đối soát dữ liệu: {exc}", exc_info=True)
+        logger.error("Thất bại trong quá trình đối soát dữ liệu: %s", exc, exc_info=True)
         return 1
 
 

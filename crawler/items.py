@@ -31,6 +31,10 @@ class VietLawItem(scrapy.Item):
     item_id = scrapy.Field()
     doc_number = scrapy.Field()
 
+    # Nội dung văn bản phục vụ AST Parser & Embedding
+    text = scrapy.Field()
+    full_text = scrapy.Field()
+
     # Trạng thái và nội dung HTML
     html_status = scrapy.Field()
     html_raw = scrapy.Field()
@@ -49,7 +53,7 @@ class VietLawItem(scrapy.Item):
     rescue_files_found = scrapy.Field()
     upstream_content_unavailable = scrapy.Field()
 
-    # Cấu trúc Đồ thị & Lược đồ quan hệ (Diagram / Knowledge Graph)
+    # Cấu trúc Đồ thị & Lược đồ quan hệ (22 Quan hệ HIN)
     diagram_json = scrapy.Field()
     html_dom = scrapy.Field()  # Chỉ lưu trên bộ nhớ RAM để xử lý tạm, loại bỏ khi lưu trữ
     relationships = scrapy.Field()

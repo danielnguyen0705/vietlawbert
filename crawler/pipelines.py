@@ -1,22 +1,21 @@
 """
-pipelines.py - Pipeline bóc tách bản đồ tri thức quan hệ pháp luật và nạp luồng Kafka.
-Chuẩn hóa Schema đồ thị, tính điểm tương đồng Jaccard và đóng gói Kafka Envelope an toàn.
+pipelines.py - Pipeline bóc tách bản đồ tri thức quan hệ pháp luật và lưu trữ Shard Staging.
+Chuẩn hóa Schema đồ thị (22 quan hệ HIN), trích xuất văn bản thô cho AST Parser và nén Shard cục bộ.
 """
 
 from __future__ import annotations
 
 import os
 import json
+import gzip
 import logging
 import re
-import socket
 import unicodedata
 from pathlib import Path
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Tuple, Optional, List
 from bs4 import BeautifulSoup
 
-from configs.config import config
-from artifacts.canonical import encode_kafka_envelope
+from configs.paths import RAW_SHARDS_DIR
 from .items import VietLawItem
 
 
@@ -26,66 +25,61 @@ class LegalOntologyMappingPipeline:
         self.static_mapping, self.edge_templates, self.category_aliases = self._load_system_ontology()
         self.logger = logging.getLogger("VietLawBERT_Pipeline")
 
-        self.kafka_enabled = os.getenv("KAFKA_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
-        self.publish_empty = os.getenv("KAFKA_PUBLISH_EMPTY", "0").strip().lower() in {"1", "true", "yes"}
-
-        self.kafka_producer = None
-        self.kafka_topic = getattr(config, "KAFKA_TOPIC", "law-documents-v5")
-        self.delivery_errors = []
+        # Cấu hình lưu trữ Shard Staging tự động khi không dùng cờ -O
+        self.raw_shards_dir = Path(RAW_SHARDS_DIR)
+        self.raw_shards_dir.mkdir(parents=True, exist_ok=True)
+        self.shard_buffer: List[Dict[str, Any]] = []
+        self.shard_counter = 1
+        self.shard_size = int(os.getenv("STAGING_SHARD_SIZE", "1000"))
         self.dynamic_maps = {}
-
-        if self.kafka_enabled:
-            try:
-                from confluent_kafka import Producer
-                self.kafka_producer = Producer({
-                    "bootstrap.servers": getattr(config, "KAFKA_BROKER", "localhost:9092"),
-                    "client.id": socket.gethostname(),
-                    "acks": "all",
-                    "linger.ms": 10,
-                    "batch.size": 65536,
-                    "compression.type": "zstd",
-                    "enable.idempotence": True,
-                })
-            except ImportError:
-                self.logger.warning("Thư viện confluent_kafka chưa được cài đặt. Tự động vô hiệu hóa đẩy Kafka.")
-                self.kafka_enabled = False
 
     @classmethod
     def from_crawler(cls, crawler):
         pipeline = cls()
         pipeline.crawler = crawler
+        # Kiểm tra xem Scrapy có đang xuất tệp qua Feed Exporter (-O) hay không
+        feeds = getattr(crawler.settings, "get", lambda k, d=None: d)("FEEDS", {})
+        pipeline.feed_export_active = bool(feeds)
         return pipeline
 
     def open_spider(self, spider):
         self.logger.info(
-            "[PIPELINE KHỞI ĐỘNG] LegalOntologyMappingPipeline sẵn sàng. Đẩy Kafka: %s",
-            "KÍCH HOẠT" if self.kafka_enabled else "TẮT",
+            "[PIPELINE KHỞI ĐỘNG] LegalOntologyMappingPipeline sẵn sàng. Tự động gom Shard đĩa: %s",
+            "TẮT (Scrapy Feed -O đang kích hoạt)" if self.feed_export_active else "BẬT (Ghi trực tiếp raw_shards/)",
         )
 
     def close_spider(self, spider):
-        flush_error = None
-        if self.kafka_producer is not None:
-            remaining = self.kafka_producer.flush(30)
-            if remaining or self.delivery_errors:
-                flush_error = RuntimeError(
-                    f"Thất thoát bản tin Kafka khi đóng spider: tồn đọng={remaining}, lỗi={len(self.delivery_errors)}"
-                )
+        # Xả nốt phần dữ liệu còn lại trong bộ đệm xuống đĩa
+        if not self.feed_export_active and self.shard_buffer:
+            self._flush_buffer_to_shard()
 
-        # Đảm bảo lưu cache ontology ngoại trừ trường hợp dừng khẩn cấp
         if self.dynamic_maps:
             try:
                 self.save_dynamic_mappings()
             except Exception as exc:
                 self.logger.error("Lỗi khi lưu dynamic ontology cache: %s", exc)
 
-        self.logger.info("[PIPELINE ĐÓNG] Hoàn tất xả bộ đệm an toàn.")
-        if flush_error:
-            raise flush_error
+        self.logger.info("[PIPELINE ĐÓNG] Hoàn tất xử lý và bảo toàn toàn bộ Shard dữ liệu.")
 
-    def _delivery_report(self, err, msg):
-        if err is not None:
-            self.delivery_errors.append(str(err))
-            self.logger.error("Giao dịch phát Kafka thất bại: %s", err)
+    def _flush_buffer_to_shard(self):
+        """Nén Gzip và ghi Shard hoàn chỉnh xuống đĩa phục vụ Phase 2 Ingestion."""
+        if not self.shard_buffer:
+            return
+
+        shard_path = self.raw_shards_dir / f"crawl_pages_{self.shard_counter:05d}.jsonl.gz"
+        try:
+            with gzip.open(shard_path, "wt", encoding="utf-8") as f:
+                for record in self.shard_buffer:
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            self.logger.info(
+                "[PIPELINE SHARD] Đã ghi thành công %d bản ghi (đầy đủ 22 quan hệ) vào %s",
+                len(self.shard_buffer),
+                shard_path.name,
+            )
+            self.shard_buffer.clear()
+            self.shard_counter += 1
+        except Exception as exc:
+            self.logger.error("Lỗi ghi Shard xuống đĩa: %s", exc, exc_info=True)
 
     def _load_system_ontology(self) -> Tuple[dict, dict, dict]:
         if not self.ontology_path.exists():
@@ -95,12 +89,10 @@ class LegalOntologyMappingPipeline:
             data = json.load(f)
         scoped_mapping = {}
 
-        # 1. Nạp mapping tĩnh theo nhóm
         for group_name in ["documentNamesByType", "documentNamesBySource"]:
             for raw_key, edge_type in data.get(group_name, {}).items():
                 scoped_mapping[(group_name, str(raw_key))] = edge_type
 
-        # 2. Nạp mapping động đã lưu từ các lượt crawl trước
         for full_key, edge_type in data.get("dynamic_keys", {}).items():
             if ":" in full_key:
                 group_name, raw_key = full_key.split(":", 1)
@@ -113,7 +105,6 @@ class LegalOntologyMappingPipeline:
         )
 
     def save_dynamic_mappings(self):
-        """Ghi nhận các khóa quan hệ mới theo cơ chế ghi tệp nguyên tử (.tmp -> replace)."""
         temp_path = self.ontology_path.with_suffix(".tmp")
         data = {}
         if self.ontology_path.exists():
@@ -290,23 +281,17 @@ class LegalOntologyMappingPipeline:
         return item
 
     def process_item(self, item: Any, spider: Any) -> Any:
-        # 1. Bóc tách quan hệ đồ thị
+        # 1. Bóc tách DOM có sẵn trong RAM để lấy văn bản thuần cho AST Parser
         html_dom = item.get("html_dom") if hasattr(item, "get") else None
+        if html_dom:
+            raw_text = html_dom.get_text("\n", strip=True)
+            item["text"] = raw_text
+            item["full_text"] = raw_text
+
+        # 2. Bóc tách quan hệ đồ thị HIN
         item = self.process_diagram(item, html_dom)
 
-        # 2. Kiểm tra chất lượng nội dung tối thiểu
-        html_status = getattr(item.get("html_status"), "value", item.get("html_status"))
-        if html_status != "VALID" and not self.publish_empty:
-            self.logger.warning(
-                "[PHÂN VÙNG CÁCH LY] Văn bản %s không có văn bản hợp lệ (cứu hộ=%s)",
-                item.get("item_id"),
-                item.get("rescue_status"),
-            )
-            if hasattr(self, "crawler") and self.crawler.stats:
-                self.crawler.stats.inc_value("kafka/quarantined_empty")
-            return item
-
-        # 3. Chuẩn hóa Item thành dictionary sạch, loại bỏ các trường DOM không thể tuần tự hóa
+        # 3. Chuyển đổi Item sang dạng dictionary sạch, loại bỏ DOM tránh lỗi tuần tự hóa
         if isinstance(item, VietLawItem):
             clean_record = item.to_clean_dict()
         else:
@@ -316,32 +301,10 @@ class LegalOntologyMappingPipeline:
                 if hasattr(v, "value"):
                     clean_record[k] = v.value
 
-        if not self.kafka_enabled or self.kafka_producer is None:
-            return item
+        # 4. Gom cụm và ghi Shard Staging tự động khi không dùng Feed Exporter (-O)
+        if not self.feed_export_active:
+            self.shard_buffer.append(clean_record)
+            if len(self.shard_buffer) >= self.shard_size:
+                self._flush_buffer_to_shard()
 
-        # 4. Đóng gói chuẩn Kafka Envelope (Gzip base64 + SHA-256)
-        try:
-            kafka_envelope_bytes = encode_kafka_envelope(clean_record)
-            msg_key = str(clean_record.get("item_id", "")).encode("utf-8")
-
-            try:
-                self.kafka_producer.produce(
-                    self.kafka_topic,
-                    key=msg_key,
-                    value=kafka_envelope_bytes,
-                    callback=self._delivery_report,
-                )
-            except BufferError:
-                self.kafka_producer.poll(1.0)
-                self.kafka_producer.produce(
-                    self.kafka_topic,
-                    key=msg_key,
-                    value=kafka_envelope_bytes,
-                    callback=self._delivery_report,
-                )
-            self.kafka_producer.poll(0)
-        except Exception as exc:
-            self.logger.error("[KAFKA LỖI] Không thể đóng gói hoặc đẩy Document %s: %s", clean_record.get("item_id"), exc)
-            raise
-
-        return item
+        return clean_record
