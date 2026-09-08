@@ -1,6 +1,6 @@
 """
 law_spider.py - Con nhện thu thập toàn diện văn bản pháp luật Việt Nam (VBPL).
-Tích hợp Next.js Server Action, Playwright Context, PyMuPDF, OCR Failsafe và Stats-based Backpressure Queue.
+Tích hợp Next.js Server Action, Strict Backpressure, Chromium V8 Refresh và Deferred OCR.
 """
 
 from __future__ import annotations
@@ -81,7 +81,7 @@ class LawSpider(scrapy.Spider):
         start_page: int = 1,
         pages: Optional[int] = None,
         limit: Optional[int] = None,
-        page_size: int = 10,
+        page_size: int = 100,  # Khóa cứng trần phân trang API để giảm 90% round-trips
         keyword: str = "",
         agency_ids: str = "",
         doc_ids: str = "",
@@ -120,7 +120,6 @@ class LawSpider(scrapy.Spider):
         self.artifacts_dir = Path(ARTIFACTS_DIR)
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
         self.failed_file = self.artifacts_dir / "crawl_failures.jsonl"
-        self._ocr_semaphore: Optional[asyncio.Semaphore] = None
 
     @classmethod
     def from_crawler(cls, crawler, *args, **kwargs):
@@ -129,7 +128,7 @@ class LawSpider(scrapy.Spider):
         return spider
 
     def _get_in_flight_count(self) -> int:
-        """Kiểm soát backpressure qua độ sâu hàng đợi request trong engine."""
+        """Đo lường độ sâu hàng đợi request trong Scrapy Engine phục vụ Backpressure."""
         if hasattr(self, "crawler") and self.crawler.stats:
             enqueued = self.crawler.stats.get_value("scheduler/enqueued", 0) or 0
             dequeued = self.crawler.stats.get_value("scheduler/dequeued", 0) or 0
@@ -151,9 +150,9 @@ class LawSpider(scrapy.Spider):
         return 0
 
     def start_requests(self):
-        """Điểm vào chuẩn xác của Scrapy Spider để khởi tạo luồng cào dữ liệu."""
+        """Khởi tạo luồng cào dữ liệu qua Playwright hoặc tải trực tiếp theo danh sách ID."""
         if self.requested_doc_ids:
-            self.logger.info("[MỤC TIÊU] Tải trực tiếp %d Document ID chỉ định.", len(self.requested_doc_ids))
+            self.logger.info("[MỤC TIÊU] Cào cứu hộ trực tiếp %d Document IDs.", len(self.requested_doc_ids))
             for doc_id in self.requested_doc_ids:
                 self.scheduled_ids.add(doc_id)
                 yield scrapy.Request(
@@ -166,7 +165,7 @@ class LawSpider(scrapy.Spider):
                 )
             return
 
-        self.logger.info("[KHỞI TẠO] Mở phiên trình duyệt Playwright kết nối vbpl.vn...")
+        self.logger.info("[KHỞI TẠO] Thiết lập kết nối Playwright tới %s...", HOME_URL)
         yield scrapy.Request(
             url=HOME_URL,
             meta={
@@ -185,19 +184,18 @@ class LawSpider(scrapy.Spider):
         action_token = request.headers.get("next-action")
         if action_token and action_token not in self.action_tokens:
             self.action_tokens.append(action_token)
-            self.logger.info("[PLAYWRIGHT] Thu nhận next-action token từ network headers.")
+            self.logger.info("[PLAYWRIGHT] Thu nhận next-action token: %s...", action_token[:15])
 
     async def extract_tokens_and_search(self, response):
         page = response.meta.get("playwright_page")
         try:
             if response.status == 403:
-                self.logger.error("[CHẶN 403] vbpl.vn từ chối yêu cầu. Kiểm tra WAF hoặc Proxy.")
+                self.logger.error("[CHẶN 403] vbpl.vn từ chối yêu cầu. Kiểm tra IP/Proxy.")
                 return
 
             await page.wait_for_timeout(500)
 
             if not self.action_tokens and not self.search_action:
-                self.logger.warning("[PLAYWRIGHT] Chưa thấy Action Token, kích hoạt sự kiện DOM...")
                 search_input = page.locator("input[type='text']")
                 if await search_input.count() > 0:
                     await search_input.first.fill("luật")
@@ -208,23 +206,30 @@ class LawSpider(scrapy.Spider):
                 if self.action_tokens:
                     self.search_action = self.action_tokens[0]
                 else:
-                    self.logger.warning("[PLAYWRIGHT] Dùng fallback action token định sẵn.")
                     self.search_action = "c529d164f28418e5898a834422629e64c6816af1"
 
             page_number = self.start_page
             total_pages = None
 
             while total_pages is None or page_number <= total_pages:
-                if page_number > self.start_page and (page_number - self.start_page) % 500 == 0:
-                    self.logger.info("[PLAYWRIGHT REFRESH] Tái tạo Page Chromium để xả V8 Heap...")
-                    browser_context = page.context
+                # 1. TÁI TẠO CHROMIUM PAGE SAU MỖI 100 TRANG ĐỂ XẢ BỘ NHỚ V8 HEAP
+                if page_number > self.start_page and (page_number - self.start_page) % 100 == 0:
+                    self.logger.info("[CHROME REFRESH] Tái tạo Browser Page sau 100 trang để xả RAM...")
+                    ctx = page.context
                     await page.close()
-                    page = await browser_context.new_page()
+                    page = await ctx.new_page()
 
-                while self._get_in_flight_count() >= 120:
-                    await asyncio.sleep(1.5)
+                # 2. CƠ CHẾ STRICT BACKPRESSURE: NẾU IN-FLIGHT >= 80 THÌ TẠM DỪNG
+                while self._get_in_flight_count() >= 80:
+                    await asyncio.sleep(1.0)
 
-                self.logger.info("[TÌM KIẾM] Quét trang %d%s", page_number, f"/{total_pages}" if total_pages else "")
+                self.logger.info(
+                    "[TÌM KIẾM] Quét trang %d%s (In-flight: %d)",
+                    page_number,
+                    f"/{total_pages}" if total_pages else "",
+                    self._get_in_flight_count(),
+                )
+
                 result_text = await page.evaluate(
                     """async ({action, routerTree, body}) => {
                         const res = await fetch("https://vbpl.vn/", {
@@ -251,7 +256,7 @@ class LawSpider(scrapy.Spider):
                 data = self._decode_search_payload(result_text)
                 documents = data.get("items", [])
                 if not documents:
-                    self.logger.warning("[TÌM KIẾM] Không còn văn bản ở trang %d. Kết thúc tìm kiếm.", page_number)
+                    self.logger.warning("[TÌM KIẾM] Hết danh mục tại trang %d. Dừng duyệt.", page_number)
                     break
 
                 for request in self._build_detail_requests(documents):
@@ -315,6 +320,7 @@ class LawSpider(scrapy.Spider):
             return HTMLStatus.EMPTY, "", None
 
         html_dom = BeautifulSoup(html_raw, "html.parser")
+        # Khử sạch thẻ nhúng binary base64 để tối ưu bộ nhớ
         for embedded in html_dom.find_all(src=re.compile(r"^data:", re.I)):
             embedded.decompose()
         for embedded in html_dom.find_all(data=re.compile(r"^data:", re.I)):
@@ -357,62 +363,6 @@ class LawSpider(scrapy.Spider):
                 document.close()
         except Exception:
             return ""
-
-    async def _ocr_pdf_async(self, body: bytes) -> Tuple[str, str]:
-        if self._ocr_semaphore is None:
-            max_concurrency = max(1, int(getattr(config, "OCR_CONCURRENCY", 2)))
-            self._ocr_semaphore = asyncio.Semaphore(max_concurrency)
-        async with self._ocr_semaphore:
-            return await asyncio.to_thread(self._ocr_pdf, body)
-
-    @staticmethod
-    def _ocr_pdf(body: bytes) -> Tuple[str, str]:
-        if not body or len(body) < 10:
-            return "", "OCR_EMPTY_BODY"
-
-        executable = shutil.which("tesseract")
-        if not executable:
-            for fallback_path in ("/usr/bin/tesseract", "/usr/local/bin/tesseract", "/bin/tesseract"):
-                if os.path.isfile(fallback_path) and os.access(fallback_path, os.X_OK):
-                    executable = fallback_path
-                    break
-
-        if not executable:
-            return "", "OCR_ENGINE_UNAVAILABLE"
-
-        try:
-            import pymupdf
-            language = getattr(config, "OCR_LANG", "vie+eng")
-            dpi = max(100, int(getattr(config, "OCR_DPI", 200)))
-            max_pages = max(1, int(getattr(config, "OCR_MAX_PAGES", 200)))
-            timeout = max(10, int(os.getenv("OCR_PAGE_TIMEOUT_SECONDS", "60")))
-
-            document = pymupdf.open(stream=body, filetype="pdf")
-            texts = []
-            try:
-                for page_number, page in enumerate(document):
-                    if page_number >= max_pages:
-                        return "\n".join(texts), "OCR_PAGE_LIMIT"
-                    scale = dpi / 72
-                    pixmap = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False)
-                    image = pixmap.tobytes("png")
-                    result = subprocess.run(
-                        [executable, "stdin", "stdout", "-l", language, "--psm", "6"],
-                        input=image,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        timeout=timeout,
-                        check=False,
-                    )
-                    if result.returncode != 0:
-                        error = result.stderr.decode("utf-8", errors="replace")[:300]
-                        return "\n".join(texts), f"OCR_ERROR:{error}"
-                    texts.append(result.stdout.decode("utf-8", errors="replace"))
-            finally:
-                document.close()
-            return "\n".join(texts), "OCR_COMPLETED"
-        except Exception as exc:
-            return "", f"OCR_EXCEPTION:{exc}"
 
     @staticmethod
     def _fallback_file_priority(file_info: dict) -> int:
@@ -459,7 +409,7 @@ class LawSpider(scrapy.Spider):
             data = json.loads(response.text)
             doc_data = data.get("data", {})
         except Exception:
-            self.logger.error("[LỖI] Không parse được JSON cho Document %s", item.get("item_id"))
+            self.logger.error("[LỖI] Không phân tích được JSON cho Document %s", item.get("item_id"))
             self.handle_failure_internal(item)
             return
 
@@ -504,7 +454,7 @@ class LawSpider(scrapy.Spider):
 
     @staticmethod
     def _playwright_rescue_meta() -> dict:
-        timeout_ms = int(os.getenv("RESCUE_NAVIGATION_TIMEOUT_MS", "45000"))
+        timeout_ms = int(os.getenv("RESCUE_NAVIGATION_TIMEOUT_MS", "30000"))
         return {
             "playwright": True,
             "playwright_context": "vbpl",
@@ -513,24 +463,9 @@ class LawSpider(scrapy.Spider):
                 "wait_until": "domcontentloaded",
                 "timeout": timeout_ms,
             },
-            "playwright_page_init_callback": LawSpider._init_rescue_page,
             "max_retry_times": 0,
-            "download_timeout": max(50, timeout_ms // 1000 + 5),
+            "download_timeout": max(35, timeout_ms // 1000 + 5),
         }
-
-    @staticmethod
-    async def _init_rescue_page(page, request):
-        blocked_types = {"image", "font", "media", "stylesheet"}
-        if os.getenv("RESCUE_BLOCK_SCRIPTS", "1") != "0":
-            blocked_types.add("script")
-
-        async def route_resource(route):
-            if route.request.resource_type in blocked_types:
-                await route.abort()
-            else:
-                await route.continue_()
-
-        await page.route("**/*", route_resource)
 
     def _legacy_print_request(self, item: dict):
         return scrapy.Request(
@@ -679,34 +614,18 @@ class LawSpider(scrapy.Spider):
             elif name.endswith(".docx"):
                 extracted_text = self._extract_docx_text(response.body)
                 source = "fallback_docx"
-                status_name = "DOCX_TEXT_RECOVERED"
             elif name.endswith(".pdf"):
+                # Chỉ trích xuất text số hóa nhanh bằng PyMuPDF
                 extracted_text = await asyncio.to_thread(self._extract_pdf_text, response.body)
                 source = "fallback_pdf"
-                status_name = "PDF_TEXT_RECOVERED"
 
-                ocr_enabled = getattr(config, "OCR_ENABLED", True)
-                inline_ocr = getattr(config, "OCR_INLINE_ENABLED", True)
-
-                if len(extracted_text.strip()) < 100 and ocr_enabled:
-                    if not inline_ocr:
-                        item["ocr_status"] = "OCR_PENDING"
-                        item["rescue_status"] = "OCR_PENDING"
-                    else:
-                        extracted_text, ocr_status = await self._ocr_pdf_async(response.body)
-                        if ocr_status == "OCR_COMPLETED" and len(extracted_text.strip()) < 100:
-                            ocr_status = "OCR_EMPTY"
-
-                        if ocr_status == "OCR_ENGINE_UNAVAILABLE":
-                            item["ocr_status"] = "OCR_PENDING"
-                            item["rescue_status"] = "OCR_PENDING"
-                        else:
-                            item["ocr_status"] = ocr_status
-                            if len(extracted_text.strip()) >= 100:
-                                source = "fallback_pdf_ocr"
-                                status_name = "PDF_OCR_RECOVERED"
-                            else:
-                                item["rescue_status"] = ocr_status
+                # NẾU LÀ FILE ẢNH QUÉT: HOÃN LẠI CHO OFFLINE BATCH, TUYỆT ĐỐI KHÔNG CHẠY TESSERACT TẠI ĐÂY
+                if len(extracted_text.strip()) < 100:
+                    item["ocr_status"] = "OCR_PENDING"
+                    item["rescue_status"] = "OCR_PENDING"
+                    item["html_status"] = HTMLStatus.EMPTY
+                    yield self._next_file_request(item, remaining_files)
+                    return
 
             if len(extracted_text.strip()) >= 100:
                 recovered_html = "<html><body><pre>" + html_lib.escape(extracted_text) + "</pre></body></html>"
@@ -714,14 +633,12 @@ class LawSpider(scrapy.Spider):
                 item["html_raw"] = recovered_html
                 item["html_dom"] = BeautifulSoup(recovered_html, "html.parser")
                 item["content_source"] = source
-                item["rescue_status"] = status_name
+                item["rescue_status"] = "TEXT_RECOVERED"
                 yield self._diagram_request(item)
                 return
         except Exception as exc:
             self.logger.warning("[LỖI XỬ LÝ FILE ĐÍNH KÈM] %s: %s", item["item_id"], exc)
 
-        if name.endswith(".pdf") and not remaining_files:
-            item["rescue_status"] = item.get("rescue_status") or "OCR_REQUIRED"
         yield self._next_file_request(item, remaining_files)
 
     async def handle_file_list_failure(self, failure):
@@ -734,7 +651,7 @@ class LawSpider(scrapy.Spider):
             except Exception:
                 pass
 
-        max_attempts = max(1, int(os.getenv("RESCUE_BROWSER_ATTEMPTS", "3")))
+        max_attempts = max(1, int(os.getenv("RESCUE_BROWSER_ATTEMPTS", "2")))
         if attempt < max_attempts:
             return self._rescue_browser_request(item, attempt + 1)
 
@@ -755,7 +672,6 @@ class LawSpider(scrapy.Spider):
 
         doc_id = item["item_id"]
         self.successful_ids.add(doc_id)
-        self.logger.info("[HOÀN TẤT VĂN BẢN] %s (ID: %s)", item.get("doc_number"), doc_id)
         yield item
 
     def handle_failure(self, failure):
@@ -794,5 +710,3 @@ class LawSpider(scrapy.Spider):
             len(self.scheduled_ids),
             len(self.current_failed_ids),
         )
-        if self.skipped_doc_types:
-            self.logger.info("Thống kê phân loại đã lọc bỏ: %s", self.skipped_doc_types)
