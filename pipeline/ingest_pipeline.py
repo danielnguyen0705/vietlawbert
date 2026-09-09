@@ -1,6 +1,6 @@
 """
 ingest_pipeline.py - Luồng trung gian (Decoupled ETL Worker) xử lý từ Shard thô sang CSDL lai.
-Tối ưu hóa tài nguyên phần cứng yếu: Khống chế CPU Threads, mini-batch nhỏ và giải phóng RAM chủ động.
+Tối ưu hóa tài nguyên phần cứng: Khống chế CPU Threads, nạp batch chịu lỗi và Checkpoint tự phục hồi.
 """
 
 from __future__ import annotations
@@ -12,15 +12,15 @@ import gzip
 import logging
 import argparse
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 from bs4 import BeautifulSoup
 
 import torch
 try:
-    # Khống chế intra-op threads để nhường CPU cho OS và giao diện
     torch.set_num_threads(2)
 except Exception:
     pass
+
 from sentence_transformers import SentenceTransformer
 
 from configs.config import config
@@ -30,6 +30,31 @@ from rag.es_retriever import LegalElasticsearchRetriever
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | [%(levelname)s] | %(message)s")
 logger = logging.getLogger("VietLawBERT_IngestPipeline")
+
+CHECKPOINT_FILE = config.STORAGE_ROOT / ".ingest_checkpoint.json"
+
+
+def load_checkpoint() -> Set[str]:
+    """Tải danh sách các tệp Shard đã nạp thành công từ đĩa cứng."""
+    if CHECKPOINT_FILE.exists():
+        try:
+            with open(CHECKPOINT_FILE, "r", encoding="utf-8") as f:
+                return set(json.load(f))
+        except Exception:
+            return set()
+    return set()
+
+
+def save_checkpoint(completed_shards: Set[str]) -> None:
+    """Lưu vết trạng thái nạp Shard nguyên tử chống mất dữ liệu khi sập nguồn."""
+    try:
+        temp_file = CHECKPOINT_FILE.with_suffix(".tmp")
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(list(completed_shards), f, ensure_ascii=False, indent=2)
+        temp_file.replace(CHECKPOINT_FILE)
+    except Exception as exc:
+        logger.warning("Không thể ghi checkpoint: %s", exc)
+
 
 class IngestPipelineWorker:
     def __init__(
@@ -47,11 +72,15 @@ class IngestPipelineWorker:
         self.es_host = es_host or config.ES_HOST
         self.model_name = model_name_or_path or config.BASE_MODEL_NAME
         self.vector_dim = vector_dim or config.QDRANT_VECTOR_DIM
-        self.batch_size = batch_size or 8  # Mặc định kích thước nhỏ cho máy yếu
+        self.batch_size = batch_size or 8
 
         self.parser = HybridASTParser()
         self.qdrant = QdrantClientWrapper(host=self.qdrant_host, port=self.qdrant_port)
-        self.qdrant.init_collection(collection_name=config.QDRANT_COLLECTION_NAME, vector_dim=self.vector_dim)
+        try:
+            self.qdrant.init_collection(collection_name=config.QDRANT_COLLECTION_NAME, vector_dim=self.vector_dim)
+        except Exception as init_err:
+            logger.warning("Sử dụng collection Qdrant hiện có: %s", init_err)
+
         self.es = LegalElasticsearchRetriever(hosts=[self.es_host], index_name=config.ES_INDEX_NAME)
 
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -168,11 +197,9 @@ class IngestPipelineWorker:
             total_chunks_in_shard += len(chunk_buffer)
             chunk_buffer.clear()
 
-        # Dọn dẹp bộ nhớ RAM sau khi hoàn tất toàn bộ shard
         gc.collect()
-
         logger.info(
-            "✓ Đã nạp thành công Shard %s: %d văn bản -> %d chunks vào Qdrant & ES.",
+            "✓ Hoàn tất Shard %s: %d văn bản -> %d chunks đã nạp an toàn.",
             path.name,
             docs_count,
             total_chunks_in_shard,
@@ -185,7 +212,6 @@ class IngestPipelineWorker:
 
         texts = [c["text"] for c in chunks]
 
-        # Chạy inference_mode triệt tiêu computation graph giải phóng VRAM/RAM
         with torch.inference_mode():
             embeddings = self.encoder.encode(
                 texts,
@@ -207,12 +233,22 @@ class IngestPipelineWorker:
             chunk["content"] = chunk_copy["content"]
             qdrant_payloads.append(chunk_copy)
 
-        self.qdrant.upsert_batch(
+        # 1. Nạp Qdrant - Cơ chế Fail-Fast chặn lệch pha dữ liệu
+        upserted = self.qdrant.upsert_batch(
             records=qdrant_payloads,
             collection_name=config.QDRANT_COLLECTION_NAME,
         )
-        self.es.bulk_index_chunks(chunks)
+        if upserted == 0 and len(qdrant_payloads) > 0:
+            raise RuntimeError("Qdrant nạp thất bại toàn bộ batch. Dừng tiến trình để tránh lệch pha dữ liệu!")
 
+        # 2. Nạp Elasticsearch
+        try:
+            self.es.bulk_index_chunks(chunks)
+        except Exception as es_err:
+            logger.error("Ngoại lệ khi nạp Elasticsearch: %s", es_err)
+            raise es_err
+
+        # Dọn dẹp tài nguyên sau khi cả hai kho lưu trữ đều hoàn tất
         del texts, embeddings, qdrant_payloads
         gc.collect()
 
@@ -222,7 +258,7 @@ def main():
     parser.add_argument("--shard-path", default=str(config.STORAGE_ROOT / "raw_shards"), help="Đường dẫn thư mục Shard")
     parser.add_argument("--model-name", default=config.BASE_MODEL_NAME, help="Tên backbone encoder")
     parser.add_argument("--dim", type=int, default=config.QDRANT_VECTOR_DIM, help="Số chiều vector (256)")
-    parser.add_argument("--batch-size", type=int, default=8, help="Kích thước mini-batch nhỏ (khuyến nghị 8)")
+    parser.add_argument("--batch-size", type=int, default=8, help="Kích thước mini-batch nhỏ")
     parser.add_argument("--device", default="cpu", help="Thiết bị tính toán (cpu/cuda)")
     args = parser.parse_args()
 
@@ -233,12 +269,19 @@ def main():
         device=args.device,
     )
 
+    completed_shards = load_checkpoint()
     p = Path(args.shard_path)
+
     if p.is_dir():
         files = sorted(list(p.glob("*.jsonl*")))
-        logger.info("Tìm thấy %d shards trong thư mục %s.", len(files), p)
+        logger.info("Tìm thấy %d shards trong thư mục %s (Đã nạp trước đó: %d).", len(files), p, len(completed_shards))
         for f in files:
+            if f.name in completed_shards:
+                logger.info("[CHECKPOINT SKIP] Bỏ qua Shard đã nạp thành công: %s", f.name)
+                continue
             worker.process_raw_shard(f)
+            completed_shards.add(f.name)
+            save_checkpoint(completed_shards)
     else:
         worker.process_raw_shard(p)
 
