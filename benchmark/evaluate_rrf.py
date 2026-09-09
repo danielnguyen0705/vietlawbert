@@ -6,8 +6,6 @@ bộ chuẩn VietLawBench (Single-hop & Multi-hop), hỗ trợ Ablation Study.
 
 from __future__ import annotations
 
-import os
-import sys
 import re
 import json
 import math
@@ -42,32 +40,28 @@ def extract_article_number(article_str: Optional[str]) -> Optional[str]:
 
 
 def is_ground_truth_match(candidate: Dict[str, Any], gt_doc_num: str, gt_article: str) -> bool:
-    """
-    Kiểm tra ứng viên truy xuất có khớp chính xác cả Số hiệu văn bản và Điều luật.
-    Bóc tách linh hoạt từ doc_number, hierarchy_path, content.
-    """
+    """Kiểm tra ứng viên truy xuất có khớp chính xác cả Số hiệu văn bản và Điều luật."""
     cand_doc = normalize_legal_identifier(
         candidate.get("doc_number") or candidate.get("source_doc") or candidate.get("doc_id") or ""
     )
-    # Bóc tách Điều luật từ hierarchy_path (ví dụ: 'Điều 6 > Khoản 3') hoặc trường article
-    cand_art_str = candidate.get("hierarchy_path") or candidate.get("article") or ""
+    cand_art_str = candidate.get("hierarchy_path") or candidate.get("article") or candidate.get("content") or ""
     cand_art = normalize_legal_identifier(cand_art_str)
 
     target_doc = normalize_legal_identifier(gt_doc_num)
     target_art = normalize_legal_identifier(gt_article)
 
     doc_matched = True
-    if target_doc:
+    if target_doc and target_doc != "n/a":
         doc_matched = (target_doc in cand_doc) or (cand_doc in target_doc)
 
     art_matched = True
-    if target_art:
+    if target_art and target_art != "điều khoản liên quan":
         target_num = extract_article_number(target_art)
         cand_num = extract_article_number(cand_art)
         if target_num and cand_num:
             art_matched = (target_num == cand_num)
         else:
-            art_matched = (target_art in cand_art)
+            art_matched = bool(target_art and target_art in cand_art)
 
     return doc_matched and art_matched
 
@@ -157,19 +151,18 @@ def load_benchmark(benchmark_dir: str | Path) -> Dict[str, List[Dict[str, Any]]]
 
         ds_name = filename.replace(".jsonl", "")
         datasets[ds_name] = samples
-        logger.info(f"✓ Đã nạp thành công '{filename}': {len(samples)} câu hỏi đối chứng.")
+        logger.info("✓ Đã nạp thành công '%s': %d câu hỏi.", filename, len(samples))
 
     return datasets
 
 
 def retrieve_by_mode(retriever: Any, query: str, top_k: int, mode: str) -> List[Dict[str, Any]]:
-    """Thực thi truy xuất phân tích bóc tách thành phần (Ablation Mode) tương thích v3."""
+    """Thực thi truy xuất phân tích bóc tách thành phần (Ablation Mode)."""
     if mode == "dense_only":
         return retriever._search_dense(query, top_k=top_k)
     elif mode == "sparse_only":
         return retriever._search_sparse_es(query, top_k=top_k)
     else:
-        # Mặc định: Full Hybrid RRF + Graph Reranking
         return retriever.retrieve(query, top_k=top_k)
 
 
@@ -186,7 +179,6 @@ def run_benchmark_evaluation(
     if retriever_instance is not None:
         retriever = retriever_instance
     else:
-        # Khởi tạo retriever lai kết nối Qdrant và Elasticsearch
         from database.qdrant_client import QdrantClientWrapper
         from rag.es_retriever import LegalElasticsearchRetriever
         from rag.retriever import LegalHybridRetriever
@@ -196,7 +188,7 @@ def run_benchmark_evaluation(
         qdrant = QdrantClientWrapper(host=config.QDRANT_HOST, port=config.QDRANT_PORT)
         es = LegalElasticsearchRetriever(hosts=[config.ES_HOST], index_name=config.ES_INDEX_NAME)
         encoder = SentenceTransformer(config.BASE_MODEL_NAME)
-        retriever = LegalHybridRetriever(qdrant_wrapper=qdrant, es_client=es.client, encoder_model=encoder)
+        retriever = LegalHybridRetriever(qdrant_wrapper=qdrant, es_retriever=es, encoder_model=encoder)
 
     datasets = load_benchmark(benchmark_dir)
     if not datasets:
@@ -214,9 +206,9 @@ def run_benchmark_evaluation(
         if ds_name == "vietlawbench_1000" and ("single_hop" in datasets and "multi_hop" in datasets):
             continue
 
-        logger.info(f"\n=======================================================")
-        logger.info(f"ĐÁNH GIÁ: {ds_name.upper()} | Chế độ: [{mode.upper()}] | Số mẫu: {len(samples)}")
-        logger.info(f"=======================================================")
+        logger.info("\n=======================================================")
+        logger.info("ĐÁNH GIÁ: %s | Chế độ: [%s] | Số mẫu: %d", ds_name.upper(), mode.upper(), len(samples))
+        logger.info("=======================================================")
 
         dataset_query_scores: List[Dict[str, Any]] = []
 
@@ -230,7 +222,7 @@ def run_benchmark_evaluation(
             dataset_query_scores.append(metrics)
 
             if idx % 50 == 0 or idx == len(samples):
-                logger.info(f"Tiến độ: {idx}/{len(samples)} câu hỏi...")
+                logger.info("Tiến độ: %d/%d câu hỏi...", idx, len(samples))
 
         total_samples = len(dataset_query_scores)
         aggregated_metrics = {"Total_Samples": total_samples, "Evaluation_Mode": mode}
@@ -243,24 +235,15 @@ def run_benchmark_evaluation(
         all_dataset_results[ds_name] = aggregated_metrics
         sample_level_metrics[ds_name] = dataset_query_scores
 
-        logger.info(f"\n--- KẾT QUẢ ĐÁNH GIÁ [{ds_name.upper()} - {mode.upper()}] ---")
-        for k, v in aggregated_metrics.items():
-            logger.info(f"  * {k:25}: {v}")
-
     if output_dir:
         out_path = Path(output_dir)
         out_path.mkdir(parents=True, exist_ok=True)
 
         summary_file = out_path / f"rrf_summary_{mode}.json"
-        detailed_file = out_path / f"rrf_distribution_{mode}.json"
-
         with open(summary_file, "w", encoding="utf-8") as f:
             json.dump(all_dataset_results, f, ensure_ascii=False, indent=2)
 
-        with open(detailed_file, "w", encoding="utf-8") as f:
-            json.dump(sample_level_metrics, f, ensure_ascii=False, indent=2)
-
-        logger.info(f"\n✓ Đã lưu bảng chỉ số thực nghiệm: {summary_file}")
+        logger.info("✓ Đã lưu kết quả tóm tắt: %s", summary_file)
 
     return all_dataset_results, sample_level_metrics
 

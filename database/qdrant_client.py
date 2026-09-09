@@ -1,6 +1,6 @@
 """
 qdrant_client.py - Lớp giao tiếp Qdrant Vector Engine phục vụ Dense Retrieval (d=256).
-Hỗ trợ HNSW Cosine Index, Deterministic UUIDv5, Timeout 120s và Exponential Backoff Retry.
+Hỗ trợ HNSW Cosine Index, Deterministic UUIDv5, Doc-level Resume và Exponential Backoff Retry.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ class QdrantClientWrapper:
         self.default_collection = getattr(config, "QDRANT_COLLECTION_NAME", "vietlawbert_chunks")
         self.vector_dim = getattr(config, "QDRANT_VECTOR_DIM", 256)
 
-        # Nâng timeout cơ sở lên 120.0 giây
+        # Nâng timeout toàn cục lên 120.0s ở cấp HTTP Client
         if url:
             self.client = QdrantClient(url=url, timeout=120.0)
         else:
@@ -70,15 +70,45 @@ class QdrantClientWrapper:
                 ("doc_number", PayloadSchemaType.KEYWORD),
                 ("macro_label", PayloadSchemaType.KEYWORD),
             ]:
-                self.client.create_payload_index(
-                    collection_name=col_name,
-                    field_name=field,
-                    field_schema=schema,
-                    wait=True,
-                )
+                try:
+                    self.client.create_payload_index(
+                        collection_name=col_name,
+                        field_name=field,
+                        field_schema=schema,
+                        wait=False,
+                    )
+                except Exception:
+                    pass
             logger.info("Đã tạo mới Collection [%s] (dim=%d) kèm Payload Indices.", col_name, dim)
         else:
             logger.info("Collection [%s] đã tồn tại và sẵn sàng.", col_name)
+
+    def doc_exists(self, doc_id: str, collection_name: Optional[str] = None) -> bool:
+        """Kiểm tra nhanh xem doc_id đã tồn tại trong Qdrant chưa để nhảy cóc bỏ qua."""
+        if not doc_id:
+            return False
+        col_name = collection_name or self.default_collection
+        try:
+            points, _ = self.client.scroll(
+                collection_name=col_name,
+                scroll_filter=Filter(
+                    must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]
+                ),
+                limit=1,
+                with_payload=False,
+                with_vectors=False,
+            )
+            return len(points) > 0
+        except Exception:
+            return False
+
+    def count_points(self, collection_name: Optional[str] = None) -> int:
+        """Đếm chính xác tổng số vector hiện diện trong Collection."""
+        col_name = collection_name or self.default_collection
+        try:
+            return self.client.count(collection_name=col_name, exact=True).count
+        except Exception:
+            return 0
 
     def upsert_batch(
         self,
@@ -125,17 +155,17 @@ class QdrantClientWrapper:
                     "content": content,
                 }
 
-                # Bảo toàn tính lũy thừa bằng UUIDv5 xác định
+                # Sử dụng UUIDv5 xác định bảo toàn tính lũy thừa tuyệt đối
                 point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, chunk_id))
                 points.append(PointStruct(id=point_id, vector=vec_slice, payload=payload))
 
             if not points:
                 continue
 
-            # Vòng lặp Retry phòng vệ: Tự phục hồi khi gặp Timeout hoặc nghẽn I/O
             success = False
             for attempt in range(1, max_retries + 1):
                 try:
+                    # Tuyệt đối không truyền timeout vào hàm upsert()
                     self.client.upsert(
                         collection_name=col_name,
                         points=points,

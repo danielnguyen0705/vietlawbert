@@ -8,10 +8,11 @@ services:
     container_name: vietlawbert_app
     volumes:
       - .:/app
-      - /mnt/data/vietlawbert_data:/mnt/data/vietlawbert_data
+      - ${DATA_STORAGE_ROOT:-./data}:/app/data
     working_dir: /app
     environment:
       - PYTHONPATH=/app
+      - DATA_STORAGE_ROOT=/app/data
       - MONGO_URI=mongodb://db:27017/
       - NEO4J_URI=bolt://neo4j:7687
       - NEO4J_USER=neo4j
@@ -34,7 +35,7 @@ services:
   # 2. HẠ TẦNG CƠ SỞ DỮ LIỆU LAI (HYBRID STORAGE STACK)
   # ============================================================================
 
-  # Document Store: Lưu trữ toàn văn và siêu dữ liệu NoSQL
+  # Document Store: MongoDB 7.0
   db:
     image: mongo:7.0
     container_name: mongodb_vietlaw
@@ -50,7 +51,7 @@ services:
     networks:
       - vietlaw_net
 
-  # Dense Vector Store: MRL d=256 & Khóa trần File Descriptors chống lỗi Too Many Open Files
+  # Dense Vector Store: Qdrant
   qdrant:
     image: qdrant/qdrant:v1.9.2
     container_name: qdrant_vietlaw
@@ -73,7 +74,7 @@ services:
     networks:
       - vietlaw_net
 
-  # Sparse Lexical Search: Elasticsearch 8.x với Vietnamese Legal Analyzer
+  # Sparse Lexical Search: Elasticsearch 8.13.0
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
     container_name: elasticsearch_vietlaw
@@ -97,7 +98,7 @@ services:
     networks:
       - vietlaw_net
 
-  # Heterogeneous Information Network (HIN): Quản lý 22 quan hệ pháp lý
+  # Knowledge Graph: Neo4j 5.18.1 với APOC Plugin
   neo4j:
     image: neo4j:5.18.1
     container_name: neo4j_vietlaw
@@ -126,7 +127,7 @@ services:
     networks:
       - vietlaw_net
 
-  # In-Memory Graph Cache: Lưu trữ đồ thị Node2Vec 128d (SLA < 500ms)
+  # In-Memory Cache: Redis 7.2
   redis:
     image: redis:7.2-alpine
     container_name: redis_vietlaw

@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import re
 import logging
-from typing import Dict, Any, List, Optional
-from lark import Lark, Transformer, UnexpectedInput
+from typing import Dict, Any, List, Optional, Tuple
+from lark import Lark
 
 logger = logging.getLogger("VietLawBERT_ASTParser")
 
@@ -83,7 +83,7 @@ class HybridASTParser:
             self.lark = Lark(LEGAL_GRAMMAR, parser='lalr', maybe_placeholders=True)
             logger.info("Khởi tạo Lark EBNF Grammar thành công.")
         except Exception as exc:
-            logger.warning(f"Lark Parser khởi tạo thất bại ({exc}), kích hoạt Full Regex State-machine.")
+            logger.warning("Lark Parser khởi tạo thất bại (%s), kích hoạt Full Regex State-machine.", exc)
             self.lark = None
 
         # Regex patterns phòng vệ
@@ -162,19 +162,21 @@ class HybridASTParser:
             if current_art_num:
                 current_article_lines.append(line)
             else:
-                # Dữ liệu thuộc phần mở đầu/căn cứ ban hành
+                # Dữ liệu thuộc phần mở đầu / căn cứ ban hành
                 if len(line) > 40:
+                    raw_text_chunk = f"{meta_header}[HIERARCHY] Căn cứ pháp lý\n[CONTENT] {line}"
                     chunks.append({
                         "chunk_id": f"{doc_id}_preamble_{len(chunks)}",
                         "doc_id": doc_id,
                         "macro_label": "CAN_CU",
                         "hierarchy_path": "Lời mở đầu / Căn cứ ban hành",
-                        "text": f"{meta_header}[HIERARCHY] Căn cứ pháp lý\n[CONTENT] {line}",
-                        "metadata": metadata
+                        "text": raw_text_chunk,
+                        "content": raw_text_chunk,
+                        "metadata": metadata,
                     })
 
         flush_article_buffer()
-        logger.info(f"Hybrid AST Parser trích xuất thành công {len(chunks)} chunks cho văn bản {doc_id}.")
+        logger.info("Hybrid AST Parser trích xuất thành công %d chunks cho văn bản %s.", len(chunks), doc_id)
         return chunks
 
     def _break_down_article(
@@ -184,7 +186,7 @@ class HybridASTParser:
         tracker: LegalHierarchyTracker,
         meta_header: str,
         metadata: Dict[str, Any],
-        doc_id: str
+        doc_id: str,
     ) -> List[Dict[str, Any]]:
         """Phân rã một Điều thành các Khoản và Điểm để tránh vượt giới hạn ngữ cảnh."""
         sub_chunks: List[Dict[str, Any]] = []
@@ -216,38 +218,44 @@ class HybridASTParser:
         if not clauses:
             # Điều luật ngắn không phân Khoản
             h_path = tracker.get_hierarchy_path()
+            raw_text_chunk = f"{meta_header}[HIERARCHY] {h_path}\n[CONTENT] {art_body.strip()}"
             sub_chunks.append({
                 "chunk_id": f"{doc_id}_art_{art_num}",
                 "doc_id": doc_id,
                 "macro_label": macro_label,
                 "hierarchy_path": h_path,
-                "text": f"{meta_header}[HIERARCHY] {h_path}\n[CONTENT] {art_body.strip()}",
-                "metadata": metadata
+                "text": raw_text_chunk,
+                "content": raw_text_chunk,
+                "metadata": metadata,
             })
             return sub_chunks
 
         # Lưu bản tóm lược điều nếu phần mở đầu có nghĩa
         if len(lead_content.strip()) > 30:
             h_path = tracker.get_hierarchy_path()
+            raw_text_chunk = f"{meta_header}[HIERARCHY] {h_path}\n[CONTENT] {lead_content.strip()}"
             sub_chunks.append({
                 "chunk_id": f"{doc_id}_art_{art_num}_root",
                 "doc_id": doc_id,
                 "macro_label": macro_label,
                 "hierarchy_path": h_path,
-                "text": f"{meta_header}[HIERARCHY] {h_path}\n[CONTENT] {lead_content.strip()}",
-                "metadata": metadata
+                "text": raw_text_chunk,
+                "content": raw_text_chunk,
+                "metadata": metadata,
             })
 
         for cl_num, cl_lines in clauses:
             cl_text = "\n".join(cl_lines).strip()
             h_path = tracker.get_hierarchy_path(clause=cl_num)
+            raw_text_chunk = f"{meta_header}[HIERARCHY] {h_path}\n[CONTENT] {cl_text}"
             sub_chunks.append({
                 "chunk_id": f"{doc_id}_art_{art_num}_cl_{cl_num}",
                 "doc_id": doc_id,
                 "macro_label": macro_label,
                 "hierarchy_path": h_path,
-                "text": f"{meta_header}[HIERARCHY] {h_path}\n[CONTENT] {cl_text}",
-                "metadata": metadata
+                "text": raw_text_chunk,
+                "content": raw_text_chunk,
+                "metadata": metadata,
             })
 
         return sub_chunks

@@ -27,9 +27,18 @@ class PDFStatus(str, Enum):
 
 
 class VietLawItem(scrapy.Item):
-    # Khóa định danh & số hiệu
+    # Khóa định danh & siêu dữ liệu cốt lõi phục vụ AST Parser
     item_id = scrapy.Field()
+    doc_id = scrapy.Field()
     doc_number = scrapy.Field()
+    title = scrapy.Field()
+    effective_date = scrapy.Field()
+    issue_date = scrapy.Field()
+    status = scrapy.Field()
+    co_quan = scrapy.Field()
+    org = scrapy.Field()
+    signer = scrapy.Field()
+    doc_type = scrapy.Field()
 
     # Nội dung văn bản phục vụ AST Parser & Embedding
     text = scrapy.Field()
@@ -55,7 +64,7 @@ class VietLawItem(scrapy.Item):
 
     # Cấu trúc Đồ thị & Lược đồ quan hệ (22 Quan hệ HIN)
     diagram_json = scrapy.Field()
-    html_dom = scrapy.Field()  # Chỉ lưu trên bộ nhớ RAM để xử lý tạm, loại bỏ khi lưu trữ
+    html_dom = scrapy.Field()  # Tạm thời trên RAM, loại bỏ khi lưu đĩa
     relationships = scrapy.Field()
     diagram_status = scrapy.Field()
     diagram_unresolved_keys = scrapy.Field()
@@ -69,6 +78,7 @@ class VietLawItem(scrapy.Item):
         Chuyển đổi Item thành dictionary sạch:
         - Loại bỏ thuộc tính html_dom (BeautifulSoup object) tránh gây lỗi tuần tự hóa JSON.
         - Chuyển đổi toàn bộ các Enum sang chuỗi thuần túy (str).
+        - Đồng bộ doc_id = item_id nếu thiếu.
         """
         clean_dict = {}
         for key, val in self.items():
@@ -78,4 +88,8 @@ class VietLawItem(scrapy.Item):
                 clean_dict[key] = val.value
             else:
                 clean_dict[key] = val
+
+        if "doc_id" not in clean_dict and "item_id" in clean_dict:
+            clean_dict["doc_id"] = clean_dict["item_id"]
+
         return clean_dict

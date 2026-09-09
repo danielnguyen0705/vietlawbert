@@ -5,8 +5,6 @@ baseline_comparator.py - Hệ thống thực nghiệm đối chứng trực di�
 
 from __future__ import annotations
 
-import os
-import sys
 import json
 import argparse
 from pathlib import Path
@@ -30,13 +28,18 @@ class BaselineComparator:
         self.benchmark_dir = Path(benchmark_dir)
         self.datasets = load_benchmark(self.benchmark_dir)
         if not self.datasets:
-            raise FileNotFoundError(f"Thư mục {self.benchmark_dir} chưa có tệp single_hop.jsonl/multi_hop.jsonl!")
+            logger.warning("Thư mục benchmark trống. Đang kích hoạt sinh tự động 1.000 mẫu VietLawBench...")
+            from benchmark.build_vietlawbench import VietLawBenchBuilder
+            builder = VietLawBenchBuilder()
+            builder.build_and_export_all(600, 400)
+            builder.close()
+            self.datasets = load_benchmark(self.benchmark_dir)
 
     @staticmethod
     def run_eval_for_candidates(
         samples: List[Dict[str, Any]],
         candidates_dict: Dict[str, List[Dict[str, Any]]],
-        k_thresholds: List[int] = [1, 5, 10]
+        k_thresholds: List[int] = [1, 5, 10],
     ) -> Tuple[Dict[str, float], List[float]]:
         query_scores = []
         ndcg_vector = []
@@ -58,17 +61,24 @@ class BaselineComparator:
 
     @staticmethod
     def compute_significance(baseline_scores: List[float], proposed_scores: List[float]) -> Tuple[float, str]:
-        if len(baseline_scores) != len(proposed_scores) or len(baseline_scores) == 0:
+        if len(baseline_scores) != len(proposed_scores) or len(baseline_scores) < 2:
+            return 1.0, ""
+
+        diff = np.array(proposed_scores) - np.array(baseline_scores)
+        if np.all(diff == 0):
             return 1.0, ""
 
         t_stat, p_val = stats.ttest_rel(proposed_scores, baseline_scores)
+        if np.isnan(p_val):
+            p_val = 1.0
+
         if p_val < 0.01:
             marker = "^{**}"
         elif p_val < 0.05:
             marker = "^{*}"
         else:
             marker = ""
-        return p_val, marker
+        return float(p_val), marker
 
     def compare_all(self, output_dir: Path | str = ROOT_DIR / "benchmark" / "results") -> str:
         out_path = Path(output_dir)
@@ -82,7 +92,7 @@ class BaselineComparator:
         qdrant = QdrantClientWrapper(host=config.QDRANT_HOST, port=config.QDRANT_PORT)
         es = LegalElasticsearchRetriever(hosts=[config.ES_HOST], index_name=config.ES_INDEX_NAME)
         encoder = SentenceTransformer(config.BASE_MODEL_NAME)
-        retriever = LegalHybridRetriever(qdrant_wrapper=qdrant, es_client=es.client, encoder_model=encoder)
+        retriever = LegalHybridRetriever(qdrant_wrapper=qdrant, es_retriever=es, encoder_model=encoder)
 
         results_by_dataset = {}
         latex_lines = []
@@ -91,8 +101,8 @@ class BaselineComparator:
             if ds_name == "vietlawbench_1000" and len(self.datasets) > 1:
                 continue
 
-            logger.info(f"\n=== CHẠY ĐỐI CHỨNG THỰC NGHIỆM TRÊN TẬP: {ds_name.upper()} ===")
-            
+            logger.info("\n=== CHẠY ĐỐI CHỨNG THỰC NGHIỆM TRÊN TẬP: %s ===", ds_name.upper())
+
             sparse_candidates = {}
             dense_candidates = {}
             hybrid_candidates = {}
@@ -100,15 +110,15 @@ class BaselineComparator:
             for idx, s in enumerate(samples, 1):
                 q = s["query"]
                 q_id = s.get("benchmark_id") or q
-                # 1. Sparse BM25 qua Elasticsearch
+                # 1. Sparse BM25
                 sparse_candidates[q_id] = retriever._search_sparse_es(q, top_k=10)
-                # 2. Dense MRL 256d qua Qdrant
+                # 2. Dense MRL 256d
                 dense_candidates[q_id] = retriever._search_dense(q, top_k=10)
-                # 3. VietLawBERT Full Hybrid RRF + Graph-injected scoring
+                # 3. VietLawBERT Full Hybrid (RRF + Graph-injected scoring)
                 hybrid_candidates[q_id] = retriever.retrieve(q, top_k=10)
 
                 if idx % 50 == 0 or idx == len(samples):
-                    logger.info(f"Tiến độ quét: {idx}/{len(samples)}...")
+                    logger.info("Tiến độ: %d/%d câu...", idx, len(samples))
 
             bm25_metrics, bm25_ndcg = self.run_eval_for_candidates(samples, sparse_candidates)
             dense_metrics, dense_ndcg = self.run_eval_for_candidates(samples, dense_candidates)
@@ -138,8 +148,8 @@ class BaselineComparator:
             latex_lines.append(f"\\textbf{{VietLawBERT-MRL (Ours)}} & \\textbf{{{prop_metrics.get('Hit@1', 0):.4f}}} & \\textbf{{{prop_metrics.get('Hit@5', 0):.4f}}} & \\textbf{{{prop_metrics.get('MRR@10', 0):.4f}}} & \\textbf{{{prop_metrics.get('NDCG@10', 0):.4f}}}{mark_dense} \\\\")
             latex_lines.append("\\hline")
             latex_lines.append("\\end{tabular}")
-            latex_lines.append(f"\\caption{{Hiệu năng truy xuất đối chứng trên tập VietLawBench ({ds_name}). Dấu $^{{**}}$ biểu thị sự vượt trội có ý nghĩa thống kê so với Baseline ($p < 0.01$).}}")
-            latex_lines.append("\\label{tab:" + ds_name + "_results}")
+            latex_lines.append(f"\\caption{{Hiệu năng truy xuất đối chứng trên tập VietLawBench ({ds_name}). Dấu $^{{**}}$ biểu thị sự vượt trội có ý nghĩa thống kê ($p < 0.01$).}}")
+            latex_lines.append(f"\\label{{tab:{ds_name}_results}}")
             latex_lines.append("\\end{table*}\n")
 
         json_report_path = out_path / "baseline_comparison_results.json"
@@ -152,8 +162,8 @@ class BaselineComparator:
         with open(latex_report_path, "w", encoding="utf-8") as f:
             f.write(latex_content)
 
-        logger.info(f"Đã lưu bảng kết quả chi tiết: {json_report_path.resolve()}")
-        logger.info(f"Đã xuất bảng mã nguồn LaTeX chèn paper: {latex_report_path.resolve()}")
+        logger.info("✓ Đã lưu bảng JSON: %s", json_report_path.resolve())
+        logger.info("✓ Đã xuất mã nguồn LaTeX: %s", latex_report_path.resolve())
         return latex_content
 
 

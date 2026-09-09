@@ -1,15 +1,13 @@
 """
 settings.py - Cấu hình Scrapy Engine cho hệ thống VietLawBERT (Kiến trúc v3 - Lightweight).
-Kích hoạt Disk-based Queue (JOBDIR), điều tiết tải luồng và tối ưu hóa tài nguyên RAM/CPU.
+Kích hoạt Disk-based Queue (JOBDIR) động, điều tiết tải luồng và tối ưu hóa tài nguyên RAM/CPU.
 """
 
 from __future__ import annotations
 
 import os
 import logging
-from pathlib import Path
 from configs.paths import DAILY_LOGS_DIR, DATA_STORAGE_ROOT
-from configs.config import config
 
 BOT_NAME = "vietlaw_crawler"
 
@@ -25,17 +23,18 @@ USER_AGENT = (
 )
 
 # ==============================================================================
-# 1. HẠ TẦNG HÀNG ĐỢI ĐĨA CỨNG (CHỐNG NỔ RAM SCHEDULER & KHÔI PHỤC TIẾN TRÌNH)
+# 1. HẠ TẦNG HÀNG ĐỢI ĐĨA CỨNG ĐỘNG (TRÁNH XUNG ĐỘT TRẠNG THÁI GIỮA CÁC SHARD)
 # ==============================================================================
-JOBDIR = os.path.join(str(DATA_STORAGE_ROOT), "crawljobs", "vbpl_spider")
-SCHEDULER_DISK_QUEUE = "scrapy.squeues.FifoDiskQueue"
-SCHEDULER_MEMORY_QUEUE = "scrapy.squeues.FifoMemoryQueue"
-SCHEDULER_PRIORITY_QUEUE = "scrapy.pqueues.DownloaderAwarePriorityQueue"
+# Chỉ bật JOBDIR khi có biến môi trường chỉ định rõ, tránh xung đột giữa các lượt chạy phân đoạn
+if os.getenv("SCRAPY_JOBDIR"):
+    JOBDIR = os.getenv("SCRAPY_JOBDIR")
+    SCHEDULER_DISK_QUEUE = "scrapy.squeues.FifoDiskQueue"
+    SCHEDULER_MEMORY_QUEUE = "scrapy.squeues.FifoMemoryQueue"
+    SCHEDULER_PRIORITY_QUEUE = "scrapy.pqueues.DownloaderAwarePriorityQueue"
 
 # ==============================================================================
 # 2. ĐIỀU TIẾT TẢI LUỒNG & CHỐNG NGHẼN CPU CORE
 # ==============================================================================
-# Giới hạn 4 luồng song song để tránh giật lag OS và treo socket
 CONCURRENT_REQUESTS = int(os.getenv("CRAWLER_CONCURRENCY", "4"))
 CONCURRENT_REQUESTS_PER_DOMAIN = int(os.getenv("CRAWLER_CONCURRENCY", "4"))
 
@@ -100,6 +99,7 @@ PLAYWRIGHT_CONTEXTS = {
         "bypass_csp": True,
     },
 }
+# Loại bỏ hoàn toàn cờ --single-process để bảo đảm Chromium vận hành ổn định trên Linux
 PLAYWRIGHT_LAUNCH_OPTIONS = {
     "headless": True,
     "timeout": 20 * 1000,
@@ -109,6 +109,5 @@ PLAYWRIGHT_LAUNCH_OPTIONS = {
         "--disable-gpu",
         "--disable-extensions",
         "--disable-setuid-sandbox",
-        "--single-process",
     ],
 }

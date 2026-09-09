@@ -17,7 +17,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import List
 
-from configs.paths import ROOT_DIR, ARTIFACTS_DIR
+from configs.paths import ROOT_DIR, RAW_SHARDS_DIR
 from artifacts.canonical import read_jsonl
 
 
@@ -57,12 +57,23 @@ def artifact_path(output_dir: Path, shard: Shard) -> Path:
 def write_content_quarantine(artifact: Path) -> int:
     quarantine_path = artifact.with_name(artifact.name.replace(".jsonl.gz", ".quarantine.jsonl"))
     count = 0
+    records = []
+
+    if artifact.suffix == ".gz":
+        with gzip.open(artifact, "rt", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    records.append(json.loads(line))
+    else:
+        records = list(read_jsonl(artifact))
+
     with quarantine_path.open("w", encoding="utf-8", newline="\n") as stream:
-        for record in read_jsonl(artifact):
+        for record in records:
             if record.get("html_status") == "VALID" and len(str(record.get("html_raw") or "").strip()) >= 100:
                 continue
             stream.write(json.dumps(record, ensure_ascii=False) + "\n")
             count += 1
+
     if count == 0 and quarantine_path.exists():
         quarantine_path.unlink()
     return count
@@ -81,10 +92,9 @@ def run_shard(
     artifact = artifact_path(output_dir, shard)
     raw_artifact = artifact.with_name(artifact.name.replace(".jsonl.gz", ".jsonl"))
     audit_path = artifact.with_name(artifact.name.replace(".jsonl.gz", ".audit.json"))
+    log_file = artifact.with_name(artifact.name.replace(".jsonl.gz", ".log"))
 
-    relative_artifact = os.path.relpath(raw_artifact, root_dir)
-    relative_log = os.path.relpath(artifact.with_name(artifact.name.replace(".jsonl.gz", ".log")), root_dir)
-
+    # Sử dụng đường dẫn tuyệt đối chuẩn hóa tránh lỗi relpath qua các mount point khác nhau
     command = [
         sys.executable,
         "-m",
@@ -100,9 +110,9 @@ def run_shard(
         "-a",
         f"limit={shard.expected_documents}",
         "-s",
-        f"LOG_FILE={relative_log}",
+        f"LOG_FILE={str(log_file.resolve())}",
         "-O",
-        relative_artifact,
+        str(raw_artifact.resolve()),
     ]
 
     result = None
@@ -113,7 +123,6 @@ def run_shard(
             result = candidate
 
     if result is None:
-        # Chạy trong Subprocess độc lập để giải phóng sạch sẽ 100% RAM sau khi shard hoàn tất
         subprocess.run(command, cwd=root_dir, env=env, check=True)
         result = audit_crawl(raw_artifact, shard.expected_documents, allow_upstream_missing, allow_ocr_pending)
 
@@ -121,7 +130,7 @@ def run_shard(
         write_json_atomic(audit_path, result)
         raise RuntimeError(f"Shard {shard.start_page}-{shard.end_page} không vượt qua Quality Gate: {result['failures']}")
 
-    # Nén Gzip chuẩn hóa
+    # Nén Gzip bảo toàn dung lượng đĩa
     with raw_artifact.open("rb") as source, gzip.open(artifact, "wb", compresslevel=6) as target:
         shutil.copyfileobj(source, target, length=1024 * 1024)
 
@@ -139,10 +148,10 @@ def run_shard(
 def main() -> int:
     parser = argparse.ArgumentParser(description="Chương trình cào phân đoạn chống OOM cho VietLawBERT")
     parser.add_argument("--total-documents", type=int, default=160660, help="Tổng số lượng văn bản cần cào")
-    parser.add_argument("--page-size", type=int, default=100, help="Số văn bản trên 1 trang API (Search hardcap)")
+    parser.add_argument("--page-size", type=int, default=100, help="Số văn bản trên 1 trang API")
     parser.add_argument("--pages-per-shard", type=int, default=10, help="Số trang gom vào 1 Shard (1.000 docs)")
-    parser.add_argument("--output-dir", type=Path, default=Path("/mnt/data/vietlawbert_data/raw_shards"), help="Thư mục xuất Shards")
-    parser.add_argument("--concurrency", type=int, default=4, help="Số luồng cào song song (khuyến nghị 4 cho máy yếu)")
+    parser.add_argument("--output-dir", type=Path, default=RAW_SHARDS_DIR, help="Thư mục xuất Shards")
+    parser.add_argument("--concurrency", type=int, default=4, help="Số luồng cào song song")
     parser.add_argument("--download-delay", type=float, default=0.1, help="Độ trễ giữa các request")
     parser.add_argument("--allow-upstream-missing", action="store_true", default=True, help="Chấp nhận template rỗng")
     parser.add_argument("--defer-ocr", action="store_true", default=True, help="Trì hoãn OCR vào phân vùng cách ly")

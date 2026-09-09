@@ -24,6 +24,7 @@ def inspect_mongodb() -> Dict[str, Any]:
     db_name = getattr(config, "MONGO_DB_NAME", "vietlawbert_db")
     result: Dict[str, Any] = {"status": "ERROR", "uri": uri, "database": db_name}
 
+    client = None
     try:
         client = MongoClient(uri, serverSelectionTimeoutMS=3000)
         client.admin.command("ping")
@@ -38,9 +39,11 @@ def inspect_mongodb() -> Dict[str, Any]:
             "document_counts": coll_stats,
             "total_documents": total_docs,
         })
-        client.close()
     except Exception as exc:
         result["error"] = str(exc)
+    finally:
+        if client:
+            client.close()
 
     return result
 
@@ -54,8 +57,9 @@ def inspect_neo4j() -> Dict[str, Any]:
     pwd = getattr(config, "NEO4J_PASSWORD", "vietlawbert2026")
     result: Dict[str, Any] = {"status": "ERROR", "uri": uri}
 
+    driver = None
     try:
-        driver = GraphDatabase.driver(uri, auth=(user, pwd))
+        driver = GraphDatabase.driver(uri, auth=(user, pwd), connection_acquisition_timeout=5.0)
         driver.verify_connectivity()
 
         with driver.session() as session:
@@ -80,9 +84,11 @@ def inspect_neo4j() -> Dict[str, Any]:
                 "edge_distribution": edge_counts,
                 "constraints": constraints,
             })
-        driver.close()
     except Exception as exc:
         result["error"] = str(exc)
+    finally:
+        if driver:
+            driver.close()
 
     return result
 
@@ -96,23 +102,35 @@ def inspect_qdrant() -> Dict[str, Any]:
     collection = getattr(config, "QDRANT_COLLECTION_NAME", "vietlawbert_chunks")
     result: Dict[str, Any] = {"status": "ERROR", "host": host, "port": port, "collection": collection}
 
+    client = None
     try:
-        client = QdrantClient(host=host, port=port, timeout=3.0)
+        client = QdrantClient(host=host, port=port, timeout=5.0)
         collections = [c.name for c in client.get_collections().collections]
         if collection in collections:
             info = client.get_collection(collection_name=collection)
+            points_cnt = info.points_count
+            if points_cnt is None:
+                points_cnt = client.count(collection_name=collection, exact=True).count
+
+            vectors_param = info.config.params.vectors
+            dim = getattr(vectors_param, "size", config.QDRANT_VECTOR_DIM)
+            dist = getattr(vectors_param, "distance", "Cosine")
+
             result.update({
                 "status": "HEALTHY",
                 "exists": True,
-                "vector_dim": info.config.params.vectors.size,
-                "distance_metric": str(info.config.params.vectors.distance),
-                "points_count": info.points_count,
+                "vector_dim": dim,
+                "distance_metric": str(dist),
+                "points_count": points_cnt,
                 "payload_schema": list(info.payload_schema.keys()) if info.payload_schema else [],
             })
         else:
             result.update({"status": "WARNING", "exists": False, "message": f"Collection '{collection}' chưa được tạo"})
     except Exception as exc:
         result["error"] = str(exc)
+    finally:
+        if client and hasattr(client, "close"):
+            client.close()
 
     return result
 
@@ -125,8 +143,9 @@ def inspect_elasticsearch() -> Dict[str, Any]:
     index_name = getattr(config, "ES_INDEX_NAME", "vietlaw_sparse_idx")
     result: Dict[str, Any] = {"status": "ERROR", "host": es_host, "index": index_name}
 
+    es = None
     try:
-        es = Elasticsearch([es_host], request_timeout=3)
+        es = Elasticsearch([es_host], request_timeout=5)
         if not es.ping():
             result["error"] = "Ping Elasticsearch thất bại"
             return result
@@ -144,6 +163,9 @@ def inspect_elasticsearch() -> Dict[str, Any]:
         })
     except Exception as exc:
         result["error"] = str(exc)
+    finally:
+        if es and hasattr(es, "close"):
+            es.close()
 
     return result
 
@@ -157,8 +179,9 @@ def inspect_redis() -> Dict[str, Any]:
     db = getattr(config, "REDIS_DB", 0)
     result: Dict[str, Any] = {"status": "ERROR", "host": host, "port": port}
 
+    r = None
     try:
-        r = redis.Redis(host=host, port=port, db=db, socket_timeout=2)
+        r = redis.Redis(host=host, port=port, db=db, socket_timeout=3)
         r.ping()
         result.update({
             "status": "HEALTHY",
@@ -166,6 +189,9 @@ def inspect_redis() -> Dict[str, Any]:
         })
     except Exception as exc:
         result["error"] = str(exc)
+    finally:
+        if r and hasattr(r, "close"):
+            r.close()
 
     return result
 
@@ -191,7 +217,6 @@ def inspect_database(json_format: bool = False, verbose: bool = False) -> int:
     print("      BÁO CÁO KIỂM TRA HẠ TẦNG CƠ SỞ DỮ LIỆU LAI VIETLAWBERT (v3)")
     print("=" * 72)
 
-    # In kết quả MongoDB
     mg = report["mongodb"]
     print(f"\n[{'✓' if mg['status'] == 'HEALTHY' else '✗'}] MONGODB DOCUMENT STORE: {mg['status']}")
     if mg["status"] == "HEALTHY":
@@ -199,18 +224,16 @@ def inspect_database(json_format: bool = False, verbose: bool = False) -> int:
     else:
         print(f"  * Lỗi: {mg.get('error')}")
 
-    # In kết quả Neo4j
     n = report["neo4j"]
     print(f"\n[{'✓' if n['status'] == 'HEALTHY' else '✗'}] NEO4J HIN GRAPH STORE: {n['status']}")
     if n["status"] == "HEALTHY":
         print(f"  * Tổng số Nodes: {n['total_nodes']:,} | Cạnh quan hệ: {n['total_relationships']:,}")
         if verbose:
-            print("  * Chi tiết Nodes:", json.dumps(n["node_distribution"], ensure_ascii=False))
-            print("  * Chi tiết Cạnh:", json.dumps(n["edge_distribution"], ensure_ascii=False))
+            print("  * Chi tiết Nodes:", json.dumps(n.get("node_distribution", {}), ensure_ascii=False))
+            print("  * Chi tiết Cạnh:", json.dumps(n.get("edge_distribution", {}), ensure_ascii=False))
     else:
         print(f"  * Lỗi: {n.get('error')}")
 
-    # In kết quả Qdrant
     q = report["qdrant"]
     print(f"\n[{'✓' if q['status'] == 'HEALTHY' else '✗'}] QDRANT DENSE VECTOR STORE (d={q.get('vector_dim', 256)}): {q['status']}")
     if q["status"] == "HEALTHY":
@@ -218,7 +241,6 @@ def inspect_database(json_format: bool = False, verbose: bool = False) -> int:
     else:
         print(f"  * Lỗi: {q.get('error') or q.get('message')}")
 
-    # In kết quả Elasticsearch
     es = report["elasticsearch"]
     print(f"\n[{'✓' if es['status'] == 'HEALTHY' else '✗'}] ELASTICSEARCH SPARSE RETRIEVER: {es['status']}")
     if es["status"] == "HEALTHY":
@@ -226,7 +248,6 @@ def inspect_database(json_format: bool = False, verbose: bool = False) -> int:
     else:
         print(f"  * Lỗi: {es.get('error')}")
 
-    # In kết quả Redis
     rd = report["redis"]
     print(f"\n[{'✓' if rd['status'] == 'HEALTHY' else '✗'}] REDIS COMPILE-TIME GRAPH CACHE: {rd['status']}")
     if rd["status"] == "HEALTHY":

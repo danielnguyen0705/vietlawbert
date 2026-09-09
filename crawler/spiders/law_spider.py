@@ -81,7 +81,7 @@ class LawSpider(scrapy.Spider):
         start_page: int = 1,
         pages: Optional[int] = None,
         limit: Optional[int] = None,
-        page_size: int = 100,  # Khóa cứng trần phân trang API để giảm 90% round-trips
+        page_size: int = 100,
         keyword: str = "",
         agency_ids: str = "",
         doc_ids: str = "",
@@ -128,7 +128,6 @@ class LawSpider(scrapy.Spider):
         return spider
 
     def _get_in_flight_count(self) -> int:
-        """Đo lường độ sâu hàng đợi request trong Scrapy Engine phục vụ Backpressure."""
         if hasattr(self, "crawler") and self.crawler.stats:
             enqueued = self.crawler.stats.get_value("scheduler/enqueued", 0) or 0
             dequeued = self.crawler.stats.get_value("scheduler/dequeued", 0) or 0
@@ -150,18 +149,23 @@ class LawSpider(scrapy.Spider):
         return 0
 
     def start_requests(self):
-        """Khởi tạo luồng cào dữ liệu qua Playwright hoặc tải trực tiếp theo danh sách ID."""
         if self.requested_doc_ids:
             self.logger.info("[MỤC TIÊU] Cào cứu hộ trực tiếp %d Document IDs.", len(self.requested_doc_ids))
             for doc_id in self.requested_doc_ids:
                 self.scheduled_ids.add(doc_id)
+                item = {
+                    "item_id": doc_id,
+                    "doc_id": doc_id,
+                    "doc_number": doc_id,
+                    "metadata_api": {},
+                }
                 yield scrapy.Request(
                     url=f"{SEARCH_API}/{doc_id}",
                     method="GET",
                     headers={"Origin": "https://vbpl.vn", "Referer": "https://vbpl.vn/", "Accept": "application/json"},
                     callback=self.parse_detail,
                     errback=self.handle_failure,
-                    cb_kwargs={"item": {"item_id": doc_id, "doc_number": doc_id, "metadata_api": {}}},
+                    cb_kwargs={"item": item},
                 )
             return
 
@@ -212,14 +216,12 @@ class LawSpider(scrapy.Spider):
             total_pages = None
 
             while total_pages is None or page_number <= total_pages:
-                # 1. TÁI TẠO CHROMIUM PAGE SAU MỖI 100 TRANG ĐỂ XẢ BỘ NHỚ V8 HEAP
                 if page_number > self.start_page and (page_number - self.start_page) % 100 == 0:
                     self.logger.info("[CHROME REFRESH] Tái tạo Browser Page sau 100 trang để xả RAM...")
                     ctx = page.context
                     await page.close()
                     page = await ctx.new_page()
 
-                # 2. CƠ CHẾ STRICT BACKPRESSURE: NẾU IN-FLIGHT >= 80 THÌ TẠM DỪNG
                 while self._get_in_flight_count() >= 80:
                     await asyncio.sleep(1.0)
 
@@ -230,30 +232,34 @@ class LawSpider(scrapy.Spider):
                     self._get_in_flight_count(),
                 )
 
-                result_text = await page.evaluate(
-                    """async ({action, routerTree, body}) => {
-                        const res = await fetch("https://vbpl.vn/", {
-                            method: "POST",
-                            headers: {
-                                "accept": "text/x-component",
-                                "content-type": "text/plain;charset=UTF-8",
-                                "next-action": action,
-                                "next-router-state-tree": routerTree
-                            },
-                            body
-                        });
-                        const text = await res.text();
-                        if (!res.ok) throw new Error(`search HTTP ${res.status}: ${text.slice(0, 200)}`);
-                        return text;
-                    }""",
-                    {
-                        "action": self.search_action,
-                        "routerTree": ROUTER_TREE,
-                        "body": self.make_search_body(page_number),
-                    },
-                )
+                try:
+                    result_text = await page.evaluate(
+                        """async ({action, routerTree, body}) => {
+                            const res = await fetch("https://vbpl.vn/", {
+                                method: "POST",
+                                headers: {
+                                    "accept": "text/x-component",
+                                    "content-type": "text/plain;charset=UTF-8",
+                                    "next-action": action,
+                                    "next-router-state-tree": routerTree
+                                },
+                                body
+                            });
+                            const text = await res.text();
+                            if (!res.ok) throw new Error(`search HTTP ${res.status}: ${text.slice(0, 200)}`);
+                            return text;
+                        }""",
+                        {
+                            "action": self.search_action,
+                            "routerTree": ROUTER_TREE,
+                            "body": self.make_search_body(page_number),
+                        },
+                    )
+                    data = self._decode_search_payload(result_text)
+                except Exception as eval_err:
+                    self.logger.error("[LỖI SERVER ACTION TÌM KIẾM] Trang %d: %s", page_number, eval_err)
+                    break
 
-                data = self._decode_search_payload(result_text)
                 documents = data.get("items", [])
                 if not documents:
                     self.logger.warning("[TÌM KIẾM] Hết danh mục tại trang %d. Dừng duyệt.", page_number)
@@ -320,7 +326,6 @@ class LawSpider(scrapy.Spider):
             return HTMLStatus.EMPTY, "", None
 
         html_dom = BeautifulSoup(html_raw, "html.parser")
-        # Khử sạch thẻ nhúng binary base64 để tối ưu bộ nhớ
         for embedded in html_dom.find_all(src=re.compile(r"^data:", re.I)):
             embedded.decompose()
         for embedded in html_dom.find_all(data=re.compile(r"^data:", re.I)):
@@ -392,7 +397,9 @@ class LawSpider(scrapy.Spider):
             self.scheduled_ids.add(doc_id)
             item = {
                 "item_id": doc_id,
+                "doc_id": doc_id,
                 "doc_number": doc.get("docNum", "Unknown"),
+                "title": doc.get("title", ""),
                 "metadata_api": doc,
             }
             yield scrapy.Request(
@@ -415,6 +422,7 @@ class LawSpider(scrapy.Spider):
 
         doc_content = doc_data.get("documentContent")
         html_raw = (doc_content or {}).get("content", "")
+
         if not item.get("metadata_api"):
             item["metadata_api"] = {
                 key: doc_data.get(key)
@@ -423,7 +431,9 @@ class LawSpider(scrapy.Spider):
                     "effStatus", "agencyIds", "agencyName", "isLw"
                 )
             }
-            item["doc_number"] = doc_data.get("docNum") or item.get("doc_number") or item["item_id"]
+        item["doc_number"] = doc_data.get("docNum") or item.get("doc_number") or item["item_id"]
+        item["doc_id"] = item["item_id"]
+        item["title"] = doc_data.get("title") or item.get("title") or ""
 
         html_status, prepared_html, html_dom = self._prepare_html(html_raw)
         if html_status != HTMLStatus.VALID:
@@ -495,15 +505,15 @@ class LawSpider(scrapy.Spider):
             if page is not None:
                 await page.close()
 
-    async def handle_legacy_print_failure(self, failure):
+    def handle_legacy_print_failure(self, failure):
         item = failure.request.cb_kwargs["item"]
         page = failure.request.meta.get("playwright_page")
         if page is not None:
             try:
-                await page.close()
+                asyncio.create_task(page.close())
             except Exception:
                 pass
-        return self._rescue_browser_request(item)
+        yield self._rescue_browser_request(item)
 
     def _rescue_browser_request(self, item: dict, attempt: int = 1):
         return scrapy.Request(
@@ -600,7 +610,7 @@ class LawSpider(scrapy.Spider):
         name = str(file_info.get("fileName") or "").lower()
         extracted_text = ""
         try:
-            if name.endswith(".html"):
+            if name.endswith(".html") or response.body.startswith(b"<!DOCTYPE") or response.body.startswith(b"<html"):
                 raw_html = response.body.decode("utf-8", errors="replace")
                 status, prepared_html, html_dom = self._prepare_html(raw_html)
                 if status == HTMLStatus.VALID:
@@ -611,15 +621,13 @@ class LawSpider(scrapy.Spider):
                     item["rescue_status"] = "HTML_RECOVERED"
                     yield self._diagram_request(item)
                     return
-            elif name.endswith(".docx"):
+            elif name.endswith(".docx") or response.body.startswith(b"PK\x03\x04"):
                 extracted_text = self._extract_docx_text(response.body)
                 source = "fallback_docx"
-            elif name.endswith(".pdf"):
-                # Chỉ trích xuất text số hóa nhanh bằng PyMuPDF
+            elif name.endswith(".pdf") or response.body.startswith(b"%PDF"):
                 extracted_text = await asyncio.to_thread(self._extract_pdf_text, response.body)
                 source = "fallback_pdf"
 
-                # NẾU LÀ FILE ẢNH QUÉT: HOÃN LẠI CHO OFFLINE BATCH, TUYỆT ĐỐI KHÔNG CHẠY TESSERACT TẠI ĐÂY
                 if len(extracted_text.strip()) < 100:
                     item["ocr_status"] = "OCR_PENDING"
                     item["rescue_status"] = "OCR_PENDING"
@@ -641,27 +649,27 @@ class LawSpider(scrapy.Spider):
 
         yield self._next_file_request(item, remaining_files)
 
-    async def handle_file_list_failure(self, failure):
+    def handle_file_list_failure(self, failure):
         item = failure.request.cb_kwargs["item"]
         attempt = int(failure.request.cb_kwargs.get("rescue_attempt", 1))
         page = failure.request.meta.get("playwright_page")
         if page is not None:
             try:
-                await page.close()
+                asyncio.create_task(page.close())
             except Exception:
                 pass
 
         max_attempts = max(1, int(os.getenv("RESCUE_BROWSER_ATTEMPTS", "2")))
         if attempt < max_attempts:
-            return self._rescue_browser_request(item, attempt + 1)
-
-        item["rescue_status"] = "FILE_LIST_REQUEST_FAILED"
-        return self._diagram_request(item)
+            yield self._rescue_browser_request(item, attempt + 1)
+        else:
+            item["rescue_status"] = "FILE_LIST_REQUEST_FAILED"
+            yield self._diagram_request(item)
 
     def handle_fallback_file_failure(self, failure):
         item = failure.request.cb_kwargs["item"]
         remaining_files = failure.request.cb_kwargs["remaining_files"]
-        return self._next_file_request(item, remaining_files)
+        yield self._next_file_request(item, remaining_files)
 
     def parse_diagram(self, response, item: dict):
         try:
@@ -671,6 +679,7 @@ class LawSpider(scrapy.Spider):
             item["diagram_json"] = None
 
         doc_id = item["item_id"]
+        item["doc_id"] = doc_id
         self.successful_ids.add(doc_id)
         yield item
 

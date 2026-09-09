@@ -52,11 +52,11 @@ class ResilientLLMDispatcher:
 
     def __init__(self):
         self.cascade_chain: List[LLMProviderNode] = self._build_cascade_chain()
+        self._clients: Dict[str, OpenAI] = {}
 
     def _build_cascade_chain(self) -> List[LLMProviderNode]:
         chain = []
 
-        # Tầng 1 (Ưu tiên cao nhất - SOTA Cloud): GPT-4o hoặc Claude 3.5 Sonnet phục vụ Benchmark Q1
         cloud_key = os.getenv("PRIMARY_LLM_API_KEY") or getattr(config, "LLM_API_KEY", "")
         cloud_base = os.getenv("PRIMARY_LLM_API_BASE", "https://api.openai.com/v1")
         primary_model = os.getenv("PRIMARY_LLM_MODEL", "gpt-4o")
@@ -70,7 +70,6 @@ class ResilientLLMDispatcher:
                 timeout=45.0,
             ))
 
-        # Tầng 2 (Dự phòng độ trễ thấp - Fast Cloud): Gemini 1.5 Flash hoặc Claude 3.5 Haiku
         fallback_key = os.getenv("FALLBACK_LLM_API_KEY")
         fallback_base = os.getenv("FALLBACK_LLM_API_BASE", "https://generativelanguage.googleapis.com/v1beta/openai/")
         fallback_model = os.getenv("FALLBACK_LLM_MODEL", "gemini-1.5-flash")
@@ -84,7 +83,6 @@ class ResilientLLMDispatcher:
                 timeout=20.0,
             ))
 
-        # Tầng 3 (Chốt chặn an toàn nội bộ - Local vLLM/Ollama): Qwen2.5-7B/14B-Instruct
         local_base = getattr(config, "LLM_API_BASE", "http://localhost:11434/v1")
         local_model = getattr(config, "GENERATOR_MODEL", "Qwen/Qwen2.5-7B-Instruct")
         local_key = getattr(config, "LLM_API_KEY", "ollama")
@@ -99,19 +97,23 @@ class ResilientLLMDispatcher:
 
         return chain
 
+    def _get_client(self, node: LLMProviderNode) -> OpenAI:
+        if node.name not in self._clients:
+            self._clients[node.name] = OpenAI(
+                base_url=node.api_base,
+                api_key=node.api_key,
+                timeout=node.timeout,
+                max_retries=1,
+            )
+        return self._clients[node.name]
+
     def generate(self, prompt: str, temperature: float = 0.1, max_tokens: int = 1024) -> Tuple[str, str]:
-        """Thử lần lượt từng model theo danh sách ưu tiên, tự động chuyển tầng khi gặp sự cố."""
         last_exception = None
 
         for node in self.cascade_chain:
             try:
-                logger.info("Đang điều phối suy luận tới [%s] (%s) tại %s...", node.name, node.model_id, node.api_base)
-                client = OpenAI(
-                    base_url=node.api_base,
-                    api_key=node.api_key,
-                    timeout=node.timeout,
-                    max_retries=1,
-                )
+                logger.info("Đang điều phối suy luận tới [%s] (%s)...", node.name, node.model_id)
+                client = self._get_client(node)
                 response = client.chat.completions.create(
                     model=node.model_id,
                     messages=[{"role": "user", "content": prompt}],
@@ -123,11 +125,11 @@ class ResilientLLMDispatcher:
                     logger.info("Mô hình [%s] phản hồi thành công.", node.name)
                     return answer, node.name
             except Exception as exc:
-                logger.warning("Mô hình [%s] không phản hồi (%s). Chuyển sang mô hình dự phòng tiếp theo...", node.name, exc)
+                logger.warning("Mô hình [%s] không phản hồi (%s). Đang chuyển sang tầng kế tiếp...", node.name, exc)
                 last_exception = exc
                 continue
 
-        logger.error("Tất cả mô hình trong chuỗi Cascade đều thất bại. Lỗi cuối cùng: %s", last_exception)
+        logger.error("Toàn bộ chuỗi Cascade đều thất bại. Lỗi cuối cùng: %s", last_exception)
         return "Lỗi hệ thống: Hiện không thể kết nối tới bất kỳ dịch vụ AI nào để tổng hợp câu trả lời.", "Failed"
 
 
@@ -147,7 +149,6 @@ class LegalGenerator:
         logger.info("LegalGenerator khởi tạo thành công với chuỗi điều phối %d tầng.", len(self.dispatcher.cascade_chain))
 
     def _format_context(self, contexts: List[Dict[str, Any]]) -> str:
-        """Định dạng các khối văn cảnh kèm nhãn trích dẫn phân cấp tường minh."""
         context_blocks = []
         for i, c in enumerate(contexts, start=1):
             doc_num = c.get("doc_number") or c.get("doc_id") or "N/A"
@@ -179,8 +180,9 @@ class LegalGenerator:
             art_match = re.search(r"điều\s+(\d+[a-za-z]?)", h_path)
             art_str = art_match.group(0) if art_match else ""
 
-            has_doc = bool(doc_num and doc_num != "n/a" and doc_num in ans_lower)
-            has_art = bool(art_str and art_str in ans_lower)
+            # Dùng Regex word-boundary tránh so khớp nhầm Điều 1 với Điều 10, Điều 12
+            has_doc = bool(doc_num and doc_num != "n/a" and re.search(r"\b" + re.escape(doc_num) + r"\b", ans_lower))
+            has_art = bool(art_str and re.search(r"\b" + re.escape(art_str) + r"\b", ans_lower))
 
             if has_doc or has_art:
                 matched += 1
@@ -188,7 +190,6 @@ class LegalGenerator:
         return round(matched / len(contexts), 4)
 
     def ask(self, query: str, top_k: int = 3) -> Dict[str, Any]:
-        """Chu trình hỏi đáp: Truy xuất lai -> Ghép prompt -> Sinh qua Cascade -> Tính Attribution."""
         clean_query = query.strip()
         logger.info("Đang xử lý câu hỏi: '%s...'", clean_query[:80])
 
@@ -223,7 +224,6 @@ class LegalGenerator:
         }
 
     def generate_response(self, query: str, top_k: int = 3) -> Dict[str, Any]:
-        """Bí danh tương thích ngược cho các pipeline kiểm chuẩn và API gateway."""
         return self.ask(query=query, top_k=top_k)
 
     def close(self) -> None:

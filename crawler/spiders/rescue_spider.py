@@ -33,7 +33,6 @@ class RescueSpider(LawSpider):
     def __init__(self, input_file: str = "", doc_ids: str = "", *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        # 1. Xác định tệp danh sách lỗi đầu vào
         if input_file:
             self.rescue_source_file = Path(input_file)
         else:
@@ -41,19 +40,22 @@ class RescueSpider(LawSpider):
             secondary_fail = Path(JSON_DIR) / 'failed_links.jsonl'
             self.rescue_source_file = primary_fail if primary_fail.exists() else secondary_fail
 
-        # 2. Danh sách ID chỉ định từ CLI nếu có
         self.cli_doc_ids = [v.strip() for v in doc_ids.split(',') if v.strip()]
         self.pending_rescue_records: Dict[str, dict] = {}
 
     def start_requests(self):
         self.logger.info("=== BẮT ĐẦU CHIẾN DỊCH CỨU HỘ VĂN BẢN PHÁP LUẬT (VIETLAWBERT RESCUE) ===")
 
-        # Trường hợp 1: Nhận danh sách ID trực tiếp qua tham số CLI
         if self.cli_doc_ids:
             self.logger.info("[CHỈ ĐỊNH] Đang cứu hộ %d Document IDs từ CLI...", len(self.cli_doc_ids))
             for doc_id in self.cli_doc_ids:
                 self.scheduled_ids.add(doc_id)
-                item = {'item_id': doc_id, 'doc_number': doc_id, 'metadata_api': {}}
+                item = {
+                    'item_id': doc_id,
+                    'doc_id': doc_id,
+                    'doc_number': doc_id,
+                    'metadata_api': {},
+                }
                 self.pending_rescue_records[doc_id] = item
                 yield scrapy.Request(
                     url=f"{SEARCH_API}/{doc_id}",
@@ -66,7 +68,6 @@ class RescueSpider(LawSpider):
                 )
             return
 
-        # Trường hợp 2: Đọc danh sách bản ghi thất bại từ tệp nhật ký
         if not self.rescue_source_file.exists():
             self.logger.info("✓ Không tìm thấy tệp lỗi tại: %s. Hệ thống không có văn bản tồn đọng!", self.rescue_source_file)
             return
@@ -80,9 +81,11 @@ class RescueSpider(LawSpider):
                     continue
                 try:
                     record = json.loads(clean_line)
-                    doc_id = str(record.get('item_id') or record.get('id') or '').strip()
+                    doc_id = str(record.get('item_id') or record.get('doc_id') or record.get('id') or '').strip()
                     if doc_id and doc_id not in self.scheduled_ids:
                         self.scheduled_ids.add(doc_id)
+                        record['doc_id'] = doc_id
+                        record['item_id'] = doc_id
                         self.pending_rescue_records[doc_id] = record
                         count += 1
                         yield scrapy.Request(
@@ -100,13 +103,12 @@ class RescueSpider(LawSpider):
         self.logger.info("✓ Đã nạp thành công %d văn bản lỗi vào hàng đợi tái xử lý.", count)
 
     def spider_closed(self, spider):
-        """
-        Cập nhật lại tệp nhật ký lỗi theo cơ chế nguyên tử.
-        Loại bỏ các văn bản đã cứu hộ thành công, chỉ giữ lại các văn bản thực sự bất khả kháng.
-        """
         rescued_count = len(self.successful_ids)
         total_scheduled = len(self.scheduled_ids)
         self.logger.info("=== KẾT THÚC CỨU HỘ: Đã cứu %d/%d văn bản thành công ===", rescued_count, total_scheduled)
+
+        # Cập nhật thống kê crawler_status.json từ lớp cha
+        super().spider_closed(spider)
 
         if not self.rescue_source_file.exists() and not self.pending_rescue_records:
             return
@@ -126,4 +128,4 @@ class RescueSpider(LawSpider):
         else:
             if self.rescue_source_file.exists():
                 self.rescue_source_file.unlink()
-            self.logger.info("✓ TUYỆT VỜI: Đã giải cứu toàn bộ văn bản lỗi! Tệp %s đã được xóa sạch.", self.rescue_source_file.name)
+            self.logger.info("Đã giải cứu toàn bộ văn bản lỗi! Tệp %s đã được xóa sạch.", self.rescue_source_file.name)

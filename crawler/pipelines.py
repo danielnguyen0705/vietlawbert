@@ -25,7 +25,6 @@ class LegalOntologyMappingPipeline:
         self.static_mapping, self.edge_templates, self.category_aliases = self._load_system_ontology()
         self.logger = logging.getLogger("VietLawBERT_Pipeline")
 
-        # Cấu hình lưu trữ Shard Staging tự động khi không dùng cờ -O
         self.raw_shards_dir = Path(RAW_SHARDS_DIR)
         self.raw_shards_dir.mkdir(parents=True, exist_ok=True)
         self.shard_buffer: List[Dict[str, Any]] = []
@@ -37,7 +36,6 @@ class LegalOntologyMappingPipeline:
     def from_crawler(cls, crawler):
         pipeline = cls()
         pipeline.crawler = crawler
-        # Kiểm tra xem Scrapy có đang xuất tệp qua Feed Exporter (-O) hay không
         feeds = getattr(crawler.settings, "get", lambda k, d=None: d)("FEEDS", {})
         pipeline.feed_export_active = bool(feeds)
         return pipeline
@@ -49,7 +47,6 @@ class LegalOntologyMappingPipeline:
         )
 
     def close_spider(self, spider):
-        # Xả nốt phần dữ liệu còn lại trong bộ đệm xuống đĩa
         if not self.feed_export_active and self.shard_buffer:
             self._flush_buffer_to_shard()
 
@@ -62,7 +59,6 @@ class LegalOntologyMappingPipeline:
         self.logger.info("[PIPELINE ĐÓNG] Hoàn tất xử lý và bảo toàn toàn bộ Shard dữ liệu.")
 
     def _flush_buffer_to_shard(self):
-        """Nén Gzip và ghi Shard hoàn chỉnh xuống đĩa phục vụ Phase 2 Ingestion."""
         if not self.shard_buffer:
             return
 
@@ -101,7 +97,7 @@ class LegalOntologyMappingPipeline:
         return (
             scoped_mapping,
             data.get("relationship_templates", {}),
-            data.get("category_normalization_aliases", {})
+            data.get("category_normalization_aliases", {}),
         )
 
     def save_dynamic_mappings(self):
@@ -216,8 +212,8 @@ class LegalOntologyMappingPipeline:
         if direction not in {"INCOMING", "OUTGOING"}:
             return None
 
-        source_doc_id = str(source_item.get("item_id", "") if hasattr(source_item, "get") else "")
-        source_doc_number = str(source_item.get("doc_number", "") if hasattr(source_item, "get") else "")
+        source_doc_id = str(source_item.get("doc_id") or source_item.get("item_id") or "")
+        source_doc_number = str(source_item.get("doc_number", ""))
 
         return {
             "target_id": target_id,
@@ -233,7 +229,10 @@ class LegalOntologyMappingPipeline:
     def process_diagram(self, item: Any, html_dom: Any = None) -> Any:
         diagram_json = item.get("diagram_json") or {}
         if html_dom is None and item.get("html_raw"):
-            html_dom = BeautifulSoup(item.get("html_raw"), "html.parser")
+            try:
+                html_dom = BeautifulSoup(item.get("html_raw"), "html.parser")
+            except Exception:
+                html_dom = None
 
         relationships = []
         unresolved = []
@@ -281,17 +280,38 @@ class LegalOntologyMappingPipeline:
         return item
 
     def process_item(self, item: Any, spider: Any) -> Any:
-        # 1. Bóc tách DOM có sẵn trong RAM để lấy văn bản thuần cho AST Parser
+        # 1. Bóc tách text an toàn, phòng vệ trường hợp html_dom là str hoặc BeautifulSoup
         html_dom = item.get("html_dom") if hasattr(item, "get") else None
+        raw_text = ""
         if html_dom:
-            raw_text = html_dom.get_text("\n", strip=True)
+            if hasattr(html_dom, "get_text"):
+                raw_text = html_dom.get_text("\n", strip=True)
+            elif isinstance(html_dom, str):
+                try:
+                    soup = BeautifulSoup(html_dom, "html.parser")
+                    raw_text = soup.get_text("\n", strip=True)
+                except Exception:
+                    raw_text = str(html_dom)
+
+        if not raw_text and item.get("html_raw"):
+            try:
+                soup = BeautifulSoup(item.get("html_raw"), "html.parser")
+                raw_text = soup.get_text("\n", strip=True)
+            except Exception:
+                pass
+
+        if raw_text:
             item["text"] = raw_text
             item["full_text"] = raw_text
 
-        # 2. Bóc tách quan hệ đồ thị HIN
+        # 2. Đồng bộ doc_id = item_id nếu thiếu
+        if not item.get("doc_id") and item.get("item_id"):
+            item["doc_id"] = item["item_id"]
+
+        # 3. Bóc tách quan hệ đồ thị HIN
         item = self.process_diagram(item, html_dom)
 
-        # 3. Chuyển đổi Item sang dạng dictionary sạch, loại bỏ DOM tránh lỗi tuần tự hóa
+        # 4. Chuyển đổi sang dict sạch loại bỏ DOM
         if isinstance(item, VietLawItem):
             clean_record = item.to_clean_dict()
         else:
@@ -301,7 +321,7 @@ class LegalOntologyMappingPipeline:
                 if hasattr(v, "value"):
                     clean_record[k] = v.value
 
-        # 4. Gom cụm và ghi Shard Staging tự động khi không dùng Feed Exporter (-O)
+        # 5. Lưu đệm phân đoạn khi không dùng feed exporter
         if not self.feed_export_active:
             self.shard_buffer.append(clean_record)
             if len(self.shard_buffer) >= self.shard_size:

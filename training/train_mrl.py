@@ -1,6 +1,7 @@
 """
 train_mrl.py - Động cơ huấn luyện VietLawBERT với Hierarchy-Aware Matryoshka InfoNCE Loss.
 Tối ưu hóa đa tầng biểu diễn lồng nhau và ràng buộc hình học vĩ mô ở chiều d=64.
+Hỗ trợ Mixed Precision (FP16) và lưu trữ tương thích hoàn toàn với SentenceTransformer.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -36,7 +38,6 @@ class HierarchyAwareMatryoshkaLoss(nn.Module):
         self.tau = temperature
         self.gamma = hierarchy_weight
 
-        # w_d = 1 / log2(d + 2), chuẩn hóa tổng về 1.0
         raw_weights = [1.0 / math.log2(float(d) + 2.0) for d in self.matryoshka_dims]
         total_w = sum(raw_weights)
         self.weights = [w / total_w for w in raw_weights]
@@ -48,28 +49,24 @@ class HierarchyAwareMatryoshkaLoss(nn.Module):
         neg_rep: torch.Tensor,
         hierarchy_labels: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """
-        anchor_rep, pos_rep, neg_rep: [B, D_max]
-        hierarchy_labels: [B] nhãn số nguyên định danh cấp Chương/Luật
-        """
         B = anchor_rep.size(0)
         labels = torch.arange(B, device=anchor_rep.device)
-        candidates = torch.cat([pos_rep, neg_rep], dim=0)  # [2B, D_max]
+        candidates = torch.cat([pos_rep, neg_rep], dim=0)
 
-        total_loss = torch.tensor(0.0, device=anchor_rep.device)
+        total_loss = 0.0
 
         # 1. Multi-tier Matryoshka InfoNCE Loss
         for dim, weight in zip(self.matryoshka_dims, self.weights):
             sub_anchor = F.normalize(anchor_rep[:, :dim], p=2, dim=-1)
             sub_candidates = F.normalize(candidates[:, :dim], p=2, dim=-1)
 
-            logits = torch.matmul(sub_anchor, sub_candidates.T) / self.tau  # [B, 2B]
+            logits = torch.matmul(sub_anchor, sub_candidates.T) / self.tau
             loss_d = F.cross_entropy(logits, labels)
-            total_loss += weight * loss_d
+            total_loss = total_loss + weight * loss_d
 
         # 2. Hierarchy Supervised Contrastive Loss tại chiều vĩ mô d=64
         if hierarchy_labels is not None and self.gamma > 0:
-            sub_macro = F.normalize(anchor_rep[:, :64], p=2, dim=-1)  # [B, 64]
+            sub_macro = F.normalize(anchor_rep[:, :64], p=2, dim=-1)
             sim_macro = torch.matmul(sub_macro, sub_macro.T) / self.tau
 
             label_mask = torch.eq(hierarchy_labels.unsqueeze(1), hierarchy_labels.unsqueeze(0)).float()
@@ -87,7 +84,7 @@ class HierarchyAwareMatryoshkaLoss(nn.Module):
 
             if valid_rows.any():
                 sup_con = -(pos_mask * log_prob).sum(dim=1)[valid_rows] / num_positives[valid_rows]
-                total_loss += self.gamma * sup_con.mean()
+                total_loss = total_loss + self.gamma * sup_con.mean()
 
         return total_loss
 
@@ -112,7 +109,7 @@ class VietLawBERTMRL(nn.Module):
 
 
 class TripletParquetDataset(Dataset):
-    def __init__(self, parquet_path: str, tokenizer, max_length: int = 512):
+    def __init__(self, parquet_path: str, max_length: int = 512):
         df = pd.read_parquet(parquet_path)
         self.anchors = df["anchor"].tolist()
         self.positives = df["positive"].tolist()
@@ -123,7 +120,6 @@ class TripletParquetDataset(Dataset):
         else:
             self.labels = [0] * len(self.anchors)
 
-        self.tokenizer = tokenizer
         self.max_length = max_length
 
     def __len__(self):
@@ -152,13 +148,13 @@ def collate_fn_triplets(batch, tokenizer, max_len=512):
 
 
 def train(args):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(args.device if torch.cuda.is_available() and args.device == "cuda" else "cpu")
     logger.info("Khởi chạy huấn luyện mô hình trên thiết bị: %s", device)
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     model = VietLawBERTMRL(args.model_name, output_dim=args.output_dim).to(device)
 
-    dataset = TripletParquetDataset(args.train_parquet, tokenizer, max_length=args.max_seq_length)
+    dataset = TripletParquetDataset(args.train_parquet, max_length=args.max_seq_length)
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -179,6 +175,8 @@ def train(args):
         optimizer, num_warmup_steps=int(total_steps * 0.1), num_training_steps=total_steps
     )
 
+    scaler = torch.cuda.amp.GradScaler(enabled=(device.type == "cuda"))
+
     model.train()
     for epoch in range(args.epochs):
         epoch_loss = 0.0
@@ -189,14 +187,17 @@ def train(args):
             labels = labels.to(device)
 
             optimizer.zero_grad()
-            a_rep = model(**a_tok)
-            p_rep = model(**p_tok)
-            n_rep = model(**n_tok)
+            with torch.cuda.amp.autocast(enabled=(device.type == "cuda")):
+                a_rep = model(**a_tok)
+                p_rep = model(**p_tok)
+                n_rep = model(**n_tok)
+                loss = criterion(a_rep, p_rep, n_rep, hierarchy_labels=labels)
 
-            loss = criterion(a_rep, p_rep, n_rep, hierarchy_labels=labels)
-            loss.backward()
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
             scheduler.step()
 
             epoch_loss += loss.item()
@@ -210,28 +211,31 @@ def train(args):
                     loss.item(),
                 )
 
-        avg_loss = epoch_loss / len(dataloader)
+        avg_loss = epoch_loss / max(len(dataloader), 1)
         logger.info("=== Epoch %d Hoàn thành | Average Loss: %.4f ===", epoch + 1, avg_loss)
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), out_dir / "vietlawbert_mrl.pt")
+    # Lưu định dạng chuẩn HuggingFace để SentenceTransformer có thể nạp trực tiếp
+    model.encoder.save_pretrained(out_dir)
     tokenizer.save_pretrained(out_dir)
-    logger.info("✓ Đã lưu thành công trọng số VietLawBERT-MRL tại: %s", out_dir.resolve())
+    torch.save(model.state_dict(), out_dir / "vietlawbert_mrl.pt")
+    logger.info("✓ Đã lưu thành công trọng số VietLawBERT-MRL tương thích SentenceTransformer tại: %s", out_dir.resolve())
 
 
 def main():
     parser = argparse.ArgumentParser(description="Chương trình huấn luyện VietLawBERT với Hierarchy-Aware MRL Loss")
-    parser.add_argument("--train-parquet", default=str(ARTIFACTS_DIR / "triplets" / "hin_triplets.parquet"), help="Đường dẫn tệp Triplet Parquet")
-    parser.add_argument("--model-name", default=config.BASE_MODEL_NAME, help="Mô hình Backbone Bi-Encoder")
-    parser.add_argument("--output-dir", default=str(MODELS_DIR / "vietlawbert_mrl"), help="Thư mục xuất trọng số")
-    parser.add_argument("--epochs", type=int, default=3, help="Số lượt huấn luyện")
-    parser.add_argument("--batch-size", type=int, default=config.EMBED_BATCH_SIZE, help="Kích thước batch")
-    parser.add_argument("--lr", type=float, default=2e-5, help="Tốc độ học")
-    parser.add_argument("--max-seq-length", type=int, default=config.MAX_SEQ_LENGTH, help="Độ dài chuỗi tối đa")
-    parser.add_argument("--output-dim", type=int, default=config.EMBEDDING_DIM, help="Số chiều vector tối đa")
-    parser.add_argument("--tau", type=float, default=config.TEMPERATURE, help="Nhiệt độ InfoNCE Loss")
-    parser.add_argument("--hierarchy-weight", type=float, default=config.HIERARCHY_WEIGHT, help="Trọng số phạt SupCon d=64")
+    parser.add_argument("--train-parquet", default=str(ARTIFACTS_DIR / "triplets" / "hin_triplets.parquet"))
+    parser.add_argument("--model-name", default=config.BASE_MODEL_NAME)
+    parser.add_argument("--output-dir", default=str(MODELS_DIR / "vietlawbert_mrl"))
+    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--lr", type=float, default=2e-5)
+    parser.add_argument("--max-seq-length", type=int, default=config.MAX_SEQ_LENGTH)
+    parser.add_argument("--output-dim", type=int, default=config.EMBEDDING_DIM)
+    parser.add_argument("--tau", type=float, default=config.TEMPERATURE)
+    parser.add_argument("--hierarchy-weight", type=float, default=config.HIERARCHY_WEIGHT)
+    parser.add_argument("--device", default=config.EMBED_DEVICE)
     args = parser.parse_args()
 
     train(args)

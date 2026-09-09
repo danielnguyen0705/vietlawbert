@@ -1,10 +1,11 @@
 """
 compute_graph_embeddings.py - Động cơ tiền tính toán Vector Đồ thị Ngoại tuyến (Compile-time).
-Trích xuất 22 quan hệ pháp lý từ Neo4j -> Node2Vec 128d -> Xuất ra parquet nạp RAM/Redis Cache.
+Trích xuất 22 quan hệ pháp lý từ Neo4j -> Node2Vec 128d (Biased Random Walk) -> Lưu Parquet & Redis Cache.
 """
 
 from __future__ import annotations
 
+import json
 import random
 import logging
 import argparse
@@ -28,20 +29,20 @@ class Neo4jGraphExtractor:
         self.uri = uri or config.NEO4J_URI
         self.user = user or config.NEO4J_USER
         self.password = password or config.NEO4J_PASSWORD
-        self.driver = GraphDatabase.driver(self.uri, auth=(self.user, self.password))
+        self.driver = GraphDatabase.driver(self.uri, auth=(self.user, self.password), connection_acquisition_timeout=10.0)
         self.driver.verify_connectivity()
-        logger.info("Kết nối Neo4j thành công tại %s để trích xuất cấu trúc HIN.", self.uri)
+        logger.info("Kết nối Neo4j thành công tại %s.", self.uri)
 
     def close(self):
         self.driver.close()
 
     def fetch_legal_edges(self) -> List[Tuple[str, str, str]]:
-        """Trích xuất toàn bộ cạnh phân cấp HAS_CHUNK và 22 quan hệ pháp lý liên văn bản."""
+        """Trích xuất các cạnh phân cấp HAS_CHUNK và 22 quan hệ liên văn bản."""
         cypher = """
         MATCH (s)-[r]->(t)
         WHERE (s:LawDocument OR s:Chunk) AND (t:LawDocument OR t:Chunk)
         RETURN coalesce(s.chunk_id, s.doc_id) AS u,
-               type(r) AS rel_type,
+               coalesce(r.type, type(r)) AS rel_type,
                coalesce(t.chunk_id, t.doc_id) AS v
         LIMIT 500000
         """
@@ -49,27 +50,52 @@ class Neo4jGraphExtractor:
         with self.driver.session() as session:
             result = session.run(cypher)
             for record in result:
-                u = record["u"]
-                v = record["v"]
-                rel = record["rel_type"]
+                u, v, rel = record["u"], record["v"], record["rel_type"]
                 if u and v and u != v:
                     edges.append((str(u), str(v), str(rel)))
 
-        logger.info("✓ Đã trích xuất thành công %d cạnh quan hệ pháp lý từ Neo4j.", len(edges))
+        logger.info("✓ Đã trích xuất %d cạnh quan hệ pháp lý từ Neo4j.", len(edges))
         return edges
 
 
-class BiasedRandomWalker:
-    """Hiện thực hóa giải thuật duyệt ngẫu nhiên có trọng số (Node2Vec Random Walks)."""
+class Node2VecRandomWalker:
+    """Hiện thực hóa giải thuật duyệt ngẫu nhiên bậc 2 có trọng số Node2Vec (Grover & Leskovec, 2016)."""
+
     def __init__(self, edges: List[Tuple[str, str, str]], p: float = 1.0, q: float = 0.5):
         self.adj = defaultdict(list)
         for u, v, _ in edges:
             self.adj[u].append(v)
             self.adj[v].append(u)
+
+        # Loại bỏ các đỉnh trùng lặp trong danh sách kề
+        for node in self.adj:
+            self.adj[node] = list(set(self.adj[node]))
+
         self.nodes = list(self.adj.keys())
-        self.p = p
-        self.q = q
-        logger.info("Khởi tạo đồ thị với %d nút phân biệt phục vụ Random Walk.", len(self.nodes))
+        self.p = p  # Return parameter
+        self.q = q  # In-out parameter (q=0.5 kích thích duyệt DFS sâu vào đồ thị)
+        logger.info("Khởi tạo cấu trúc đồ thị: %d nút phân biệt.", len(self.nodes))
+
+    def _get_next_step(self, prev_node: str, curr_node: str) -> str:
+        neighbors = self.adj.get(curr_node, [])
+        if not neighbors:
+            return curr_node
+
+        if len(neighbors) == 1:
+            return neighbors[0]
+
+        prev_neighbors = set(self.adj.get(prev_node, []))
+        weights = []
+
+        for nbr in neighbors:
+            if nbr == prev_node:
+                weights.append(1.0 / self.p)
+            elif nbr in prev_neighbors:
+                weights.append(1.0)
+            else:
+                weights.append(1.0 / self.q)
+
+        return random.choices(neighbors, weights=weights, k=1)[0]
 
     def generate_walks(self, num_walks: int = 10, walk_length: int = 40) -> List[List[str]]:
         walks = []
@@ -77,15 +103,36 @@ class BiasedRandomWalker:
             random.shuffle(self.nodes)
             for node in self.nodes:
                 walk = [node]
+                curr_neighbors = self.adj.get(node, [])
+                if not curr_neighbors:
+                    continue
+                walk.append(random.choice(curr_neighbors))
+
                 while len(walk) < walk_length:
-                    curr = walk[-1]
-                    neighbors = self.adj.get(curr, [])
-                    if not neighbors:
+                    next_node = self._get_next_step(walk[-2], walk[-1])
+                    if next_node == walk[-1]:
                         break
-                    next_node = random.choice(neighbors)
                     walk.append(next_node)
                 walks.append(walk)
+
         return walks
+
+
+def sync_embeddings_to_redis(records: List[Dict[str, Any]]) -> None:
+    """Nạp vector nhị phân vào Redis để phục vụ truy vấn thời gian thực dưới 500ms."""
+    try:
+        import redis
+        r = redis.Redis(host=config.REDIS_HOST, port=config.REDIS_PORT, db=config.REDIS_DB, socket_timeout=5.0)
+        pipe = r.pipeline(transaction=False)
+        for item in records:
+            pipe.set(f"graph_emb:{item['chunk_id']}", json.dumps(item["graph_embedding"]))
+            if len(pipe) >= 5000:
+                pipe.execute()
+        pipe.execute()
+        r.close()
+        logger.info("✓ Đã nạp thành công %d vector đồ thị vào Redis In-Memory Cache.", len(records))
+    except Exception as exc:
+        logger.warning("Bỏ qua đồng bộ Redis (%s). Hệ thống vẫn lưu trữ qua tệp Parquet.", exc)
 
 
 def compute_and_export_embeddings(
@@ -100,20 +147,20 @@ def compute_and_export_embeddings(
     extractor.close()
 
     if not edges:
-        logger.warning("Không tìm thấy dữ liệu cạnh trong Neo4j. Tạo danh sách cạnh giả lập phòng vệ...")
+        logger.warning("Đồ thị Neo4j chưa có cạnh. Tạo khung cạnh giả lập để bảo toàn luồng...")
         edges = [(f"doc_{i}", f"chunk_{i}", "HAS_CHUNK") for i in range(100)]
 
-    walker = BiasedRandomWalker(edges, p=1.0, q=0.5)
+    walker = Node2VecRandomWalker(edges, p=1.0, q=0.5)
     walks = walker.generate_walks(num_walks=10, walk_length=40)
 
-    logger.info("Huấn luyện Word2Vec (Skip-gram) trên %d đường đi ngẫu nhiên...", len(walks))
+    logger.info("Huấn luyện Word2Vec Skip-Gram trên %d đường đi ngẫu nhiên...", len(walks))
     w2v = Word2Vec(
         sentences=walks,
         vector_size=dimensions,
         window=5,
         min_count=1,
         sg=1,
-        workers=4,
+        workers=2,
         epochs=5,
     )
 
@@ -127,13 +174,16 @@ def compute_and_export_embeddings(
     out_file = Path(output_path)
     out_file.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(out_file, engine="pyarrow", compression="snappy")
-    logger.info("Đã lưu thành công %d vector đồ thị %dd vào tệp nhị phân: %s", len(df), dimensions, out_file.resolve())
+    logger.info("✓ Đã lưu %d vector đồ thị (%dd) vào Parquet: %s", len(df), dimensions, out_file.resolve())
+
+    # Đồng bộ sang Redis Cache
+    sync_embeddings_to_redis(records)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Tiền tính toán Vector Đồ thị Ngoại tuyến (Node2Vec 128d)")
-    parser.add_argument("--output", default=str(ARTIFACTS_DIR / "graph_embeddings_128d.parquet"), help="Đường dẫn file Parquet")
-    parser.add_argument("--dim", type=int, default=128, help="Số chiều vector đồ thị")
+    parser.add_argument("--output", default=str(ARTIFACTS_DIR / "graph_embeddings_128d.parquet"))
+    parser.add_argument("--dim", type=int, default=128)
     parser.add_argument("--uri", default=config.NEO4J_URI)
     parser.add_argument("--user", default=config.NEO4J_USER)
     parser.add_argument("--password", default=config.NEO4J_PASSWORD)

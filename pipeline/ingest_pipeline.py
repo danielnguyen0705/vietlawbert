@@ -1,6 +1,6 @@
 """
 ingest_pipeline.py - Luồng trung gian (Decoupled ETL Worker) xử lý từ Shard thô sang CSDL lai.
-Tối ưu hóa tài nguyên phần cứng: Khống chế CPU Threads, nạp batch chịu lỗi và Checkpoint tự phục hồi.
+Tối ưu hóa tài nguyên phần cứng: Khống chế CPU Threads, Doc-level Resume và Checkpoint tự phục hồi.
 """
 
 from __future__ import annotations
@@ -11,12 +11,15 @@ import json
 import gzip
 import logging
 import argparse
+import uuid
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Set
+from VietLawBERT.vietlawbert.configs.paths import RAW_SHARDS_DIR
 from bs4 import BeautifulSoup
 
 import torch
 try:
+    # Khóa cứng luồng CPU tránh làm đơ giao diện người dùng Dell G7
     torch.set_num_threads(2)
 except Exception:
     pass
@@ -35,7 +38,7 @@ CHECKPOINT_FILE = config.STORAGE_ROOT / ".ingest_checkpoint.json"
 
 
 def load_checkpoint() -> Set[str]:
-    """Tải danh sách các tệp Shard đã nạp thành công từ đĩa cứng."""
+    """Tải danh sách các tệp Shard đã hoàn tất 100% từ đĩa cứng."""
     if CHECKPOINT_FILE.exists():
         try:
             with open(CHECKPOINT_FILE, "r", encoding="utf-8") as f:
@@ -46,7 +49,7 @@ def load_checkpoint() -> Set[str]:
 
 
 def save_checkpoint(completed_shards: Set[str]) -> None:
-    """Lưu vết trạng thái nạp Shard nguyên tử chống mất dữ liệu khi sập nguồn."""
+    """Ghi vết checkpoint nguyên tử chống hỏng dữ liệu khi sập nguồn."""
     try:
         temp_file = CHECKPOINT_FILE.with_suffix(".tmp")
         with open(temp_file, "w", encoding="utf-8") as f:
@@ -118,6 +121,7 @@ class IngestPipelineWorker:
         chunk_buffer: List[Dict[str, Any]] = []
         total_chunks_in_shard = 0
         docs_count = 0
+        skipped_existing_docs = 0
 
         with opener as f:
             for line_idx, line in enumerate(f, start=1):
@@ -130,6 +134,13 @@ class IngestPipelineWorker:
                 except json.JSONDecodeError:
                     continue
 
+                doc_id = str(doc_record.get("doc_id") or doc_record.get("item_id") or f"doc_{line_idx}")
+
+                # CƠ CHẾ RESUME CẤP VĂN BẢN: Bỏ qua văn bản đã tồn tại trong Qdrant để cứu thời gian CPU
+                if self.qdrant.doc_exists(doc_id):
+                    skipped_existing_docs += 1
+                    continue
+
                 raw_text = self._extract_clean_text_fallback(doc_record)
                 if not raw_text:
                     continue
@@ -137,7 +148,6 @@ class IngestPipelineWorker:
                 meta_detail = doc_record.get("metadata_detail") or {}
                 meta_api = doc_record.get("metadata_api") or {}
 
-                doc_id = str(doc_record.get("doc_id") or doc_record.get("item_id") or f"doc_{line_idx}")
                 doc_number = str(
                     doc_record.get("doc_number")
                     or meta_detail.get("docNum")
@@ -184,6 +194,13 @@ class IngestPipelineWorker:
                     logger.warning("Bỏ qua lỗi AST doc %s: %s", doc_id, parse_err)
                     continue
 
+                # Chuẩn hóa bảo vệ chunk_id
+                for ch in ast_chunks:
+                    ch_id = str(ch.get("chunk_id") or ch.get("metadata", {}).get("chunk_id") or uuid.uuid4().hex)
+                    ch["chunk_id"] = ch_id
+                    ch["doc_id"] = doc_id
+                    ch["doc_number"] = doc_number
+
                 chunk_buffer.extend(ast_chunks)
                 docs_count += 1
 
@@ -199,10 +216,11 @@ class IngestPipelineWorker:
 
         gc.collect()
         logger.info(
-            "✓ Hoàn tất Shard %s: %d văn bản -> %d chunks đã nạp an toàn.",
+            "Hoàn tất Shard %s: Đã nạp %d văn bản mới (%d chunks) | Bỏ qua %d văn bản đã có sẵn.",
             path.name,
             docs_count,
             total_chunks_in_shard,
+            skipped_existing_docs,
         )
         return total_chunks_in_shard
 
@@ -233,7 +251,7 @@ class IngestPipelineWorker:
             chunk["content"] = chunk_copy["content"]
             qdrant_payloads.append(chunk_copy)
 
-        # 1. Nạp Qdrant - Cơ chế Fail-Fast chặn lệch pha dữ liệu
+        # 1. Nạp Qdrant - Cơ chế Fail-Fast bảo vệ tính toàn vẹn
         upserted = self.qdrant.upsert_batch(
             records=qdrant_payloads,
             collection_name=config.QDRANT_COLLECTION_NAME,
@@ -248,18 +266,17 @@ class IngestPipelineWorker:
             logger.error("Ngoại lệ khi nạp Elasticsearch: %s", es_err)
             raise es_err
 
-        # Dọn dẹp tài nguyên sau khi cả hai kho lưu trữ đều hoàn tất
         del texts, embeddings, qdrant_payloads
         gc.collect()
 
 
 def main():
     parser = argparse.ArgumentParser(description="Chạy luồng trung gian nạp dữ liệu từ Shards vào CSDL")
-    parser.add_argument("--shard-path", default=str(config.STORAGE_ROOT / "raw_shards"), help="Đường dẫn thư mục Shard")
+    parser.add_argument("--shard-path", default=str(RAW_SHARDS_DIR), help="Đường dẫn thư mục Shard")
     parser.add_argument("--model-name", default=config.BASE_MODEL_NAME, help="Tên backbone encoder")
     parser.add_argument("--dim", type=int, default=config.QDRANT_VECTOR_DIM, help="Số chiều vector (256)")
-    parser.add_argument("--batch-size", type=int, default=8, help="Kích thước mini-batch nhỏ")
-    parser.add_argument("--device", default="cpu", help="Thiết bị tính toán (cpu/cuda)")
+    parser.add_argument("--batch-size", type=int, default=config.EMBED_BATCH_SIZE, help="Kích thước mini-batch")
+    parser.add_argument("--device", default=config.EMBED_DEVICE, help="Thiết bị tính toán (cpu/cuda)")
     args = parser.parse_args()
 
     worker = IngestPipelineWorker(

@@ -1,12 +1,13 @@
 """
 crawl_audit.py - Công cụ kiểm toán chất lượng văn bản và tính nhất quán giữa Qdrant và Neo4j.
-Triển khai các tiêu chuẩn kiểm định chặt chẽ.
+Triển khai các tiêu chuẩn kiểm định chặt chẽ, tối ưu hóa bộ nhớ O(1) chống tràn RAM.
 """
 
 from __future__ import annotations
 
 import os
 import sys
+import gzip
 import json
 import re
 import argparse
@@ -17,7 +18,6 @@ from typing import Dict, Any, List, Optional, Set, Iterator
 
 from configs.paths import ROOT_DIR, ARTIFACTS_DIR
 from configs.config import config
-from artifacts.canonical import read_jsonl
 
 logger = logging.getLogger("VietLawBERT_CrawlAudit")
 
@@ -31,6 +31,20 @@ BOILERPLATE = re.compile(
     r"CỘNG\s+HÒA\s+XÃ\s+HỘI\s+CHỦ\s+NGHĨA\s+VIỆT\s+NAM|Độc\s+lập\s*[-–—]\s*Tự\s+do\s*[-–—]\s*Hạnh\s+phúc",
     re.IGNORECASE,
 )
+
+
+def safe_read_jsonl(path: Path | str) -> Iterator[Dict[str, Any]]:
+    """Đọc phân dòng an toàn cho cả tệp văn bản .jsonl lẫn tệp nén .jsonl.gz."""
+    p = Path(path)
+    opener = gzip.open(p, "rt", encoding="utf-8") if p.suffix == ".gz" else open(p, "r", encoding="utf-8")
+    with opener as f:
+        for line in f:
+            clean = line.strip()
+            if clean:
+                try:
+                    yield json.loads(clean)
+                except json.JSONDecodeError:
+                    continue
 
 
 def evaluate_linguistic_quality(text: str) -> Dict[str, Any]:
@@ -60,10 +74,7 @@ def audit_crawl(
     allow_upstream_missing: bool = False,
     allow_ocr_pending: bool = False,
 ) -> Dict[str, Any]:
-    """
-    Kiểm toán toàn diện một tệp Shard (.jsonl hoặc .jsonl.gz).
-    Bảo đảm không giữ payload HTML trong RAM để tối ưu hóa bộ nhớ O(1).
-    """
+    """Kiểm toán toàn diện một tệp Shard mà không giữ payload HTML trong RAM."""
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"Không tìm thấy tệp artifact: {p}")
@@ -72,9 +83,9 @@ def audit_crawl(
     unresolved_keys: Counter = Counter()
     counters: Counter = Counter()
 
-    for record in read_jsonl(p):
+    for record in safe_read_jsonl(p):
         counters["records"] += 1
-        item_id = str(record.get("item_id") or record.get("id") or "").strip()
+        item_id = str(record.get("item_id") or record.get("doc_id") or record.get("id") or "").strip()
         if item_id:
             unique_ids.add(item_id)
         else:
@@ -180,12 +191,15 @@ def fetch_all_qdrant_points(client, collection_name: str) -> Iterator[Dict[str, 
             with_payload=True,
             with_vectors=False,
         )
+        if not records:
+            break
         for r in records:
+            payload = r.payload or {}
             yield {
-                "chunk_id": (r.payload or {}).get("chunk_id", ""),
-                "doc_id": (r.payload or {}).get("doc_id", ""),
-                "hierarchy_path": (r.payload or {}).get("hierarchy_path", ""),
-                "content": (r.payload or {}).get("content", ""),
+                "chunk_id": payload.get("chunk_id", ""),
+                "doc_id": payload.get("doc_id", ""),
+                "hierarchy_path": payload.get("hierarchy_path", ""),
+                "content": payload.get("content", ""),
             }
         if next_offset is None:
             break
@@ -196,10 +210,7 @@ def audit_databases(
     expected_documents: Optional[int] = None,
     document_ids: Optional[Set[str]] = None,
 ) -> Dict[str, Any]:
-    """
-    Kiểm toán tính nhất quán 1:1 giữa Qdrant (Dense Vector) và Neo4j (HIN Graph).
-    Phát hiện Chunks mồ côi, văn bản dính boilerplate và lệch cấu trúc phân cấp.
-    """
+    """Kiểm toán tính nhất quán 1:1 giữa Qdrant và Neo4j theo dòng chảy O(1) RAM."""
     from qdrant_client import QdrantClient
     from neo4j import GraphDatabase
 
@@ -209,42 +220,53 @@ def audit_databases(
 
     logger.info("Đang kết nối Qdrant [%s:%d] để đối soát collection [%s]...", qdrant_host, qdrant_port, collection)
     q_client = QdrantClient(host=qdrant_host, port=qdrant_port, timeout=10.0)
-    existing_cols = [c.name for c in q_client.get_collections().collections]
-    if collection not in existing_cols:
-        return {
-            "passed": False,
-            "error": f"Collection '{collection}' không tồn tại trong Qdrant!",
-            "failures": [f"Collection '{collection}' missing"],
-        }
 
-    rows = list(fetch_all_qdrant_points(q_client, collection))
-    if document_ids is not None:
-        rows = [row for row in rows if str(row.get("doc_id")) in document_ids]
+    try:
+        existing_cols = [c.name for c in q_client.get_collections().collections]
+        if collection not in existing_cols:
+            return {
+                "passed": False,
+                "error": f"Collection '{collection}' không tồn tại trong Qdrant!",
+                "failures": [f"Collection '{collection}' missing"],
+            }
 
-    qdrant_chunk_ids = {str(row.get("chunk_id")) for row in rows if row.get("chunk_id")}
-    source_doc_ids = {str(row.get("doc_id")) for row in rows if row.get("doc_id")}
+        qdrant_chunk_ids: Set[str] = set()
+        source_doc_ids: Set[str] = set()
+        hierarchy_mismatches = 0
+        boilerplate_chunks = 0
+        empty_chunks = 0
+        max_chunk_chars = int(os.getenv("AUDIT_MAX_CHUNK_CHARS", "1600"))
+        oversized_chunks = 0
 
-    hierarchy_mismatches = 0
-    boilerplate_chunks = 0
-    empty_chunks = 0
-    max_chunk_chars = int(os.getenv("AUDIT_MAX_CHUNK_CHARS", "1600"))
-    oversized_chunks = 0
+        # Lặp trực tiếp không tạo list tạm nhằm giải phóng RAM tuyệt đối
+        for row in fetch_all_qdrant_points(q_client, collection):
+            doc_id = str(row.get("doc_id") or "").strip()
+            if document_ids is not None and doc_id not in document_ids:
+                continue
 
-    for row in rows:
-        text = str(row.get("content") or "").strip()
-        h_path = str(row.get("hierarchy_path") or "")
+            cid = str(row.get("chunk_id") or "").strip()
+            if cid:
+                qdrant_chunk_ids.add(cid)
+            if doc_id:
+                source_doc_ids.add(doc_id)
 
-        hierarchy_mismatches += bool(ARTICLE_HEADING.match(text) and "điều" not in h_path.lower())
-        boilerplate_chunks += bool(BOILERPLATE.search(text))
-        empty_chunks += len(text) == 0
-        oversized_chunks += len(text) > max_chunk_chars
+            text = str(row.get("content") or "").strip()
+            h_path = str(row.get("hierarchy_path") or "")
+
+            hierarchy_mismatches += bool(ARTICLE_HEADING.match(text) and "điều" not in h_path.lower())
+            boilerplate_chunks += bool(BOILERPLATE.search(text))
+            empty_chunks += len(text) == 0
+            oversized_chunks += len(text) > max_chunk_chars
+    finally:
+        if hasattr(q_client, "close"):
+            q_client.close()
 
     # Kết nối Neo4j đối soát cấu trúc
     neo_uri = getattr(config, "NEO4J_URI", "bolt://localhost:7687")
     neo_user = getattr(config, "NEO4J_USER", "neo4j")
     neo_pwd = getattr(config, "NEO4J_PASSWORD", "vietlawbert2026")
 
-    driver = GraphDatabase.driver(neo_uri, auth=(neo_user, neo_pwd))
+    driver = GraphDatabase.driver(neo_uri, auth=(neo_user, neo_pwd), connection_acquisition_timeout=10.0)
     try:
         with driver.session() as session:
             neo_ids = {
@@ -334,9 +356,9 @@ def main():
             allow_ocr_pending=args.allow_ocr_pending,
         )
         doc_ids = {
-            str(r.get("item_id") or r.get("id")).strip()
-            for r in read_jsonl(args.crawl_file)
-            if str(r.get("item_id") or r.get("id")).strip()
+            str(r.get("item_id") or r.get("doc_id") or r.get("id")).strip()
+            for r in safe_read_jsonl(args.crawl_file)
+            if str(r.get("item_id") or r.get("doc_id") or r.get("id")).strip()
         }
 
     if args.databases:

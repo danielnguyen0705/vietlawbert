@@ -9,8 +9,8 @@ import os
 from pathlib import Path
 from typing import Tuple
 from dotenv import load_dotenv
+import torch
 
-# Nhập khẩu an toàn nội bộ package
 from .paths import ROOT_DIR, DATA_STORAGE_ROOT
 
 # Nạp tệp cấu hình bảo mật .env từ gốc dự án
@@ -38,7 +38,7 @@ class Config:
     # ==========================================
     NEO4J_URI: str = os.getenv("NEO4J_URI", "bolt://localhost:7687")
     NEO4J_USER: str = os.getenv("NEO4J_USER", "neo4j")
-    NEO4J_PASSWORD: str = os.getenv("NEO4J_PASSWORD", "vietlawbert")
+    NEO4J_PASSWORD: str = os.getenv("NEO4J_PASSWORD", "vietlawbert2026")
 
     # ==========================================
     # 4. DENSE VECTOR ENGINE (QDRANT - MRL d=256)
@@ -72,9 +72,10 @@ class Config:
     HIERARCHY_WEIGHT: float = float(os.getenv("HIERARCHY_WEIGHT", 0.15))
     MAX_SEQ_LENGTH: int = int(os.getenv("MAX_SEQ_LENGTH", 512))
 
-    # Cấu hình tính toán Embedding
-    EMBED_DEVICE: str = os.getenv("EMBED_DEVICE", "cuda")
-    EMBED_BATCH_SIZE: int = int(os.getenv("EMBED_BATCH_SIZE", 32))
+    # Tự động nhận diện thiết bị tính toán an toàn
+    _cuda_available = torch.cuda.is_available() and torch.cuda.device_count() > 0
+    EMBED_DEVICE: str = os.getenv("EMBED_DEVICE", "cuda" if _cuda_available else "cpu")
+    EMBED_BATCH_SIZE: int = int(os.getenv("EMBED_BATCH_SIZE", 16))
 
     # ==========================================
     # 8. CỤM TRÍ TUỆ NHÂN TẠO & TRUY XUẤT LAI (RAG / LLM)
@@ -89,7 +90,7 @@ class Config:
     GRAPH_ALPHA: float = float(os.getenv("GRAPH_ALPHA", 0.2))
 
     # ==========================================
-    # 9. ĐIỀU PHỐI CLOUD GPU (NẾU SỬ DỤNG RUNPOD / SSH)
+    # 9. ĐIỀU PHỐI CLOUD GPU
     # ==========================================
     ENABLE_CLOUD_GPU: bool = os.getenv("ENABLE_CLOUD_GPU", "false").lower() in ("true", "1", "yes")
     CLOUD_GPU_PROVIDER: str = os.getenv("CLOUD_GPU_PROVIDER", "runpod")
@@ -103,5 +104,4 @@ class Config:
     CLOUD_COST_ALERT_THRESHOLD_USD: float = float(os.getenv("CLOUD_COST_ALERT_THRESHOLD_USD", 5.0))
 
 
-# Xuất đối tượng cấu hình duy nhất dùng cho toàn hệ sinh thái
 config = Config()
