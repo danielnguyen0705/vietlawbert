@@ -14,7 +14,6 @@ import argparse
 import uuid
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Set
-from VietLawBERT.vietlawbert.configs.paths import RAW_SHARDS_DIR
 from bs4 import BeautifulSoup
 
 import torch
@@ -27,6 +26,7 @@ except Exception:
 from sentence_transformers import SentenceTransformer
 
 from configs.config import config
+from configs.paths import RAW_SHARDS_DIR
 from preprocess.ast_parser import HybridASTParser
 from database.qdrant_client import QdrantClientWrapper
 from rag.es_retriever import LegalElasticsearchRetriever
@@ -75,7 +75,7 @@ class IngestPipelineWorker:
         self.es_host = es_host or config.ES_HOST
         self.model_name = model_name_or_path or config.BASE_MODEL_NAME
         self.vector_dim = vector_dim or config.QDRANT_VECTOR_DIM
-        self.batch_size = batch_size or 8
+        self.batch_size = batch_size or config.EMBED_BATCH_SIZE
 
         self.parser = HybridASTParser()
         self.qdrant = QdrantClientWrapper(host=self.qdrant_host, port=self.qdrant_port)
@@ -86,7 +86,7 @@ class IngestPipelineWorker:
 
         self.es = LegalElasticsearchRetriever(hosts=[self.es_host], index_name=config.ES_INDEX_NAME)
 
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device or config.EMBED_DEVICE
         logger.info("Đang nạp mô hình %s trên [%s] (PyTorch threads=2)...", self.model_name, self.device)
         self.encoder = SentenceTransformer(self.model_name, device=self.device)
 
@@ -107,6 +107,21 @@ class IngestPipelineWorker:
             except Exception as exc:
                 logger.debug("Lỗi giải mã HTML thô: %s", exc)
 
+        html_path = doc_record.get("html_path")
+        if html_path and Path(html_path).exists():
+            try:
+                with open(html_path, "r", encoding="utf-8", errors="ignore") as hf:
+                    raw_from_file = hf.read()
+                    if raw_from_file:
+                        soup = BeautifulSoup(raw_from_file, "html.parser")
+                        for tag in soup(["script", "style", "nav", "footer", "header", "noscript", "iframe"]):
+                            tag.decompose()
+                        clean_text = soup.get_text("\n", strip=True)
+                        if len(clean_text) > 50:
+                            return clean_text
+            except Exception as exc:
+                logger.debug("Lỗi đọc tệp html_path %s: %s", html_path, exc)
+
         return ""
 
     def process_raw_shard(self, shard_file_path: str | Path) -> int:
@@ -116,107 +131,112 @@ class IngestPipelineWorker:
             return 0
 
         logger.info("Xử lý Shard dữ liệu: %s...", path.name)
-        opener = gzip.open(path, "rt", encoding="utf-8") if path.suffix == ".gz" else open(path, "r", encoding="utf-8")
+        is_gzip = "".join(path.suffixes).endswith(".gz") or path.name.endswith(".gz")
 
         chunk_buffer: List[Dict[str, Any]] = []
         total_chunks_in_shard = 0
         docs_count = 0
         skipped_existing_docs = 0
 
-        with opener as f:
-            for line_idx, line in enumerate(f, start=1):
-                clean_line = line.strip()
-                if not clean_line:
-                    continue
+        try:
+            opener = gzip.open(path, "rt", encoding="utf-8") if is_gzip else open(path, "r", encoding="utf-8")
+            with opener as f:
+                for line_idx, line in enumerate(f, start=1):
+                    clean_line = line.strip()
+                    if not clean_line:
+                        continue
 
-                try:
-                    doc_record = json.loads(clean_line)
-                except json.JSONDecodeError:
-                    continue
+                    try:
+                        doc_record = json.loads(clean_line)
+                    except json.JSONDecodeError:
+                        continue
 
-                doc_id = str(doc_record.get("doc_id") or doc_record.get("item_id") or f"doc_{line_idx}")
+                    doc_id = str(doc_record.get("doc_id") or doc_record.get("item_id") or f"doc_{line_idx}")
 
-                # CƠ CHẾ RESUME CẤP VĂN BẢN: Bỏ qua văn bản đã tồn tại trong Qdrant để cứu thời gian CPU
-                if self.qdrant.doc_exists(doc_id):
-                    skipped_existing_docs += 1
-                    continue
+                    # CƠ CHẾ RESUME CẤP VĂN BẢN: Bỏ qua văn bản đã tồn tại trong Qdrant để cứu thời gian CPU
+                    if self.qdrant.doc_exists(doc_id):
+                        skipped_existing_docs += 1
+                        continue
 
-                raw_text = self._extract_clean_text_fallback(doc_record)
-                if not raw_text:
-                    continue
+                    raw_text = self._extract_clean_text_fallback(doc_record)
+                    if not raw_text:
+                        continue
 
-                meta_detail = doc_record.get("metadata_detail") or {}
-                meta_api = doc_record.get("metadata_api") or {}
+                    meta_detail = doc_record.get("metadata_detail") or {}
+                    meta_api = doc_record.get("metadata_api") or {}
 
-                doc_number = str(
-                    doc_record.get("doc_number")
-                    or meta_detail.get("docNum")
-                    or meta_api.get("docNum")
-                    or "N/A"
-                )
-                title = str(
-                    doc_record.get("title")
-                    or meta_detail.get("title")
-                    or meta_api.get("title")
-                    or "Văn bản pháp luật"
-                )
-                effective_date = str(
-                    doc_record.get("effective_date")
-                    or meta_detail.get("effFrom")
-                    or meta_api.get("effFrom")
-                    or "Chưa xác định"
-                )
-                status_raw = str(
-                    doc_record.get("status")
-                    or (meta_detail.get("effStatus") or {}).get("name")
-                    or (meta_api.get("effStatus") or {}).get("name")
-                    or "Còn hiệu lực"
-                )
-                org = str(
-                    doc_record.get("co_quan")
-                    or meta_detail.get("agencyName")
-                    or meta_api.get("agencyName")
-                    or "N/A"
-                )
+                    doc_number = str(
+                        doc_record.get("doc_number")
+                        or meta_detail.get("docNum")
+                        or meta_api.get("docNum")
+                        or "N/A"
+                    )
+                    title = str(
+                        doc_record.get("title")
+                        or meta_detail.get("title")
+                        or meta_api.get("title")
+                        or "Văn bản pháp luật"
+                    )
+                    effective_date = str(
+                        doc_record.get("effective_date")
+                        or meta_detail.get("effFrom")
+                        or meta_api.get("effFrom")
+                        or "Chưa xác định"
+                    )
+                    status_raw = str(
+                        doc_record.get("status")
+                        or (meta_detail.get("effStatus") or {}).get("name")
+                        or (meta_api.get("effStatus") or {}).get("name")
+                        or "Còn hiệu lực"
+                    )
+                    org = str(
+                        doc_record.get("co_quan")
+                        or meta_detail.get("agencyName")
+                        or meta_api.get("agencyName")
+                        or "N/A"
+                    )
 
-                metadata = {
-                    "doc_id": doc_id,
-                    "doc_number": doc_number,
-                    "title": title,
-                    "effective_date": effective_date,
-                    "status": status_raw,
-                    "co_quan": org,
-                }
+                    metadata = {
+                        "doc_id": doc_id,
+                        "doc_number": doc_number,
+                        "title": title,
+                        "effective_date": effective_date,
+                        "status": status_raw,
+                        "co_quan": org,
+                    }
 
-                try:
-                    ast_chunks = self.parser.parse_document(raw_text, metadata)
-                except Exception as parse_err:
-                    logger.warning("Bỏ qua lỗi AST doc %s: %s", doc_id, parse_err)
-                    continue
+                    try:
+                        ast_chunks = self.parser.parse_document(raw_text, metadata)
+                    except Exception as parse_err:
+                        logger.warning("Bỏ qua lỗi AST doc %s: %s", doc_id, parse_err)
+                        continue
 
-                # Chuẩn hóa bảo vệ chunk_id
-                for ch in ast_chunks:
-                    ch_id = str(ch.get("chunk_id") or ch.get("metadata", {}).get("chunk_id") or uuid.uuid4().hex)
-                    ch["chunk_id"] = ch_id
-                    ch["doc_id"] = doc_id
-                    ch["doc_number"] = doc_number
+                    for ch in ast_chunks:
+                        ch_id = str(ch.get("chunk_id") or ch.get("metadata", {}).get("chunk_id") or uuid.uuid4().hex)
+                        ch["chunk_id"] = ch_id
+                        ch["doc_id"] = doc_id
+                        ch["doc_number"] = doc_number
 
-                chunk_buffer.extend(ast_chunks)
-                docs_count += 1
+                    chunk_buffer.extend(ast_chunks)
+                    docs_count += 1
 
-                if len(chunk_buffer) >= self.batch_size:
-                    self._flush_chunks_to_storage(chunk_buffer)
-                    total_chunks_in_shard += len(chunk_buffer)
-                    chunk_buffer.clear()
+                    if len(chunk_buffer) >= self.batch_size:
+                        self._flush_chunks_to_storage(chunk_buffer)
+                        total_chunks_in_shard += len(chunk_buffer)
+                        chunk_buffer.clear()
 
-        if chunk_buffer:
-            self._flush_chunks_to_storage(chunk_buffer)
-            total_chunks_in_shard += len(chunk_buffer)
-            chunk_buffer.clear()
+            if chunk_buffer:
+                self._flush_chunks_to_storage(chunk_buffer)
+                total_chunks_in_shard += len(chunk_buffer)
+                chunk_buffer.clear()
+
+        except Exception as read_err:
+            logger.error("Lỗi đọc tệp shard %s: %s. Bỏ qua tệp này.", path.name, read_err)
+            return 0
 
         gc.collect()
         logger.info(
-            "Hoàn tất Shard %s: Đã nạp %d văn bản mới (%d chunks) | Bỏ qua %d văn bản đã có sẵn.",
+            "✓ Hoàn tất Shard %s: Đã nạp %d văn bản mới (%d chunks) | Bỏ qua %d văn bản đã có sẵn.",
             path.name,
             docs_count,
             total_chunks_in_shard,
@@ -228,12 +248,12 @@ class IngestPipelineWorker:
         if not chunks:
             return
 
-        texts = [c["text"] for c in chunks]
+        texts = [c.get("text") or c.get("content") or "" for c in chunks]
 
         with torch.inference_mode():
             embeddings = self.encoder.encode(
                 texts,
-                batch_size=min(len(texts), 8),
+                batch_size=min(len(texts), self.batch_size),
                 show_progress_bar=False,
                 normalize_embeddings=True,
             )
@@ -246,9 +266,12 @@ class IngestPipelineWorker:
             status_str = str(chunk.get("metadata", {}).get("status", ""))
             chunk_copy["is_effective"] = ("hết hiệu lực" not in status_str.lower())
 
-            chunk_copy["content"] = chunk.get("text", "")
+            chunk_content = chunk.get("content") or chunk.get("text", "")
+            chunk_copy["content"] = chunk_content
+            chunk_copy["text"] = chunk_content
             chunk["is_effective"] = chunk_copy["is_effective"]
-            chunk["content"] = chunk_copy["content"]
+            chunk["content"] = chunk_content
+            chunk["text"] = chunk_content
             qdrant_payloads.append(chunk_copy)
 
         # 1. Nạp Qdrant - Cơ chế Fail-Fast bảo vệ tính toàn vẹn
@@ -290,8 +313,16 @@ def main():
     p = Path(args.shard_path)
 
     if p.is_dir():
-        files = sorted(list(p.glob("*.jsonl*")))
-        logger.info("Tìm thấy %d shards trong thư mục %s (Đã nạp trước đó: %d).", len(files), p, len(completed_shards))
+        # Bộ lọc danh sách trắng: Bỏ qua toàn bộ tệp rác, tệp cách ly và tệp hỏng
+        all_candidates = sorted(list(p.glob("*.jsonl*")))
+        files = [
+            f for f in all_candidates
+            if (f.name.endswith(".jsonl.gz") or f.name.endswith(".jsonl"))
+            and not f.name.endswith(".corrupted")
+            and not f.name.endswith(".quarantine.jsonl")
+            and not f.name.endswith(".tmp")
+        ]
+        logger.info("Tìm thấy %d shards hợp lệ trong %s (Đã nạp trước đó: %d).", len(files), p, len(completed_shards))
         for f in files:
             if f.name in completed_shards:
                 logger.info("[CHECKPOINT SKIP] Bỏ qua Shard đã nạp thành công: %s", f.name)

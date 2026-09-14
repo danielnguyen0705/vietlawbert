@@ -10,9 +10,7 @@ from __future__ import annotations
 import os
 import sys
 
-# ============================================================
-# CƯỠNG BỨC UTF-8 CHO TOÀN HỆ THỐNG TRÁNH LỖI CHARMAP TRÊN WINDOWS
-# ============================================================
+# Cưỡng bức mã hóa UTF-8 cho toàn hệ thống tránh lỗi charmap trên console
 os.environ["PYTHONUTF8"] = "1"
 os.environ["PYTHONIOENCODING"] = "utf-8"
 if sys.stdout.encoding != "utf-8":
@@ -55,11 +53,11 @@ def wait_for_service(host: str, port: int, name: str, timeout: int = 45) -> bool
     while time.time() - start_time < timeout:
         try:
             with socket.create_connection((host, port), timeout=1.5):
-                logger.info("Dịch vụ %s (%s:%d) đã sẵn sàng.", name, host, port)
+                logger.info("✓ Dịch vụ %s (%s:%d) đã sẵn sàng.", name, host, port)
                 return True
         except (socket.timeout, ConnectionRefusedError, OSError):
             time.sleep(1.5)
-    logger.error("Dịch vụ %s (%s:%d) không phản hồi sau %ds.", name, host, port, timeout)
+    logger.error("✗ Dịch vụ %s (%s:%d) không phản hồi sau %ds.", name, host, port, timeout)
     return False
 
 
@@ -80,9 +78,9 @@ def run_subcommand(command: list[str], description: str, extra_env: dict[str, st
 
     result = subprocess.run(command, cwd=ROOT_DIR, env=env)
     if result.returncode == 0:
-        logger.info("HOÀN TẤT: %s", description)
+        logger.info("✓ HOÀN TẤT: %s", description)
         return True
-    logger.error("THẤT BẠI: %s (Mã lỗi: %d)", description, result.returncode)
+    logger.error("✗ THẤT BẠI: %s (Mã lỗi: %d)", description, result.returncode)
     return False
 
 
@@ -92,16 +90,18 @@ def cmd_check_infrastructure() -> bool:
     if not run_subcommand(["docker", "compose", "up", "-d"], "Khởi động Docker Compose"):
         return False
 
+    qdrant_host, qdrant_port = parse_host_port(config.QDRANT_HOST, "localhost", config.QDRANT_PORT)
     es_host, es_port = parse_host_port(config.ES_HOST, "localhost", 9200)
     neo_host, neo_port = parse_host_port(config.NEO4J_URI, "localhost", 7687)
     mongo_host, mongo_port = parse_host_port(config.MONGO_URI, "localhost", 27017)
+    redis_host, redis_port = parse_host_port(config.REDIS_HOST, "localhost", config.REDIS_PORT)
 
     services = [
-        (config.QDRANT_HOST, config.QDRANT_PORT, "Qdrant Vector Engine"),
+        (qdrant_host, qdrant_port, "Qdrant Vector Engine"),
         (es_host, es_port, "Elasticsearch Sparse Search"),
         (neo_host, neo_port, "Neo4j HIN Graph"),
         (mongo_host, mongo_port, "MongoDB Document Store"),
-        (config.REDIS_HOST, config.REDIS_PORT, "Redis Graph Cache"),
+        (redis_host, redis_port, "Redis Graph Cache"),
     ]
 
     for host, port, name in services:
@@ -135,7 +135,7 @@ def cmd_crawl(total_docs: int = 160660, concurrency: int = 4) -> bool:
     )
 
 
-def cmd_ingest(batch_size: int = 8, device: str = "cpu") -> bool:
+def cmd_ingest(batch_size: int = config.EMBED_BATCH_SIZE, device: str = config.EMBED_DEVICE) -> bool:
     """Bóc tách AST và nạp đồng thời Qdrant & Elasticsearch có cơ chế Doc-level Resume (Pha 2)."""
     cpu_env = {}
     if device == "cpu":
@@ -178,11 +178,20 @@ def cmd_graph() -> bool:
     )
 
 
-def cmd_train(epochs: int = 3, batch_size: int = 8, device: str = "cpu") -> bool:
+def cmd_train(epochs: int = 3, batch_size: int = config.EMBED_BATCH_SIZE, device: str = config.EMBED_DEVICE) -> bool:
     """Khai phá mẫu khó đối lập RWR và huấn luyện VietLawBERT-MRL (Pha 4)."""
+    cpu_env = {}
+    if device == "cpu":
+        cpu_env = {
+            "OMP_NUM_THREADS": "2",
+            "MKL_NUM_THREADS": "2",
+            "CUDA_VISIBLE_DEVICES": "",
+        }
+
     triplet_ok = run_subcommand(
         [sys.executable, "-u", "-m", "training.generate_hin_triplets", "--limit", "50000", "--beta", "0.6"],
         "Khai phá bộ ba mẫu khó đối lập (HIN-Guided Triplet Mining)",
+        extra_env=cpu_env,
     )
     if not triplet_ok:
         return False
@@ -201,6 +210,7 @@ def cmd_train(epochs: int = 3, batch_size: int = 8, device: str = "cpu") -> bool
             device,
         ],
         "Huấn luyện biểu diễn lồng nhau VietLawBERT-MRL với Hierarchy Loss",
+        extra_env=cpu_env,
     )
 
 
@@ -226,7 +236,7 @@ def cmd_benchmark() -> bool:
     )
 
 
-def cmd_run_all(batch_size: int = 8, device: str = "cpu", epochs: int = 3) -> bool:
+def cmd_run_all(batch_size: int = config.EMBED_BATCH_SIZE, device: str = config.EMBED_DEVICE, epochs: int = 3) -> bool:
     """Chạy tự động toàn trình liên hoàn từ Pha Kiểm tra hạ tầng đến Kiểm chuẩn Benchmark."""
     logger.info("=== BẮT ĐẦU CHU TRÌNH TỰ ĐỘNG TOÀN TRÌNH VIETLAWBERT ===")
 
@@ -242,10 +252,10 @@ def cmd_run_all(batch_size: int = 8, device: str = "cpu", epochs: int = 3) -> bo
         logger.info(">>> THỰC THI GIAI ĐOẠN: %s", name)
         success = func()
         if not success:
-            logger.error("Dừng quy trình tự động do giai đoạn '%s' thất bại.", name)
+            logger.error("✗ Dừng quy trình tự động do giai đoạn '%s' thất bại.", name)
             return False
 
-    logger.info("Toàn bộ quy trình VietLawBERT đã hoàn tất mỹ mãn và chuẩn hóa thực nghiệm.")
+    logger.info("✓ Toàn bộ quy trình VietLawBERT đã hoàn tất mỹ mãn và chuẩn hóa thực nghiệm.")
     return True
 
 
