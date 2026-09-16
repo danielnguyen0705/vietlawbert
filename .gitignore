@@ -6,6 +6,7 @@ __pycache__/
 # Môi trường ảo (Virtual Environments)
 .venv/
 .venv-chat/
+.venv-merge/
 .tools/
 ui/.files/
 ui/.chainlit/translations/*

@@ -468,7 +468,7 @@ def extract_cross_references(text: str) -> List[Dict[str, str]]:
 
     # 1. Dẫn chiếu Điều/Khoản trong văn bản khác
     complex_ref_pattern = re.compile(
-        r'(?:tại\s+)?(?:[Kk]hoản\s+\d+\s+)?(?:[Đđ]iều\s+(\d+[a-zA-Z]?))\s+(?:của|trong|được\s+quy\s+định\s+tại)?\s*(Luật|Nghị\s+định|Thông\s+tư|Quyết\s+định)(?:\s+số)?\s*([0-9]+/[0-9]+/[A-Z0-9\-]+|[A-Z0-9\-]+)?',
+        r'(?:tại\s+)?(?:[Kk]hoản\s+\d+\s+)?(?:[Đđ]iều\s+(\d+[a-zA-Z]?))\s+(?:của|trong|được\s+quy\s+định\s+tại)?\s*(Luật|Nghị\s+định|Thông\s+tư|Quyết\s+định)(?:\s+số)?\s*([0-9]+/[0-9]+/[A-ZĐ0-9\-]+|[A-ZĐ0-9\-]+)?',
         re.IGNORECASE
     )
     for match in complex_ref_pattern.finditer(text):

@@ -1,6 +1,6 @@
 """
 consume_raw.py - CLI nạp bản kê khai tài liệu pháp lý và quan hệ HIN vào Neo4j.
-Hỗ trợ cả chế độ Offline Ingestion trực tiếp từ file lẫn Kafka Streaming cũ.
+Tự động đồng bộ đường dẫn RAW_SHARDS_DIR và hỗ trợ nạp toàn bộ thư mục với Checkpoint.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ if str(ROOT_DIR) not in sys.path:
 from cli import bootstrap_cli_env
 bootstrap_cli_env()
 
+from configs.paths import RAW_SHARDS_DIR
 from configs.config import config
 from database.build_hin_graph import run_build_hin
 
@@ -26,35 +27,37 @@ logger = logging.getLogger("VietLawBERT_RawConsumerCLI")
 def main() -> int:
     parser = argparse.ArgumentParser(description="VietLawBERT Raw Metadata & Graph Ingestion")
     parser.add_argument(
+        "--path",
         "--file",
-        default="./data/raw/enriched_metadata.jsonl",
-        help="Đường dẫn file metadata thô để nạp trực tiếp vào Neo4j",
+        dest="path",
+        default=str(RAW_SHARDS_DIR),
+        help="Đường dẫn file shard đơn lẻ hoặc thư mục chứa các shard thô để nạp vào Neo4j",
+    )
+    parser.add_argument(
+        "--no-chunks",
+        action="store_true",
+        help="Chỉ nạp văn bản và quan hệ pháp lý, bỏ qua phân rã Chunks",
     )
     args = parser.parse_args()
 
-    meta_path = Path(args.file)
+    meta_path = Path(args.path).resolve()
     if not meta_path.exists():
-        logger.warning(f"Không tìm thấy file metadata tại {meta_path}. Tìm kiếm file shard trong data/raw_shards/...")
-        raw_shards = list(Path("./data/raw_shards").glob("*.jsonl*"))
-        if raw_shards:
-            meta_path = raw_shards[0]
-            logger.info(f"Sử dụng file shard thay thế: {meta_path}")
-        else:
-            logger.error("Không tìm thấy nguồn dữ liệu thô để nạp vào Neo4j.")
-            return 1
+        logger.error("Không tìm thấy đường dẫn dữ liệu thô: %s", meta_path)
+        return 1
 
     try:
-        logger.info(f"Bắt đầu nạp HIN đồ thị vào Neo4j từ: {meta_path}")
+        logger.info("Bắt đầu nạp HIN đồ thị vào Neo4j từ: %s", meta_path)
         run_build_hin(
             metadata_path=str(meta_path),
             uri=config.NEO4J_URI,
             user=config.NEO4J_USER,
             password=config.NEO4J_PASSWORD,
+            parse_chunks=not args.no_chunks,
         )
         logger.info("✓ Xây dựng mạng Heterogeneous Information Network (HIN) trên Neo4j hoàn tất.")
         return 0
     except Exception as exc:
-        logger.error(f"Lỗi nạp đồ thị thô vào Neo4j: {exc}", exc_info=True)
+        logger.error("Lỗi nạp đồ thị thô vào Neo4j: %s", exc, exc_info=True)
         return 1
 
 

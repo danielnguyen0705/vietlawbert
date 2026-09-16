@@ -37,6 +37,7 @@ JSON_DIR = DATA_STORAGE_ROOT / "json"
 
 # 4. Phân vùng Artifacts, Checkpoints & Benchmarks
 ARTIFACTS_DIR = ROOT_DIR / "artifacts"
+TRIPLETS_DIR = ARTIFACTS_DIR / "triplets"
 BENCHMARK_DIR = ROOT_DIR / "benchmark"
 MODELS_DIR = ROOT_DIR / "models"
 
@@ -53,6 +54,7 @@ ALL_DIRECTORIES = [
     PROCESSED_DIR,
     JSON_DIR,
     ARTIFACTS_DIR,
+    TRIPLETS_DIR,
     BENCHMARK_DIR,
     MODELS_DIR,
     BASE_LOGS_DIR,
@@ -61,7 +63,7 @@ ALL_DIRECTORIES = [
 
 
 def ensure_dirs() -> None:
-    """Tự động khởi tạo toàn bộ hạ tầng cây thư mục nếu có quyền truy cập."""
+    """Tự động khởi tạo toàn bộ hạ tầng cây thư mục an toàn."""
     for directory in ALL_DIRECTORIES:
         try:
             directory.mkdir(parents=True, exist_ok=True)

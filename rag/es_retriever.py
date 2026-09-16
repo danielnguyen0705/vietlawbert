@@ -1,6 +1,6 @@
 """
 es_retriever.py - Động cơ truy xuất từ khóa thưa (Sparse Retrieval Engine) cho văn bản pháp luật.
-Sử dụng Elasticsearch 8.x với Custom Vietnamese Legal Analyzer và Shingle N-grams.
+Sử dụng Elasticsearch 8.x với Custom Vietnamese Legal Analyzer và chuẩn hóa thứ tự Token Filter.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ class LegalElasticsearchRetriever:
         self._ensure_index_and_analyzer()
 
     def _ensure_index_and_analyzer(self) -> None:
-        """Cấu hình bộ phân tích tùy chỉnh tiếng Việt pháp lý tối ưu hóa truy vấn số hiệu và thuật ngữ."""
+        """Cấu hình Legal Analyzer chuẩn hóa thứ tự: lowercase -> vietnamese_stop -> asciifolding -> shingle."""
         if self.client.indices.exists(index=self.index_name):
             logger.info("Elasticsearch index [%s] đã sẵn sàng.", self.index_name)
             return
@@ -37,7 +37,7 @@ class LegalElasticsearchRetriever:
                     "filter": {
                         "vietnamese_stop": {
                             "type": "stop",
-                            "stopwords": ["và", "hoặc", "của", "tại", "theo", "về", "các", "những"],
+                            "stopwords": ["và", "hoặc", "của", "tại", "theo", "về", "các", "những", "căn", "cứ", "quy", "định"],
                         },
                         "legal_shingle": {
                             "type": "shingle",
@@ -52,8 +52,8 @@ class LegalElasticsearchRetriever:
                             "tokenizer": "standard",
                             "filter": [
                                 "lowercase",
-                                "asciifolding",
-                                "vietnamese_stop",
+                                "vietnamese_stop",   # Phải lọc từ dừng có dấu trước
+                                "asciifolding",      # Sau đó mới bóc tách dấu thanh
                                 "legal_shingle",
                             ],
                         }
@@ -87,7 +87,6 @@ class LegalElasticsearchRetriever:
         logger.info("Đã tạo mới chỉ mục Elasticsearch [%s] với Legal Analyzer thành công.", self.index_name)
 
     def bulk_index_chunks(self, chunks: List[Dict[str, Any]], batch_size: int = 500) -> int:
-        """Nạp theo lô hàng loạt chunk pháp lý vào Elasticsearch (Đã tắt ép buộc Refresh)."""
         actions = []
         for ch in chunks:
             meta = ch.get("metadata", {})
@@ -98,6 +97,9 @@ class LegalElasticsearchRetriever:
             macro_label = str(ch.get("macro_label") or meta.get("macro_label") or "CHUNG")
             content = str(ch.get("content") or ch.get("text") or "")
             is_effective = bool(ch.get("is_effective", True))
+
+            if not chunk_id:
+                continue
 
             action = {
                 "_index": self.index_name,
@@ -118,7 +120,6 @@ class LegalElasticsearchRetriever:
         if failed:
             logger.warning("Có %s tài liệu gặp sự cố khi nạp vào Elasticsearch.", failed)
         logger.info("Đã nạp thành công %d văn bản vào Elasticsearch index [%s].", success_count, self.index_name)
-        # TUYỆT ĐỐI KHÔNG gọi refresh tại đây để bảo vệ I/O đĩa cứng cho Qdrant
         return success_count
 
     def search_sparse(
@@ -127,7 +128,9 @@ class LegalElasticsearchRetriever:
         top_k: int = 50,
         must_be_effective: bool = True,
     ) -> List[Dict[str, Any]]:
-        """Truy vấn kết hợp tăng cường trọng số cho Phân cấp và Số hiệu văn bản."""
+        if not query or not query.strip():
+            return []
+
         filter_clauses = []
         if must_be_effective:
             filter_clauses.append({"term": {"is_effective": True}})
@@ -162,6 +165,8 @@ class LegalElasticsearchRetriever:
             for hit in response["hits"]["hits"]:
                 src = hit["_source"]
                 src["score"] = float(hit["_score"])
+                src["id"] = str(hit["_id"])
+                src["chunk_id"] = str(src.get("chunk_id") or hit["_id"])
                 results.append(src)
             return results
         except Exception as exc:

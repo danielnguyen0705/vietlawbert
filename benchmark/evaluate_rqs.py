@@ -1,6 +1,6 @@
 """
 evaluate_rqs.py - Bộ khung thực nghiệm khoa học giải quyết 4 Research Questions (RQ1 - RQ4).
-Thực thi đo đạc thực tế trên tập VietLawBench, tính kiểm định thống kê và xuất mã nguồn LaTeX.
+Khắc phục chuẩn xác hình học MRL (Cắt lát d=64 trước khi chuẩn hóa L2) và đồng bộ tham số Retriever.
 """
 
 from __future__ import annotations
@@ -46,11 +46,11 @@ class ScientificBenchmarkRunner:
 
         qdrant = QdrantClientWrapper(host=config.QDRANT_HOST, port=config.QDRANT_PORT)
         es = LegalElasticsearchRetriever(hosts=[config.ES_HOST], index_name=config.ES_INDEX_NAME)
-        encoder = SentenceTransformer(config.BASE_MODEL_NAME)
+        encoder = SentenceTransformer(config.BASE_MODEL_NAME, device=config.EMBED_DEVICE)
         return LegalHybridRetriever(qdrant_wrapper=qdrant, es_retriever=es, encoder_model=encoder)
 
     def evaluate_rq1_negative_mining(self) -> str:
-        """RQ1: Đánh giá sự vượt trội của HIN-Guided Hard Negatives qua kiểm định t-test."""
+        """RQ1: Đánh giá sự vượt trội của HIN-Guided Hard Negatives qua kiểm định Paired t-test."""
         logger.info("=== Thực nghiệm RQ1: Khai phá mẫu khó HIN-Guided vs Baselines ===")
         retriever = self._get_retriever()
 
@@ -96,7 +96,7 @@ class ScientificBenchmarkRunner:
         return latex_table
 
     def evaluate_rq2_pareto_mrl(self) -> str:
-        """RQ2: Đường biên tối ưu Pareto trên các số chiều Matryoshka và Silhouette Score."""
+        """RQ2: Phân tích đường biên Pareto và Silhouette Score (Cắt lát trước, chuẩn hóa L2 sau)."""
         logger.info("=== Thực nghiệm RQ2: Pareto Front Analysis trên Matryoshka Dims ===")
         dims = [64, 128, 256, 512, 768, 1024]
         hit_rates = [0.7924, 0.8351, 0.8718, 0.8882, 0.8930, 0.8954]
@@ -107,10 +107,15 @@ class ScientificBenchmarkRunner:
 
         if len(self.samples) >= 10:
             sample_texts = [s["query"] for s in self.samples[:60]]
-            with_dim_64 = retriever.encoder.encode(sample_texts, show_progress_bar=False, normalize_embeddings=True)[:, :64]
+            # 1. Mã hóa thô không chuẩn hóa L2 trên 1024 chiều
+            raw_embs = retriever.encoder.encode(sample_texts, show_progress_bar=False, normalize_embeddings=False)
+            # 2. Cắt lát d=64 và chuẩn hóa L2 trên không gian con
+            sub_64 = raw_embs[:, :64]
+            sub_64_norm = sub_64 / (np.linalg.norm(sub_64, axis=1, keepdims=True) + 1e-9)
+
             labels = [hash(s.get("hierarchy_label", "CHUNG")) % 5 for s in self.samples[:60]]
             if len(set(labels)) > 1:
-                sil_score_64 = float(silhouette_score(with_dim_64, labels))
+                sil_score_64 = float(silhouette_score(sub_64_norm, labels))
 
         latex_rows = []
         for d, hit, ram in zip(dims, hit_rates, ram_mb):
@@ -133,7 +138,7 @@ class ScientificBenchmarkRunner:
         return latex_table
 
     def evaluate_rq3_latency_ablation(self) -> str:
-        """RQ3: Ablation Study đo đạc thời gian thực thi (Latency P95 < 500ms)."""
+        """RQ3: Ablation Study đo đạc độ trễ toàn trình P95 tuân thủ SLA < 500ms."""
         logger.info("=== Thực nghiệm RQ3: Bóc tách thành phần và đo Latency SLA ===")
         retriever = self._get_retriever()
         latencies = []

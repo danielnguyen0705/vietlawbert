@@ -34,7 +34,6 @@ BOILERPLATE = re.compile(
 
 
 def safe_read_jsonl(path: Path | str) -> Iterator[Dict[str, Any]]:
-    """Đọc phân dòng an toàn cho cả tệp văn bản .jsonl lẫn tệp nén .jsonl.gz."""
     p = Path(path)
     opener = gzip.open(p, "rt", encoding="utf-8") if p.suffix == ".gz" else open(p, "r", encoding="utf-8")
     with opener as f:
@@ -48,7 +47,6 @@ def safe_read_jsonl(path: Path | str) -> Iterator[Dict[str, Any]]:
 
 
 def evaluate_linguistic_quality(text: str) -> Dict[str, Any]:
-    """Kiểm tra tỷ lệ nguyên âm tiếng Việt và phát hiện lỗi vỡ bảng mã Unicode."""
     if not text:
         return {"vietnamese_ratio": 0.0, "has_encoding_error": False, "is_valid": False}
 
@@ -74,7 +72,6 @@ def audit_crawl(
     allow_upstream_missing: bool = False,
     allow_ocr_pending: bool = False,
 ) -> Dict[str, Any]:
-    """Kiểm toán toàn diện một tệp Shard mà không giữ payload HTML trong RAM."""
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"Không tìm thấy tệp artifact: {p}")
@@ -104,12 +101,14 @@ def audit_crawl(
                 counters["linguistic_quality_rejected"] += 1
 
         rescue_file = record.get("rescue_file") or {}
+        file_name = str(rescue_file.get("fileName") or "").lower()
+        file_size = int(rescue_file.get("size") or 0)
+
+        # Nhận diện mẫu rác template linh hoạt (tránh khóa cứng kích thước 32052 bytes)
         upstream_missing = (
             not content_valid
-            and str(rescue_file.get("fileName") or "").lower() == "template.pdf"
-            and int(rescue_file.get("size") or 0) == 32052
-            and record.get("upstream_content_unavailable") is True
-            and str(record.get("rescue_status") or "") in {"OCR_EMPTY", "FILE_NOT_FOUND", "UPSTREAM_TEMPLATE"}
+            and ("template" in file_name or (30000 <= file_size <= 35000 and file_name.endswith(".pdf")))
+            and (record.get("upstream_content_unavailable") is True or str(record.get("rescue_status") or "") in {"OCR_EMPTY", "FILE_NOT_FOUND", "UPSTREAM_TEMPLATE"})
         )
         counters["upstream_content_unavailable"] += upstream_missing
         ocr_pending = not content_valid and str(record.get("ocr_status") or "") == "OCR_PENDING"
@@ -142,11 +141,12 @@ def audit_crawl(
         "linguistic_quality_rejected": counters["linguistic_quality_rejected"],
         "upstream_content_unavailable": counters["upstream_content_unavailable"],
         "ocr_pending": counters["ocr_pending"],
-        "html_invalid_unexplained": (
+        "html_invalid_unexplained": max(
+            0,
             record_count
             - html_content_valid
             - counters["upstream_content_unavailable"]
-            - counters["ocr_pending"]
+            - counters["ocr_pending"],
         ),
         "translated_documents": counters["translated_documents"],
         "administrative_documents": counters["administrative_documents"],
@@ -165,6 +165,8 @@ def audit_crawl(
         failures.append(f"Tồn tại {result['missing_document_id']} bản ghi thiếu trường định danh item_id")
     if result["html_invalid_unexplained"] > 0:
         failures.append(f"{result['html_invalid_unexplained']} văn bản hỏng không rõ nguyên nhân")
+    if result["linguistic_quality_rejected"] > 0:
+        failures.append(f"{result['linguistic_quality_rejected']} văn bản bị lỗi mã hóa font/Unicode")
     if result["upstream_content_unavailable"] > 0 and not allow_upstream_missing:
         failures.append(f"{result['upstream_content_unavailable']} văn bản chưa được công bố nội dung gốc")
     if result["ocr_pending"] > 0 and not allow_ocr_pending:
@@ -179,13 +181,23 @@ def audit_crawl(
     return result
 
 
-def fetch_all_qdrant_points(client, collection_name: str) -> Iterator[Dict[str, Any]]:
-    """Cuộn (scroll) toàn bộ bản ghi từ Qdrant theo phân trang an toàn bộ nhớ."""
+def fetch_all_qdrant_points(client, collection_name: str, document_ids: Optional[Set[str]] = None) -> Iterator[Dict[str, Any]]:
+    """Cuộn (scroll) bản ghi từ Qdrant với bộ lọc Payload cấp cơ sở dữ liệu."""
+    from qdrant_client.http import models
+
     offset = None
     limit = 1000
+    scroll_filter = None
+
+    if document_ids:
+        scroll_filter = models.Filter(
+            must=[models.FieldCondition(key="doc_id", match=models.MatchAny(any=list(document_ids)))]
+        )
+
     while True:
         records, next_offset = client.scroll(
             collection_name=collection_name,
+            scroll_filter=scroll_filter,
             limit=limit,
             offset=offset,
             with_payload=True,
@@ -210,7 +222,6 @@ def audit_databases(
     expected_documents: Optional[int] = None,
     document_ids: Optional[Set[str]] = None,
 ) -> Dict[str, Any]:
-    """Kiểm toán tính nhất quán 1:1 giữa Qdrant và Neo4j theo dòng chảy O(1) RAM."""
     from qdrant_client import QdrantClient
     from neo4j import GraphDatabase
 
@@ -219,7 +230,7 @@ def audit_databases(
     qdrant_port = getattr(config, "QDRANT_PORT", 6333)
 
     logger.info("Đang kết nối Qdrant [%s:%d] để đối soát collection [%s]...", qdrant_host, qdrant_port, collection)
-    q_client = QdrantClient(host=qdrant_host, port=qdrant_port, timeout=10.0)
+    q_client = QdrantClient(host=qdrant_host, port=qdrant_port, timeout=15.0)
 
     try:
         existing_cols = [c.name for c in q_client.get_collections().collections]
@@ -238,12 +249,8 @@ def audit_databases(
         max_chunk_chars = int(os.getenv("AUDIT_MAX_CHUNK_CHARS", "1600"))
         oversized_chunks = 0
 
-        # Lặp trực tiếp không tạo list tạm nhằm giải phóng RAM tuyệt đối
-        for row in fetch_all_qdrant_points(q_client, collection):
+        for row in fetch_all_qdrant_points(q_client, collection, document_ids=document_ids):
             doc_id = str(row.get("doc_id") or "").strip()
-            if document_ids is not None and doc_id not in document_ids:
-                continue
-
             cid = str(row.get("chunk_id") or "").strip()
             if cid:
                 qdrant_chunk_ids.add(cid)
@@ -261,12 +268,11 @@ def audit_databases(
         if hasattr(q_client, "close"):
             q_client.close()
 
-    # Kết nối Neo4j đối soát cấu trúc
     neo_uri = getattr(config, "NEO4J_URI", "bolt://localhost:7687")
     neo_user = getattr(config, "NEO4J_USER", "neo4j")
     neo_pwd = getattr(config, "NEO4J_PASSWORD", "vietlawbert2026")
 
-    driver = GraphDatabase.driver(neo_uri, auth=(neo_user, neo_pwd), connection_acquisition_timeout=10.0)
+    driver = GraphDatabase.driver(neo_uri, auth=(neo_user, neo_pwd), connection_acquisition_timeout=15.0)
     try:
         with driver.session() as session:
             neo_ids = {

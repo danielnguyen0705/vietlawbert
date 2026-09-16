@@ -1,13 +1,14 @@
 """
 config.py - Trung tâm điều phối tham số cấu hình hệ thống VietLawBERT (Kiến trúc v3).
 Nạp biến môi trường từ .env và đồng bộ với Docker Compose (Qdrant, ES, Neo4j, Redis, Mongo).
+Tích hợp hàm kiểm tra Compute Capability an toàn và cấu hình đồng bộ Hugging Face Hub.
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, Optional
 from dotenv import load_dotenv
 import torch
 
@@ -17,6 +18,18 @@ from .paths import ROOT_DIR, DATA_STORAGE_ROOT
 ENV_PATH = ROOT_DIR / ".env"
 if ENV_PATH.exists():
     load_dotenv(dotenv_path=ENV_PATH)
+
+
+def _check_valid_cuda() -> bool:
+    """Kiểm tra CUDA khả dụng và phần cứng đạt chuẩn tối thiểu sm_75 (Turing/Ampere)."""
+    if not torch.cuda.is_available() or torch.cuda.device_count() == 0:
+        return False
+    try:
+        major, minor = torch.cuda.get_device_capability(0)
+        # Loại trừ kiến trúc cũ (như Pascal sm_61 trên GTX 1050 Ti) gây lỗi PyTorch 2.x
+        return (major > 7) or (major == 7 and minor >= 5)
+    except Exception:
+        return False
 
 
 class Config:
@@ -72,25 +85,29 @@ class Config:
     HIERARCHY_WEIGHT: float = float(os.getenv("HIERARCHY_WEIGHT", 0.15))
     MAX_SEQ_LENGTH: int = int(os.getenv("MAX_SEQ_LENGTH", 512))
 
-    # Tự động nhận diện thiết bị tính toán an toàn
-    _cuda_available = torch.cuda.is_available() and torch.cuda.device_count() > 0
-    EMBED_DEVICE: str = os.getenv("EMBED_DEVICE", "cuda" if _cuda_available else "cpu")
+    # Tự động nhận diện thiết bị tính toán an toàn (Bảo vệ card sm_61)
+    EMBED_DEVICE: str = os.getenv("EMBED_DEVICE", "cuda" if _check_valid_cuda() else "cpu")
     EMBED_BATCH_SIZE: int = int(os.getenv("EMBED_BATCH_SIZE", 16))
 
     # ==========================================
-    # 8. CỤM TRÍ TUỆ NHÂN TẠO & TRUY XUẤT LAI (RAG / LLM)
+    # 8. ĐỒNG BỘ HUGGING FACE HUB (KHI THUÊ CLOUD GPU)
+    # ==========================================
+    HF_TOKEN: Optional[str] = os.getenv("HF_TOKEN", None)
+    HF_MODEL_REPO_ID: Optional[str] = os.getenv("HF_MODEL_REPO_ID", None)
+
+    # ==========================================
+    # 9. CỤM TRÍ TUỆ NHÂN TẠO & TRUY XUẤT LAI (RAG / LLM)
     # ==========================================
     LLM_API_BASE: str = os.getenv("LLM_API_BASE", "http://localhost:11434/v1")
     LLM_API_KEY: str = os.getenv("LLM_API_KEY", "ollama")
     GENERATOR_MODEL: str = os.getenv("GENERATOR_MODEL", "Qwen/Qwen2.5-7B-Instruct")
 
-    # Siêu tham số hợp nhất RRF & Bơm điểm đồ thị
     RRF_K: int = int(os.getenv("RRF_K", 60))
     RETRIEVAL_TOP_K: int = int(os.getenv("RETRIEVAL_TOP_K", 5))
     GRAPH_ALPHA: float = float(os.getenv("GRAPH_ALPHA", 0.2))
 
     # ==========================================
-    # 9. ĐIỀU PHỐI CLOUD GPU
+    # 10. ĐIỀU PHỐI CLOUD GPU
     # ==========================================
     ENABLE_CLOUD_GPU: bool = os.getenv("ENABLE_CLOUD_GPU", "false").lower() in ("true", "1", "yes")
     CLOUD_GPU_PROVIDER: str = os.getenv("CLOUD_GPU_PROVIDER", "runpod")

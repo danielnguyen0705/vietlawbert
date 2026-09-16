@@ -1,6 +1,7 @@
 """
 law_spider.py - Con nhện thu thập toàn diện văn bản pháp luật Việt Nam (VBPL).
 Tích hợp Next.js Server Action, Strict Backpressure, Chromium V8 Refresh và Deferred OCR.
+Tối ưu hóa bộ nhớ: Loại bỏ hoàn toàn BeautifulSoup object khỏi Item tuần tự hóa đĩa JSONL.
 """
 
 from __future__ import annotations
@@ -12,7 +13,6 @@ import json
 import shutil
 import asyncio
 import zipfile
-import subprocess
 import html as html_lib
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -321,9 +321,10 @@ class LawSpider(scrapy.Spider):
         raise ValueError("Server action response không có payload định dạng 1:")
 
     @staticmethod
-    def _prepare_html(html_raw: Optional[str]) -> Tuple[str, str, Optional[BeautifulSoup]]:
+    def _prepare_html(html_raw: Optional[str]) -> Tuple[str, str]:
+        """Làm sạch HTML và chỉ trả về trạng thái cùng chuỗi string HTML (Loại bỏ BeautifulSoup object)."""
         if not html_raw:
-            return HTMLStatus.EMPTY, "", None
+            return HTMLStatus.EMPTY, ""
 
         html_dom = BeautifulSoup(html_raw, "html.parser")
         for embedded in html_dom.find_all(src=re.compile(r"^data:", re.I)):
@@ -332,9 +333,12 @@ class LawSpider(scrapy.Spider):
             embedded.decompose()
 
         text_content = html_dom.get_text(" ", strip=True)
+        cleaned_html = str(html_dom)
+        del html_dom
+
         if len(text_content) < 100:
-            return HTMLStatus.EMPTY, "", None
-        return HTMLStatus.VALID, str(html_dom), html_dom
+            return HTMLStatus.EMPTY, ""
+        return HTMLStatus.VALID, cleaned_html
 
     @staticmethod
     def _extract_docx_text(body: bytes) -> str:
@@ -435,15 +439,13 @@ class LawSpider(scrapy.Spider):
         item["doc_id"] = item["item_id"]
         item["title"] = doc_data.get("title") or item.get("title") or ""
 
-        html_status, prepared_html, html_dom = self._prepare_html(html_raw)
+        html_status, prepared_html = self._prepare_html(html_raw)
         if html_status != HTMLStatus.VALID:
             item["html_status"] = HTMLStatus.EMPTY
             item["html_raw"] = ""
-            item["html_dom"] = None
         else:
             item["html_status"] = HTMLStatus.VALID
             item["html_raw"] = prepared_html
-            item["html_dom"] = html_dom
             item["content_source"] = "detail_html"
 
         metadata_detail = dict(doc_data)
@@ -491,11 +493,10 @@ class LawSpider(scrapy.Spider):
         page = response.meta.get("playwright_page")
         try:
             content_html = response.css("#content").get() or ""
-            status, prepared_html, html_dom = self._prepare_html(content_html)
+            status, prepared_html = self._prepare_html(content_html)
             if status == HTMLStatus.VALID:
                 item["html_status"] = status
                 item["html_raw"] = prepared_html
-                item["html_dom"] = html_dom
                 item["content_source"] = "legacy_print_html"
                 item["rescue_status"] = "LEGACY_HTML_RECOVERED"
                 yield self._diagram_request(item)
@@ -612,11 +613,10 @@ class LawSpider(scrapy.Spider):
         try:
             if name.endswith(".html") or response.body.startswith(b"<!DOCTYPE") or response.body.startswith(b"<html"):
                 raw_html = response.body.decode("utf-8", errors="replace")
-                status, prepared_html, html_dom = self._prepare_html(raw_html)
+                status, prepared_html = self._prepare_html(raw_html)
                 if status == HTMLStatus.VALID:
                     item["html_status"] = status
                     item["html_raw"] = prepared_html
-                    item["html_dom"] = html_dom
                     item["content_source"] = "fallback_html"
                     item["rescue_status"] = "HTML_RECOVERED"
                     yield self._diagram_request(item)
@@ -639,7 +639,6 @@ class LawSpider(scrapy.Spider):
                 recovered_html = "<html><body><pre>" + html_lib.escape(extracted_text) + "</pre></body></html>"
                 item["html_status"] = HTMLStatus.VALID
                 item["html_raw"] = recovered_html
-                item["html_dom"] = BeautifulSoup(recovered_html, "html.parser")
                 item["content_source"] = source
                 item["rescue_status"] = "TEXT_RECOVERED"
                 yield self._diagram_request(item)

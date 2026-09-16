@@ -1,6 +1,6 @@
 """
 pipelines.py - Pipeline bóc tách bản đồ tri thức quan hệ pháp luật và lưu trữ Shard Staging.
-Chuẩn hóa Schema đồ thị (22 quan hệ HIN), trích xuất văn bản thô cho AST Parser và nén Shard cục bộ.
+Chuẩn hóa Schema đồ thị (22 quan hệ HIN), Lazy Parsing đối sánh Jaccard và nén Shard cục bộ.
 """
 
 from __future__ import annotations
@@ -118,14 +118,9 @@ class LegalOntologyMappingPipeline:
         text = unicodedata.normalize("NFKC", str(text or "")).lower()
         return re.sub(r"\s+", " ", text).strip()
 
-    def _parse_html_groups(self, html_dom: Any) -> Dict[str, set]:
-        if not html_dom:
-            return {}
-        if isinstance(html_dom, str):
-            html_dom = BeautifulSoup(html_dom, "html.parser")
-
+    def _parse_html_groups(self, soup: BeautifulSoup) -> Dict[str, set]:
         groups = {}
-        headers = html_dom.find_all(["h1", "h2", "h3", "h4", "h5", "strong", "b", "div", "p"])
+        headers = soup.find_all(["h1", "h2", "h3", "h4", "h5", "strong", "b", "div", "p"])
         for header in headers:
             if header.name in {"div", "p"} and header.find(["h1", "h2", "h3", "h4", "h5", "strong", "b"]):
                 continue
@@ -137,7 +132,8 @@ class LegalOntologyMappingPipeline:
             category = re.sub(r"\(\d+\)", "", header_text).strip()
             docs = []
             sibling = header.next_sibling
-            while sibling:
+            step_count = 0
+            while sibling and step_count < 10:
                 if getattr(sibling, "name", None) in ["h1", "h2", "h3", "h4", "h5"]:
                     break
                 if getattr(sibling, "find_all", None):
@@ -145,10 +141,7 @@ class LegalOntologyMappingPipeline:
                     if links:
                         docs.extend([x.get_text(" ", strip=True) for x in links if x.get_text(" ", strip=True)])
                 sibling = sibling.next_sibling
-
-            if not docs:
-                direct_links = header.find_all_next("a", limit=20)
-                docs = [x.get_text(" ", strip=True) for x in direct_links if x.get_text(" ", strip=True)]
+                step_count += 1
 
             if docs:
                 groups[category] = set(self._normalize_text(x) for x in docs)
@@ -165,13 +158,19 @@ class LegalOntologyMappingPipeline:
             return match_cp.group(1).replace(" ", "")
         return text_lower.strip()
 
-    def _jaccard_fallback(self, raw_key: str, html_dom: Any, json_docs_list: list) -> Tuple[str, float]:
+    def _jaccard_fallback(self, raw_key: str, html_raw: str, json_docs_list: list) -> Tuple[str, float]:
         json_set = set(self._extract_doc_number_only(d.get("name") or d.get("title") or "") for d in json_docs_list)
         json_set = {x for x in json_set if x}
-        if not json_set:
+        if not json_set or not html_raw:
             return f"REL_TYPE_{raw_key}", 0.0
 
-        html_groups = self._parse_html_groups(html_dom)
+        try:
+            soup = BeautifulSoup(html_raw, "html.parser")
+            html_groups = self._parse_html_groups(soup)
+            del soup
+        except Exception:
+            return f"REL_TYPE_{raw_key}", 0.0
+
         best_label = f"REL_TYPE_{raw_key}"
         highest_score = 0.0
 
@@ -226,13 +225,9 @@ class LegalOntologyMappingPipeline:
             "source_doc_number": source_doc_number,
         }
 
-    def process_diagram(self, item: Any, html_dom: Any = None) -> Any:
+    def process_diagram(self, item: Any) -> Any:
         diagram_json = item.get("diagram_json") or {}
-        if html_dom is None and item.get("html_raw"):
-            try:
-                html_dom = BeautifulSoup(item.get("html_raw"), "html.parser")
-            except Exception:
-                html_dom = None
+        html_raw = item.get("html_raw") or ""
 
         relationships = []
         unresolved = []
@@ -247,8 +242,8 @@ class LegalOntologyMappingPipeline:
                 method = "static"
 
                 if not edge_type:
-                    if html_dom:
-                        edge_type, score = self._jaccard_fallback(raw_key, html_dom, docs_list)
+                    if html_raw:
+                        edge_type, score = self._jaccard_fallback(raw_key, html_raw, docs_list)
                         method = "dynamic_jaccard"
                     else:
                         edge_type = f"REL_TYPE_{raw_key}"
@@ -280,38 +275,21 @@ class LegalOntologyMappingPipeline:
         return item
 
     def process_item(self, item: Any, spider: Any) -> Any:
-        # 1. Bóc tách text an toàn, phòng vệ trường hợp html_dom là str hoặc BeautifulSoup
-        html_dom = item.get("html_dom") if hasattr(item, "get") else None
-        raw_text = ""
-        if html_dom:
-            if hasattr(html_dom, "get_text"):
-                raw_text = html_dom.get_text("\n", strip=True)
-            elif isinstance(html_dom, str):
-                try:
-                    soup = BeautifulSoup(html_dom, "html.parser")
-                    raw_text = soup.get_text("\n", strip=True)
-                except Exception:
-                    raw_text = str(html_dom)
-
-        if not raw_text and item.get("html_raw"):
+        if not item.get("text") and item.get("html_raw"):
             try:
-                soup = BeautifulSoup(item.get("html_raw"), "html.parser")
+                soup = BeautifulSoup(item["html_raw"], "html.parser")
                 raw_text = soup.get_text("\n", strip=True)
+                del soup
+                item["text"] = raw_text
+                item["full_text"] = raw_text
             except Exception:
                 pass
 
-        if raw_text:
-            item["text"] = raw_text
-            item["full_text"] = raw_text
-
-        # 2. Đồng bộ doc_id = item_id nếu thiếu
         if not item.get("doc_id") and item.get("item_id"):
             item["doc_id"] = item["item_id"]
 
-        # 3. Bóc tách quan hệ đồ thị HIN
-        item = self.process_diagram(item, html_dom)
+        item = self.process_diagram(item)
 
-        # 4. Chuyển đổi sang dict sạch loại bỏ DOM
         if isinstance(item, VietLawItem):
             clean_record = item.to_clean_dict()
         else:
@@ -321,7 +299,6 @@ class LegalOntologyMappingPipeline:
                 if hasattr(v, "value"):
                     clean_record[k] = v.value
 
-        # 5. Lưu đệm phân đoạn khi không dùng feed exporter
         if not self.feed_export_active:
             self.shard_buffer.append(clean_record)
             if len(self.shard_buffer) >= self.shard_size:

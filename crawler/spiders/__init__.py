@@ -2,11 +2,16 @@
 vietlawbert.crawler.spiders
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Gói điều phối các Scrapy Spiders phục vụ dự án VietLawBERT:
-- LawSpider: Nhện thu thập diện rộng toàn bộ danh mục văn bản pháp luật quốc gia.
-- RescueSpider: Nhện cứu hộ tái thu thập các bản ghi lỗi/quarantine theo kiến trúc Microservice.
+- LawSpider: Thu thập diện rộng kho văn bản quy phạm pháp luật quốc gia.
+- RescueSpider: Tái xử lý và cứu hộ các bản ghi lỗi/quarantine.
 """
 
-from .law_spider import LawSpider
+from .law_spider import LawSpider, SEARCH_API, HOME_URL
 from .rescue_spider import RescueSpider
 
-__all__ = ["LawSpider", "RescueSpider"]
+__all__ = [
+    "LawSpider",
+    "RescueSpider",
+    "SEARCH_API",
+    "HOME_URL",
+]

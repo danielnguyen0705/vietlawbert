@@ -2,10 +2,10 @@
 vietlawbert.preprocess
 ~~~~~~~~~~~~~~~~~~~~~~
 Phân hệ tiền xử lý văn bản quy phạm pháp luật Việt Nam (Kiến trúc v3):
-- Hybrid Legal AST Parser: Bóc tách cây cú pháp EBNF và tiêm Metadata/Hierarchy.
-- Legal Text Cleaner: Khử nhiễu tiêu ngữ, chữ ký, chuẩn hóa ngày tháng ISO 8601.
-- Structure-Aware Legal Chunker: Cắt đoạn dự phòng theo Điều/Khoản/Điểm.
-- HTML to Markdown Converter: Chuyển đổi định dạng HTML sang Markdown giữ cấu trúc.
+- Hybrid Legal AST Parser: Bóc tách cây cú pháp EBNF và tiêm Metadata/Hierarchy tất định.
+- Legal Text Cleaner: Khử nhiễu tiêu ngữ, chữ ký, trích xuất ngày hiệu lực ISO 8601.
+- Structure-Aware Legal Chunker: Cắt đoạn cấu trúc dự phòng theo Điều/Khoản/Điểm.
+- HTML to Markdown Converter: Chuyển đổi định dạng HTML sang Markdown giữ nguyên cấu trúc.
 """
 
 from .ast_parser import HybridASTParser, LegalHierarchyTracker
@@ -29,7 +29,7 @@ from .legal_chunker import (
 from .html_to_md import HTMLConverter
 
 __all__ = [
-    # Cốt lõi AST Parser 2026
+    # AST Parser & Phân cấp
     "HybridASTParser",
     "LegalHierarchyTracker",
     # Làm sạch & Trích xuất Metadata
@@ -47,6 +47,6 @@ __all__ = [
     "chunk_by_dieu",
     "chunk_by_khoan",
     "extract_cross_references",
-    # Tiện ích HTML
+    # Chuyển đổi HTML
     "HTMLConverter",
 ]

@@ -1,6 +1,6 @@
 """
 qdrant_client.py - Lớp giao tiếp Qdrant Vector Engine phục vụ Dense Retrieval (d=256).
-Hỗ trợ HNSW Cosine Index, Deterministic UUIDv5, Doc-level Resume và Exponential Backoff Retry.
+Hỗ trợ HNSW Cosine Index, Deterministic UUIDv5 (RFC 4122), Type-safe Slicing và Exponential Backoff.
 """
 
 from __future__ import annotations
@@ -41,7 +41,6 @@ class QdrantClientWrapper:
         self.default_collection = getattr(config, "QDRANT_COLLECTION_NAME", "vietlawbert_chunks")
         self.vector_dim = getattr(config, "QDRANT_VECTOR_DIM", 256)
 
-        # Nâng timeout toàn cục lên 120.0s ở cấp HTTP Client
         if url:
             self.client = QdrantClient(url=url, timeout=120.0)
         else:
@@ -103,7 +102,6 @@ class QdrantClientWrapper:
             return False
 
     def count_points(self, collection_name: Optional[str] = None) -> int:
-        """Đếm chính xác tổng số vector hiện diện trong Collection."""
         col_name = collection_name or self.default_collection
         try:
             return self.client.count(collection_name=col_name, exact=True).count
@@ -117,7 +115,7 @@ class QdrantClientWrapper:
         batch_size: int = 128,
         max_retries: int = 3,
     ) -> int:
-        """Đẩy dữ liệu vector d=256 kèm metadata với cơ chế Retry tự phục hồi chống sập luồng."""
+        """Đẩy dữ liệu vector d=256 kèm metadata chuẩn hóa kiểu dữ liệu list[float]."""
         if not records:
             return 0
 
@@ -133,7 +131,10 @@ class QdrantClientWrapper:
                 if vec is None:
                     continue
 
-                vec_slice = vec[: self.vector_dim]
+                # Chuẩn hóa ép kiểu về list[float] tránh lỗi serialization của NumPy array
+                vec_sub = vec[: self.vector_dim]
+                vec_list = vec_sub.tolist() if hasattr(vec_sub, "tolist") else [float(x) for x in vec_sub]
+
                 meta = item.get("metadata", {})
                 chunk_id = str(item.get("chunk_id") or meta.get("chunk_id") or uuid.uuid4().hex)
                 doc_id = str(item.get("doc_id") or meta.get("doc_id") or "")
@@ -155,9 +156,9 @@ class QdrantClientWrapper:
                     "content": content,
                 }
 
-                # Sử dụng UUIDv5 xác định bảo toàn tính lũy thừa tuyệt đối
+                # Định danh Point ID bằng UUIDv5 chuẩn RFC 4122
                 point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, chunk_id))
-                points.append(PointStruct(id=point_id, vector=vec_slice, payload=payload))
+                points.append(PointStruct(id=point_id, vector=vec_list, payload=payload))
 
             if not points:
                 continue
@@ -165,7 +166,6 @@ class QdrantClientWrapper:
             success = False
             for attempt in range(1, max_retries + 1):
                 try:
-                    # Tuyệt đối không truyền timeout vào hàm upsert()
                     self.client.upsert(
                         collection_name=col_name,
                         points=points,
@@ -176,7 +176,7 @@ class QdrantClientWrapper:
                     break
                 except Exception as exc:
                     logger.warning(
-                        "Batch Qdrant gặp độ trễ lớn (Thử lại %d/%d): %s. Tạm dừng %ds...",
+                        "Batch Qdrant gặp độ trễ (Thử lại %d/%d): %s. Tạm dừng %ds...",
                         attempt,
                         max_retries,
                         exc,
@@ -199,7 +199,8 @@ class QdrantClientWrapper:
     ) -> List[Dict[str, Any]]:
         """Tìm kiếm tương đồng ngữ nghĩa lát cắt d=256 kết hợp lọc hiệu lực."""
         col_name = collection_name or self.default_collection
-        query_slice = query_vector[: self.vector_dim]
+        vec_sub = query_vector[: self.vector_dim]
+        query_list = vec_sub.tolist() if hasattr(vec_sub, "tolist") else [float(x) for x in vec_sub]
 
         query_filter = None
         if must_be_effective:
@@ -209,7 +210,7 @@ class QdrantClientWrapper:
 
         results = self.client.search(
             collection_name=col_name,
-            query_vector=query_slice,
+            query_vector=query_list,
             limit=top_k,
             query_filter=query_filter,
         )

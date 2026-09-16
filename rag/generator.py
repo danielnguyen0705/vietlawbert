@@ -17,7 +17,7 @@ from openai import OpenAI
 
 from configs.config import config
 from configs.logging_config import get_subsystem_logger
-from .retriever import LegalHybridRetriever
+from rag.retriever import LegalHybridRetriever
 
 logger = get_subsystem_logger("rag", "generator")
 

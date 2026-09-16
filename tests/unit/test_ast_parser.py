@@ -55,4 +55,4 @@ b) Doanh nghiệp nhà nước.
     assert "[CONTENT]" in first_chunk["text"]
 
     # Kiểm tra nhãn phân cấp vĩ mô cho hàm mất mát MRL d=64
-    assert any(c["macro_label"] == "Chương I" for c in chunks)
+    assert any(c["macro_label"] == "Chương I - PHẠM VI VÀ ĐỐI TƯỢNG" for c in chunks)

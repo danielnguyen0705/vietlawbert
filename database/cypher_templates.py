@@ -1,7 +1,7 @@
 """
 cypher_templates.py - Thư viện truy vấn Cypher chuẩn hóa cho mạng thông tin dị thể (HIN).
-Khớp chính xác với cấu trúc: LawDocument -> HAS_CHUNK -> Chunk và 22 loại quan hệ pháp lý.
-Tối ưu hóa tránh tích Descartes và hỗ trợ khai phá bộ ba mẫu khó đối lập (GG-SLM Triplet Mining).
+Khớp chính xác với cấu trúc: LawDocument -> Article -> Chunk và 22 loại quan hệ pháp lý.
+Khắc phục triệt để lỗi cú pháp Neo4j 5+ và chặn đứng tích Descartes khi khai phá Triplet.
 """
 
 from typing import Tuple, Dict, Any
@@ -11,9 +11,9 @@ from typing import Tuple, Dict, Any
 # ==============================================================================
 TRACE_HIERARCHICAL_ROOT = """
 MATCH path = (sub_doc:LawDocument {doc_id: $doc_id})<-[:LEGAL_RELATION*1..3]-(root_doc:LawDocument)
-WHERE ALL(r IN relationships(path) WHERE r.type IN ["CAN_CU_BAN_HANH", "CAN_CU"])
-RETURN [node in nodes(path) | coalesce(node.doc_number, node.title, node.doc_id)] AS Hierarchical_Chain,
-       [node in nodes(path) | node.doc_id] AS Hierarchical_IDs,
+WHERE ALL(r IN relationships(path) WHERE toUpper(r.type) IN ["CAN_CU_BAN_HANH", "CAN_CU"])
+RETURN [node IN nodes(path) | coalesce(node.doc_number, node.title, node.doc_id)] AS Hierarchical_Chain,
+       [node IN nodes(path) | node.doc_id] AS Hierarchical_IDs,
        length(path) AS Depth
 ORDER BY Depth DESC
 """
@@ -23,9 +23,9 @@ ORDER BY Depth DESC
 # ==============================================================================
 FIND_CASCADE_IMPACT = """
 MATCH (luat_moi:LawDocument)-[r:LEGAL_RELATION]->(luat_cu:LawDocument)
-WHERE r.type IN ["THAY_THE", "BAI_BO", "SUA_DOI_BO_SUNG", "SUA_DOI", "BO_SUNG"]
+WHERE toUpper(r.type) IN ["THAY_THE", "BAI_BO", "SUA_DOI_BO_SUNG", "SUA_DOI", "BO_SUNG"]
 OPTIONAL MATCH (affected_doc:LawDocument)-[r_aff:LEGAL_RELATION]->(luat_cu)
-WHERE r_aff.type IN ["HUONG_DAN_CHI_TIET", "HUONG_DAN", "DAN_CHIEU"]
+WHERE toUpper(r_aff.type) IN ["HUONG_DAN_CHI_TIET", "HUONG_DAN", "DAN_CHIEU"]
 RETURN coalesce(luat_moi.doc_number, luat_moi.title, luat_moi.doc_id) AS Replacement_Doc,
        luat_moi.doc_id AS Replacement_Doc_ID,
        r.type AS Impact_Type,
@@ -50,17 +50,35 @@ LIMIT $limit
 """
 
 # ==============================================================================
-# Kịch bản 4: Khai phá Mẫu Khó HIN-Guided Contrastive Mining (Chuẩn Reviewer Q1)
-# Tối ưu hóa WITH-LIMIT chặn tắc nghẽn bộ nhớ khi đồ thị vượt triệu đỉnh
+# Kịch bản 4: Khai phá Cặp Dương Cấp Điều luật (Intra-Article Positive Pairs)
+# ==============================================================================
+GET_INTRA_ARTICLE_PAIRS = """
+MATCH (a:Article)-[:HAS_CHUNK]->(c1:Chunk)
+MATCH (a)-[:HAS_CHUNK]->(c2:Chunk)
+WHERE elementId(c1) < elementId(c2)
+RETURN c1.chunk_id AS a_id,
+       coalesce(c1.content, c1.text, "") AS a_text,
+       c2.chunk_id AS p_id,
+       coalesce(c2.content, c2.text, "") AS p_text,
+       coalesce(c1.macro_label, a.macro_label, "CHUNG") AS hierarchy_label
+LIMIT $limit
+"""
+
+# ==============================================================================
+# Kịch bản 5: Khai phá Bộ ba Mẫu khó HIN-Guided Contrastive Triplet (Chuẩn Q1)
+# Đã sửa lỗi Neo4j Syntax và chặn đứng tích Descartes qua phân nhóm đại diện
 # ==============================================================================
 HIN_TRIPLET_MINING = """
 MATCH (d_anchor:LawDocument)-[r:LEGAL_RELATION]->(d_pos:LawDocument)
 MATCH (d_anchor)-[:HAS_CHUNK]->(ck_anchor:Chunk)
+WITH d_anchor, d_pos, ck_anchor
+LIMIT $limit
 MATCH (d_pos)-[:HAS_CHUNK]->(ck_pos:Chunk)
 WITH d_anchor, d_pos, ck_anchor, ck_pos
 LIMIT $limit
-MATCH (d_neg:LawDocument)-[:HAS_CHUNK]->(ck_neg:Chunk {macro_label: ck_anchor.macro_label})
-WHERE d_neg.doc_id <> d_anchor.doc_id 
+MATCH (d_neg:LawDocument)-[:HAS_CHUNK]->(ck_neg:Chunk)
+WHERE ck_neg.macro_label = ck_anchor.macro_label
+  AND d_neg.doc_id <> d_anchor.doc_id
   AND d_neg.doc_id <> d_pos.doc_id
   AND NOT (d_anchor)-[:LEGAL_RELATION]-(d_neg)
 RETURN ck_anchor.chunk_id AS anchor_id,
@@ -84,6 +102,10 @@ def get_find_cascade_impact(limit: int = 50) -> Tuple[str, Dict[str, Any]]:
 
 def get_neighbors(doc_id: str, limit: int = 50) -> Tuple[str, Dict[str, Any]]:
     return GET_NEIGHBORS, {"doc_id": str(doc_id), "limit": int(limit)}
+
+
+def get_intra_article_pairs(limit: int = 25000) -> Tuple[str, Dict[str, Any]]:
+    return GET_INTRA_ARTICLE_PAIRS, {"limit": int(limit)}
 
 
 def get_hin_triplets(limit: int = 10000) -> Tuple[str, Dict[str, Any]]:
