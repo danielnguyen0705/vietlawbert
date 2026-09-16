@@ -10,12 +10,14 @@ html2text>=2024.2.26
 lxml>=5.1.0
 
 # ==============================================================================
-# 2. DATA PROCESSING, AST PARSING & SERIALIZATION
+# 2. DATA PROCESSING, AST PARSING & OCR ENGINE
 # ==============================================================================
 lark>=1.1.9
 python-dotenv>=1.0.1
 pydantic>=2.7.0
 pymupdf>=1.24.0
+pytesseract>=0.3.10
+pillow>=10.2.0
 tqdm>=4.66.0
 pandas>=2.2.0
 pyarrow>=15.0.0
@@ -33,21 +35,20 @@ redis>=5.0.3
 # ==============================================================================
 # 4. CORE AI, EMBEDDINGS & CONTRASTIVE MRL
 # ==============================================================================
-# Chỉ giữ torch core, loại bỏ torchvision/torchaudio để tối ưu tài nguyên
 torch>=2.2.0
 accelerate>=0.28.0
 transformers>=4.40.0
 sentence-transformers>=2.6.0
+huggingface-hub>=0.22.0
 openai>=1.20.0
 rank_bm25>=0.2.2
 
 # ==============================================================================
-# 5. GRAPH ALGORITHMS & SCIENTIFIC COMPUTATION
+# 5. GRAPH ALGORITHMS & SCIENTIFIC COMPUTATION (Loại bỏ gensim)
 # ==============================================================================
 numpy>=1.26.0
 scipy>=1.12.0
 scikit-learn>=1.4.0
-gensim>=4.3.2
 setuptools>=69.0.0
 wheel>=0.42.0
 

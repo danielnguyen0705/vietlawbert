@@ -1,6 +1,6 @@
 """
 neo4j_client.py - Tầng điều phối kết nối Neo4j Bolt Driver trung tâm cho VietLawBERT.
-Bảo toàn giao dịch ACID, khởi tạo Constraints & Indices và hỗ trợ batch operations có cơ chế Retry.
+Bảo toàn giao dịch ACID, khởi tạo đầy đủ Schema Constraints (Article, Chunk, LawDocument) và xử lý Batch có Consume.
 """
 
 from __future__ import annotations
@@ -50,14 +50,15 @@ class Neo4jClient:
     def drop_database(self) -> None:
         logger.warning("Đang dọn sạch toàn bộ cơ sở dữ liệu Neo4j...")
         with self.driver.session() as session:
-            session.run("MATCH (n) DETACH DELETE n")
+            session.run("MATCH (n) DETACH DELETE n").consume()
         logger.info("Đã dọn sạch cơ sở dữ liệu Neo4j.")
 
     def create_constraints(self) -> None:
-        """Tạo ràng buộc duy nhất và chỉ mục trên LawDocument, Chunk và Relationship."""
+        """Tạo ràng buộc duy nhất và chỉ mục trên LawDocument, Article, Chunk và Relationship."""
         constraints = [
             "CREATE CONSTRAINT law_doc_id IF NOT EXISTS FOR (d:LawDocument) REQUIRE d.doc_id IS UNIQUE",
             "CREATE CONSTRAINT chunk_id IF NOT EXISTS FOR (c:Chunk) REQUIRE c.chunk_id IS UNIQUE",
+            "CREATE CONSTRAINT article_id IF NOT EXISTS FOR (a:Article) REQUIRE a.article_id IS UNIQUE",
             "CREATE INDEX law_doc_number IF NOT EXISTS FOR (d:LawDocument) ON (d.doc_number)",
             "CREATE INDEX chunk_macro IF NOT EXISTS FOR (c:Chunk) ON (c.macro_label)",
             "CREATE INDEX chunk_doc_id IF NOT EXISTS FOR (c:Chunk) ON (c.doc_id)",
@@ -66,7 +67,7 @@ class Neo4jClient:
         with self.driver.session() as session:
             for q in constraints:
                 try:
-                    session.run(q)
+                    session.run(q).consume()
                 except Exception as exc:
                     logger.debug("Thông báo khởi tạo schema Neo4j: %s", exc)
         logger.info("Đã xác thực toàn bộ Constraints & Indices trên Neo4j.")
@@ -86,7 +87,7 @@ class Neo4jClient:
         batch_size: int = 500,
         max_retries: int = 3,
     ) -> int:
-        """Thực thi ghi theo lô kèm cơ chế Retry tự động phục hồi khi gặp nghẽn mạng."""
+        """Thực thi ghi theo lô kèm Consume triệt để chống nghẽn bộ đệm lazy evaluation."""
         if not batch:
             return 0
 
@@ -97,7 +98,8 @@ class Neo4jClient:
                 success = False
                 for attempt in range(1, max_retries + 1):
                     try:
-                        session.run(cypher, parameters={"batch": sub_batch})
+                        # Bắt buộc gọi .consume() để máy chủ hoàn tất giao dịch ghi và giải phóng socket
+                        summary = session.run(cypher, parameters={"batch": sub_batch}).consume()
                         total += len(sub_batch)
                         success = True
                         break

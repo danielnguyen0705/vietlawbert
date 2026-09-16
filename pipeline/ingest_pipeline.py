@@ -1,6 +1,6 @@
 """
 ingest_pipeline.py - Luồng trung gian (Decoupled ETL Worker) xử lý từ Shard thô sang CSDL lai.
-Tối ưu hóa tài nguyên phần cứng: Khống chế CPU Threads, Doc-level Resume và Checkpoint tự phục hồi.
+Tối ưu hóa tài nguyên: Khống chế CPU Threads, Doc-level Resume, UUID RFC 4122 và Safe Attribute Parsing.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from bs4 import BeautifulSoup
 
 import torch
 try:
-    # Khóa cứng luồng CPU tránh làm đơ giao diện người dùng Dell G7
+    # Khóa cứng luồng CPU tránh gây nghẽn giao diện người dùng Dell G7
     torch.set_num_threads(2)
 except Exception:
     pass
@@ -102,6 +102,7 @@ class IngestPipelineWorker:
                 for tag in soup(["script", "style", "nav", "footer", "header", "noscript", "iframe"]):
                     tag.decompose()
                 clean_text = soup.get_text("\n", strip=True)
+                del soup
                 if len(clean_text) > 50:
                     return clean_text
             except Exception as exc:
@@ -117,12 +118,33 @@ class IngestPipelineWorker:
                         for tag in soup(["script", "style", "nav", "footer", "header", "noscript", "iframe"]):
                             tag.decompose()
                         clean_text = soup.get_text("\n", strip=True)
+                        del soup
                         if len(clean_text) > 50:
                             return clean_text
             except Exception as exc:
                 logger.debug("Lỗi đọc tệp html_path %s: %s", html_path, exc)
 
         return ""
+
+    @staticmethod
+    def _parse_safe_status(doc_record: Dict[str, Any], meta_detail: Dict[str, Any], meta_api: Dict[str, Any]) -> str:
+        """Trích xuất trạng thái an toàn chống lỗi AttributeError khi effStatus là integer."""
+        if doc_record.get("status"):
+            return str(doc_record["status"])
+
+        eff_detail = meta_detail.get("effStatus")
+        if isinstance(eff_detail, dict):
+            return str(eff_detail.get("name") or "Còn hiệu lực")
+        if isinstance(eff_detail, (int, str)) and str(eff_detail).strip():
+            return "Còn hiệu lực" if str(eff_detail) == "1" else "Hết hiệu lực"
+
+        eff_api = meta_api.get("effStatus")
+        if isinstance(eff_api, dict):
+            return str(eff_api.get("name") or "Còn hiệu lực")
+        if isinstance(eff_api, (int, str)) and str(eff_api).strip():
+            return "Còn hiệu lực" if str(eff_api) == "1" else "Hết hiệu lực"
+
+        return "Còn hiệu lực"
 
     def process_raw_shard(self, shard_file_path: str | Path) -> int:
         path = Path(shard_file_path)
@@ -153,7 +175,7 @@ class IngestPipelineWorker:
 
                     doc_id = str(doc_record.get("doc_id") or doc_record.get("item_id") or f"doc_{line_idx}")
 
-                    # CƠ CHẾ RESUME CẤP VĂN BẢN: Bỏ qua văn bản đã tồn tại trong Qdrant để cứu thời gian CPU
+                    # Bỏ qua văn bản đã có trong Qdrant để tiết kiệm CPU
                     if self.qdrant.doc_exists(doc_id):
                         skipped_existing_docs += 1
                         continue
@@ -183,12 +205,7 @@ class IngestPipelineWorker:
                         or meta_api.get("effFrom")
                         or "Chưa xác định"
                     )
-                    status_raw = str(
-                        doc_record.get("status")
-                        or (meta_detail.get("effStatus") or {}).get("name")
-                        or (meta_api.get("effStatus") or {}).get("name")
-                        or "Còn hiệu lực"
-                    )
+                    status_raw = self._parse_safe_status(doc_record, meta_detail, meta_api)
                     org = str(
                         doc_record.get("co_quan")
                         or meta_detail.get("agencyName")
@@ -212,7 +229,8 @@ class IngestPipelineWorker:
                         continue
 
                     for ch in ast_chunks:
-                        ch_id = str(ch.get("chunk_id") or ch.get("metadata", {}).get("chunk_id") or uuid.uuid4().hex)
+                        # Đảm bảo UUID chuẩn RFC 4122 (có gạch nối) để Qdrant không từ chối Point ID
+                        ch_id = str(ch.get("chunk_id") or ch.get("metadata", {}).get("chunk_id") or str(uuid.uuid4()))
                         ch["chunk_id"] = ch_id
                         ch["doc_id"] = doc_id
                         ch["doc_number"] = doc_number
@@ -313,7 +331,6 @@ def main():
     p = Path(args.shard_path)
 
     if p.is_dir():
-        # Bộ lọc danh sách trắng: Bỏ qua toàn bộ tệp rác, tệp cách ly và tệp hỏng
         all_candidates = sorted(list(p.glob("*.jsonl*")))
         files = [
             f for f in all_candidates

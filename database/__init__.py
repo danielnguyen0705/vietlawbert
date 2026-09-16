@@ -14,10 +14,12 @@ from .cypher_templates import (
     TRACE_HIERARCHICAL_ROOT,
     FIND_CASCADE_IMPACT,
     GET_NEIGHBORS,
+    GET_INTRA_ARTICLE_PAIRS,
     HIN_TRIPLET_MINING,
     get_trace_hierarchical_root,
     get_find_cascade_impact,
     get_neighbors,
+    get_intra_article_pairs,
     get_hin_triplets,
 )
 
@@ -34,9 +36,11 @@ __all__ = [
     "TRACE_HIERARCHICAL_ROOT",
     "FIND_CASCADE_IMPACT",
     "GET_NEIGHBORS",
+    "GET_INTRA_ARTICLE_PAIRS",
     "HIN_TRIPLET_MINING",
     "get_trace_hierarchical_root",
     "get_find_cascade_impact",
     "get_neighbors",
+    "get_intra_article_pairs",
     "get_hin_triplets",
 ]

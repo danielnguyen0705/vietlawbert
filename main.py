@@ -1,8 +1,7 @@
 """
 main.py - Cổng điều phối quy trình hợp nhất VietLawBERT (Unified CLI Gateway).
 Chuẩn hóa các tác vụ quản trị hạ tầng, điều phối phân đoạn, huấn luyện và kiểm thử RAG.
-Hỗ trợ Real-time Unbuffered Logging, CPU Thread Throttling và Chạy tự động toàn trình.
-Tương thích 100% môi trường Linux/Ubuntu và Windows (CMD/PowerShell/WSL2).
+Hỗ trợ Real-time Unbuffered Logging, CPU Thread Throttling và tương thích 100% Cloud GPU.
 """
 
 from __future__ import annotations
@@ -10,7 +9,7 @@ from __future__ import annotations
 import os
 import sys
 
-# Cưỡng bức mã hóa UTF-8 cho toàn hệ thống tránh lỗi charmap trên console
+# Cưỡng bức mã hóa UTF-8 cho toàn hệ thống
 os.environ["PYTHONUTF8"] = "1"
 os.environ["PYTHONIOENCODING"] = "utf-8"
 if sys.stdout.encoding != "utf-8":
@@ -35,7 +34,6 @@ logger = get_subsystem_logger("master", "main_gateway")
 
 
 def parse_host_port(url_or_uri: str, default_host: str = "localhost", default_port: int = 80) -> tuple[str, int]:
-    """Bóc tách chính xác hostname và port từ URL, URI hoặc chuỗi host:port."""
     try:
         if "://" not in url_or_uri:
             url_or_uri = f"dummy://{url_or_uri}"
@@ -48,7 +46,6 @@ def parse_host_port(url_or_uri: str, default_host: str = "localhost", default_po
 
 
 def wait_for_service(host: str, port: int, name: str, timeout: int = 45) -> bool:
-    """Kiểm tra tính sẵn sàng của dịch vụ cơ sở dữ liệu qua kết nối TCP socket."""
     start_time = time.time()
     while time.time() - start_time < timeout:
         try:
@@ -62,7 +59,6 @@ def wait_for_service(host: str, port: int, name: str, timeout: int = 45) -> bool
 
 
 def run_subcommand(command: list[str], description: str, extra_env: dict[str, str] | None = None) -> bool:
-    """Thực thi tiến trình con với unbuffered I/O và kiểm soát tài nguyên hệ thống."""
     logger.info("==================================================")
     logger.info("BẮT ĐẦU: %s", description)
     logger.info("Lệnh thực thi: %s", " ".join(command))
@@ -108,14 +104,14 @@ def cmd_check_infrastructure() -> bool:
         if not wait_for_service(host, port, name):
             return False
 
+    # Đã sửa lỗi: Trỏ chính xác vào quality.crawl_audit --databases
     return run_subcommand(
-        [sys.executable, "-u", "-m", "quality.database_inspection", "--verbose"],
-        "Kiểm toán CSDL",
+        [sys.executable, "-u", "-m", "quality.crawl_audit", "--databases"],
+        "Kiểm toán tính nhất quán CSDL (Qdrant & Neo4j)",
     )
 
 
 def cmd_crawl(total_docs: int = 160660, concurrency: int = 4) -> bool:
-    """Kích hoạt bộ cào phân đoạn chống tràn RAM (Shard Runner - Pha 1)."""
     return run_subcommand(
         [
             sys.executable,
@@ -136,7 +132,6 @@ def cmd_crawl(total_docs: int = 160660, concurrency: int = 4) -> bool:
 
 
 def cmd_ingest(batch_size: int = config.EMBED_BATCH_SIZE, device: str = config.EMBED_DEVICE) -> bool:
-    """Bóc tách AST và nạp đồng thời Qdrant & Elasticsearch có cơ chế Doc-level Resume (Pha 2)."""
     cpu_env = {}
     if device == "cpu":
         cpu_env = {
@@ -164,7 +159,6 @@ def cmd_ingest(batch_size: int = config.EMBED_BATCH_SIZE, device: str = config.E
 
 
 def cmd_graph() -> bool:
-    """Xây dựng đồ thị 22 quan hệ HIN và tiền tính toán Vector 128d nạp Redis (Pha 3)."""
     hin_ok = run_subcommand(
         [sys.executable, "-u", "-m", "database.build_hin_graph", "--metadata", str(RAW_SHARDS_DIR)],
         "Xây dựng mạng thông tin dị thể (HIN) trên Neo4j",
@@ -178,8 +172,15 @@ def cmd_graph() -> bool:
     )
 
 
-def cmd_train(epochs: int = 3, batch_size: int = config.EMBED_BATCH_SIZE, device: str = config.EMBED_DEVICE) -> bool:
-    """Khai phá mẫu khó đối lập RWR và huấn luyện VietLawBERT-MRL (Pha 4)."""
+def cmd_train(
+    epochs: int = 3,
+    batch_size: int = config.EMBED_BATCH_SIZE,
+    device: str = config.EMBED_DEVICE,
+    max_seq_length: int = 256,
+    push_to_hub: bool = False,
+    hub_model_id: str | None = None,
+    hf_token: str | None = None,
+) -> bool:
     cpu_env = {}
     if device == "cpu":
         cpu_env = {
@@ -196,26 +197,34 @@ def cmd_train(epochs: int = 3, batch_size: int = config.EMBED_BATCH_SIZE, device
     if not triplet_ok:
         return False
 
+    train_cmd = [
+        sys.executable,
+        "-u",
+        "-m",
+        "training.train_mrl",
+        "--epochs",
+        str(epochs),
+        "--batch-size",
+        str(batch_size),
+        "--device",
+        device,
+        "--max-seq-length",
+        str(max_seq_length),
+    ]
+
+    if push_to_hub and hub_model_id:
+        train_cmd.extend(["--push-to-hub", "--hub-model-id", str(hub_model_id)])
+        if hf_token:
+            train_cmd.extend(["--hf-token", str(hf_token)])
+
     return run_subcommand(
-        [
-            sys.executable,
-            "-u",
-            "-m",
-            "training.train_mrl",
-            "--epochs",
-            str(epochs),
-            "--batch-size",
-            str(batch_size),
-            "--device",
-            device,
-        ],
+        train_cmd,
         "Huấn luyện biểu diễn lồng nhau VietLawBERT-MRL với Hierarchy Loss",
         extra_env=cpu_env,
     )
 
 
 def cmd_benchmark() -> bool:
-    """Khởi tạo tập kiểm chuẩn VietLawBench, đánh giá 4 RQs và so sánh Baseline (Pha 5)."""
     bench_ok = run_subcommand(
         [sys.executable, "-u", "-m", "benchmark.build_vietlawbench", "--single", "600", "--multi", "400"],
         "Sinh tập kiểm chuẩn Ground-Truth VietLawBench (1.000 mẫu)",
@@ -236,15 +245,19 @@ def cmd_benchmark() -> bool:
     )
 
 
-def cmd_run_all(batch_size: int = config.EMBED_BATCH_SIZE, device: str = config.EMBED_DEVICE, epochs: int = 3) -> bool:
-    """Chạy tự động toàn trình liên hoàn từ Pha Kiểm tra hạ tầng đến Kiểm chuẩn Benchmark."""
+def cmd_run_all(
+    batch_size: int = config.EMBED_BATCH_SIZE,
+    device: str = config.EMBED_DEVICE,
+    epochs: int = 3,
+    max_seq_length: int = 256,
+) -> bool:
     logger.info("=== BẮT ĐẦU CHU TRÌNH TỰ ĐỘNG TOÀN TRÌNH VIETLAWBERT ===")
 
     steps = [
         ("Kiểm tra hạ tầng CSDL", lambda: cmd_check_infrastructure()),
         ("Nạp dữ liệu Ingestion (Pha 2)", lambda: cmd_ingest(batch_size=batch_size, device=device)),
         ("Xây dựng Đồ thị HIN (Pha 3)", lambda: cmd_graph()),
-        ("Huấn luyện VietLawBERT-MRL (Pha 4)", lambda: cmd_train(epochs=epochs, batch_size=batch_size, device=device)),
+        ("Huấn luyện VietLawBERT-MRL (Pha 4)", lambda: cmd_train(epochs=epochs, batch_size=batch_size, device=device, max_seq_length=max_seq_length)),
         ("Đánh giá thực nghiệm khoa học (Pha 5)", lambda: cmd_benchmark()),
     ]
 
@@ -260,7 +273,6 @@ def cmd_run_all(batch_size: int = config.EMBED_BATCH_SIZE, device: str = config.
 
 
 def cmd_ask(query: str, top_k: int = 3) -> None:
-    """Truy vấn hỏi đáp trực tiếp qua động cơ LegalGenerator."""
     from rag.generator import LegalGenerator
 
     generator = LegalGenerator()
@@ -281,7 +293,6 @@ def cmd_ask(query: str, top_k: int = 3) -> None:
 
 
 def interactive_menu():
-    """Giao diện dòng lệnh thân thiện khi chạy python main.py không tham số."""
     while True:
         print("\n" + "=" * 60)
         print("      VIETLAWBERT - HỆ THỐNG ĐIỀU PHỐI QUY TRÌNH")
@@ -335,7 +346,13 @@ def main():
     parser.add_argument("--device", default=config.EMBED_DEVICE, choices=["cpu", "cuda"], help="Thiết bị tính toán (cpu/cuda)")
     parser.add_argument("--batch-size", type=int, default=config.EMBED_BATCH_SIZE, help="Kích thước lô tính toán")
     parser.add_argument("--epochs", type=int, default=3, help="Số epoch huấn luyện mô hình MRL")
+    parser.add_argument("--max-seq-length", type=int, default=getattr(config, "MAX_SEQ_LENGTH", 256), help="Chiều dài tối đa token")
     parser.add_argument("--total-docs", type=int, default=160660, help="Tổng số văn bản cào")
+    
+    # Bổ sung các cờ hỗ trợ Cloud GPU Orchestration
+    parser.add_argument("--push-to-hub", action="store_true", help="Tự động đồng bộ weights lên Hugging Face Hub")
+    parser.add_argument("--hub-model-id", type=str, default=getattr(config, "HF_MODEL_REPO_ID", None), help="Tên repo trên HF")
+    parser.add_argument("--hf-token", type=str, default=getattr(config, "HF_TOKEN", None), help="Access token ghi của HF")
     args = parser.parse_args()
 
     if args.ask:
@@ -351,11 +368,24 @@ def main():
     elif args.phase == "graph":
         cmd_graph()
     elif args.phase == "train":
-        cmd_train(epochs=args.epochs, batch_size=args.batch_size, device=args.device)
+        cmd_train(
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            device=args.device,
+            max_seq_length=args.max_seq_length,
+            push_to_hub=args.push_to_hub,
+            hub_model_id=args.hub_model_id,
+            hf_token=args.hf_token,
+        )
     elif args.phase == "benchmark":
         cmd_benchmark()
     elif args.phase == "all":
-        cmd_run_all(batch_size=args.batch_size, device=args.device, epochs=args.epochs)
+        cmd_run_all(
+            batch_size=args.batch_size,
+            device=args.device,
+            epochs=args.epochs,
+            max_seq_length=args.max_seq_length,
+        )
     else:
         interactive_menu()
 

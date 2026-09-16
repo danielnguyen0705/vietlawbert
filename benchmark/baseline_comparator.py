@@ -1,6 +1,7 @@
 """
 baseline_comparator.py - Hệ thống thực nghiệm đối chứng trực diện (Head-to-Head Baseline Comparison).
 Đo đạc hiệu năng IR và kiểm định ý nghĩa thống kê (Paired Student's t-test, p-value).
+Đồng bộ gọi LegalHybridRetriever an toàn và xử lý cắt lát véc-tơ chuẩn hóa.
 """
 
 from __future__ import annotations
@@ -91,7 +92,7 @@ class BaselineComparator:
 
         qdrant = QdrantClientWrapper(host=config.QDRANT_HOST, port=config.QDRANT_PORT)
         es = LegalElasticsearchRetriever(hosts=[config.ES_HOST], index_name=config.ES_INDEX_NAME)
-        encoder = SentenceTransformer(config.BASE_MODEL_NAME)
+        encoder = SentenceTransformer(config.BASE_MODEL_NAME, device=config.EMBED_DEVICE)
         retriever = LegalHybridRetriever(qdrant_wrapper=qdrant, es_retriever=es, encoder_model=encoder)
 
         results_by_dataset = {}
@@ -110,11 +111,8 @@ class BaselineComparator:
             for idx, s in enumerate(samples, 1):
                 q = s["query"]
                 q_id = s.get("benchmark_id") or q
-                # 1. Sparse BM25
                 sparse_candidates[q_id] = retriever._search_sparse_es(q, top_k=10)
-                # 2. Dense MRL 256d
                 dense_candidates[q_id] = retriever._search_dense(q, top_k=10)
-                # 3. VietLawBERT Full Hybrid (RRF + Graph-injected scoring)
                 hybrid_candidates[q_id] = retriever.retrieve(q, top_k=10)
 
                 if idx % 50 == 0 or idx == len(samples):

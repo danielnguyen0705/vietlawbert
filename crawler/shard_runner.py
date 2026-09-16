@@ -1,6 +1,6 @@
 """
 shard_runner.py - Điều phối chiến dịch cào phân đoạn (Sharding Crawl Orchestrator).
-Tích hợp checkpoint tự phục hồi, cách ly tiến trình con giải phóng RAM và ghi file nguyên tử.
+Tích hợp checkpoint tự phục hồi qua Scrapy JOBDIR, cách ly tiến trình con và đóng gói Gzip nguyên tử.
 """
 
 from __future__ import annotations
@@ -93,8 +93,8 @@ def run_shard(
     raw_artifact = artifact.with_name(artifact.name.replace(".jsonl.gz", ".jsonl"))
     audit_path = artifact.with_name(artifact.name.replace(".jsonl.gz", ".audit.json"))
     log_file = artifact.with_name(artifact.name.replace(".jsonl.gz", ".log"))
+    job_dir = output_dir / f".job_state_{shard.start_page:05d}_{shard.end_page:05d}"
 
-    # Sử dụng đường dẫn tuyệt đối chuẩn hóa tránh lỗi relpath qua các mount point khác nhau
     command = [
         sys.executable,
         "-m",
@@ -109,6 +109,8 @@ def run_shard(
         f"page_size={env['CRAWL_PAGE_SIZE']}",
         "-a",
         f"limit={shard.expected_documents}",
+        "-s",
+        f"JOBDIR={str(job_dir.resolve())}",
         "-s",
         f"LOG_FILE={str(log_file.resolve())}",
         "-O",
@@ -128,9 +130,9 @@ def run_shard(
 
     if not result["passed"]:
         write_json_atomic(audit_path, result)
-        raise RuntimeError(f"Shard {shard.start_page}-{shard.end_page} không vượt qua Quality Gate: {result['failures']}")
+        raise RuntimeError(f"Shard {shard.start_page}-{shard.end_page} không đạt Quality Gate: {result['failures']}")
 
-    # Nén Gzip bảo toàn dung lượng đĩa
+    # Nén Gzip bảo toàn dung lượng lưu trữ
     with raw_artifact.open("rb") as source, gzip.open(artifact, "wb", compresslevel=6) as target:
         shutil.copyfileobj(source, target, length=1024 * 1024)
 
@@ -139,6 +141,9 @@ def run_shard(
         raise RuntimeError(f"Tệp nén Shard {shard.start_page}-{shard.end_page} bị lỗi sau khi nén Gzip!")
 
     raw_artifact.unlink(missing_ok=True)
+    if job_dir.exists():
+        shutil.rmtree(job_dir, ignore_errors=True)
+
     result = compressed_result
     result["quarantined_content_records"] = write_content_quarantine(artifact)
     write_json_atomic(audit_path, result)

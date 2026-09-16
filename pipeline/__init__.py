@@ -2,7 +2,17 @@
 vietlawbert.pipeline
 ~~~~~~~~~~~~~~~~~~~~
 Phân hệ điều phối xử lý dữ liệu trung gian ngoại tuyến (Decoupled ETL Worker):
-- ingest_pipeline: Đọc Shards thô -> Bóc tách Hybrid AST -> Mã hóa MRL (d=256) -> Bulk nạp đồng thời Qdrant & ES.
+Đọc Shards thô -> Bóc tách Hybrid AST -> Tiêm Metadata -> Mã hóa MRL (d=256) -> Nạp Qdrant & ES.
 """
 
-__all__ = ["IngestPipelineWorker"]
+from .ingest_pipeline import (
+    IngestPipelineWorker,
+    load_checkpoint,
+    save_checkpoint,
+)
+
+__all__ = [
+    "IngestPipelineWorker",
+    "load_checkpoint",
+    "save_checkpoint",
+]

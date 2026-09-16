@@ -12,6 +12,7 @@ from .evaluate_rrf import (
     normalize_legal_identifier,
     extract_article_number,
     run_benchmark_evaluation,
+    retrieve_by_mode,
 )
 from .build_vietlawbench import VietLawBenchBuilder
 from .baseline_comparator import BaselineComparator
@@ -24,6 +25,7 @@ __all__ = [
     "normalize_legal_identifier",
     "extract_article_number",
     "run_benchmark_evaluation",
+    "retrieve_by_mode",
     "VietLawBenchBuilder",
     "BaselineComparator",
     "ScientificBenchmarkRunner",

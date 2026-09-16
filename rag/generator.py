@@ -16,7 +16,7 @@ from openai import OpenAI
 
 from configs.config import config
 from configs.logging_config import get_subsystem_logger
-from .retriever import LegalHybridRetriever
+from rag.retriever import LegalHybridRetriever
 
 logger = get_subsystem_logger("rag", "generator")
 
@@ -180,7 +180,6 @@ class LegalGenerator:
             art_match = re.search(r"điều\s+(\d+[a-za-z]?)", h_path)
             art_str = art_match.group(0) if art_match else ""
 
-            # Dùng Regex word-boundary tránh so khớp nhầm Điều 1 với Điều 10, Điều 12
             has_doc = bool(doc_num and doc_num != "n/a" and re.search(r"\b" + re.escape(doc_num) + r"\b", ans_lower))
             has_art = bool(art_str and re.search(r"\b" + re.escape(art_str) + r"\b", ans_lower))
 

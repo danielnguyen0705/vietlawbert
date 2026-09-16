@@ -1,9 +1,7 @@
 """
 vietlawbert.configs
 ~~~~~~~~~~~~~~~~~~~
-Phân hệ quản trị cấu hình và phân vùng lưu trữ trung tâm của VietLawBERT:
-- paths: Quản lý thư mục gốc tuyệt đối, phân vùng Big Data và sinh đường dẫn log theo ngày.
-- config: Singleton nạp biến môi trường .env, đồng bộ tham số Docker, Kafka, Milvus, Neo4j, LLM.
+Phân hệ quản trị cấu hình, đường dẫn tập trung và nhật ký phân cấp của VietLawBERT.
 """
 
 from .paths import (
@@ -17,6 +15,7 @@ from .paths import (
     PROCESSED_DIR,
     JSON_DIR,
     ARTIFACTS_DIR,
+    TRIPLETS_DIR,
     BENCHMARK_DIR,
     MODELS_DIR,
     BASE_LOGS_DIR,
@@ -27,9 +26,10 @@ from .paths import (
     get_log_path,
 )
 from .config import Config, config
+from .logging_config import setup_hierarchical_logging, get_subsystem_logger
 
 __all__ = [
-    # Paths & Storage
+    # Đường dẫn phân vùng lưu trữ
     "ROOT_DIR",
     "BASE_DIR",
     "DEFAULT_STORAGE_ROOT",
@@ -40,6 +40,7 @@ __all__ = [
     "PROCESSED_DIR",
     "JSON_DIR",
     "ARTIFACTS_DIR",
+    "TRIPLETS_DIR",
     "BENCHMARK_DIR",
     "MODELS_DIR",
     "BASE_LOGS_DIR",
@@ -48,7 +49,10 @@ __all__ = [
     "ALL_DIRECTORIES",
     "ensure_dirs",
     "get_log_path",
-    # Config Singleton
+    # Cấu hình Singleton
     "Config",
     "config",
+    # Logging tập trung
+    "setup_hierarchical_logging",
+    "get_subsystem_logger",
 ]
