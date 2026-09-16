@@ -1,0 +1,7 @@
+# Compatibility with the repository crawler and Qdrant/ES server APIs.
+scrapy==2.13.3
+Twisted==24.11.0
+qdrant-client==1.9.2
+elasticsearch==8.13.2
+lark==1.2.2
+datasets==4.0.0

@@ -169,7 +169,7 @@ class QdrantClientWrapper:
                     self.client.upsert(
                         collection_name=col_name,
                         points=points,
-                        wait=False,
+                        wait=True,
                     )
                     total_upserted += len(points)
                     success = True

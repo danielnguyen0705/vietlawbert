@@ -1,0 +1,11 @@
+**
+!requirements-chat.txt
+!api/
+!api/**
+!ui/
+!ui/**
+**/__pycache__/
+**/*.pyc
+ui/.files/
+ui/.chainlit/translations/*
+!ui/.chainlit/translations/vi.json

@@ -1,0 +1,7 @@
+# Resolve on Python 3.12 into requirements-chat.txt.
+chainlit>=2.11,<3
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+httpx>=0.27,<1
+pydantic>=2.7,<3
+python-dotenv>=1,<2

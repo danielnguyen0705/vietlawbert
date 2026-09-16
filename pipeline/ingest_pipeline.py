@@ -28,6 +28,7 @@ from sentence_transformers import SentenceTransformer
 from configs.config import config
 from configs.paths import RAW_SHARDS_DIR
 from preprocess.ast_parser import HybridASTParser
+from preprocess.validity import is_currently_effective
 from database.qdrant_client import QdrantClientWrapper
 from rag.es_retriever import LegalElasticsearchRetriever
 
@@ -69,6 +70,7 @@ class IngestPipelineWorker:
         vector_dim: Optional[int] = None,
         batch_size: Optional[int] = None,
         device: Optional[str] = None,
+        skip_existing: bool = True,
     ):
         self.qdrant_host = qdrant_host or config.QDRANT_HOST
         self.qdrant_port = qdrant_port or config.QDRANT_PORT
@@ -76,6 +78,7 @@ class IngestPipelineWorker:
         self.model_name = model_name_or_path or config.BASE_MODEL_NAME
         self.vector_dim = vector_dim or config.QDRANT_VECTOR_DIM
         self.batch_size = batch_size or config.EMBED_BATCH_SIZE
+        self.skip_existing = skip_existing
 
         self.parser = HybridASTParser()
         self.qdrant = QdrantClientWrapper(host=self.qdrant_host, port=self.qdrant_port)
@@ -127,8 +130,7 @@ class IngestPipelineWorker:
     def process_raw_shard(self, shard_file_path: str | Path) -> int:
         path = Path(shard_file_path)
         if not path.exists():
-            logger.error("Không tìm thấy tệp shard: %s", path)
-            return 0
+            raise FileNotFoundError(path)
 
         logger.info("Xử lý Shard dữ liệu: %s...", path.name)
         is_gzip = "".join(path.suffixes).endswith(".gz") or path.name.endswith(".gz")
@@ -154,7 +156,7 @@ class IngestPipelineWorker:
                     doc_id = str(doc_record.get("doc_id") or doc_record.get("item_id") or f"doc_{line_idx}")
 
                     # CƠ CHẾ RESUME CẤP VĂN BẢN: Bỏ qua văn bản đã tồn tại trong Qdrant để cứu thời gian CPU
-                    if self.qdrant.doc_exists(doc_id):
+                    if self.skip_existing and self.qdrant.doc_exists(doc_id):
                         skipped_existing_docs += 1
                         continue
 
@@ -187,7 +189,7 @@ class IngestPipelineWorker:
                         doc_record.get("status")
                         or (meta_detail.get("effStatus") or {}).get("name")
                         or (meta_api.get("effStatus") or {}).get("name")
-                        or "Còn hiệu lực"
+                        or "Chưa xác định"
                     )
                     org = str(
                         doc_record.get("co_quan")
@@ -211,8 +213,15 @@ class IngestPipelineWorker:
                         logger.warning("Bỏ qua lỗi AST doc %s: %s", doc_id, parse_err)
                         continue
 
+                    chunk_occurrences: Dict[str, int] = {}
                     for ch in ast_chunks:
                         ch_id = str(ch.get("chunk_id") or ch.get("metadata", {}).get("chunk_id") or uuid.uuid4().hex)
+                        # Amending documents can quote several articles with the
+                        # same number. Preserve every segment with stable IDs.
+                        chunk_occurrences[ch_id] = chunk_occurrences.get(ch_id, 0) + 1
+                        occurrence = chunk_occurrences[ch_id]
+                        if occurrence > 1:
+                            ch_id = f"{ch_id}_occurrence_{occurrence}"
                         ch["chunk_id"] = ch_id
                         ch["doc_id"] = doc_id
                         ch["doc_number"] = doc_number
@@ -231,8 +240,8 @@ class IngestPipelineWorker:
                 chunk_buffer.clear()
 
         except Exception as read_err:
-            logger.error("Lỗi đọc tệp shard %s: %s. Bỏ qua tệp này.", path.name, read_err)
-            return 0
+            logger.error("Shard %s thất bại; không ghi checkpoint: %s", path.name, read_err)
+            raise
 
         gc.collect()
         logger.info(
@@ -263,8 +272,7 @@ class IngestPipelineWorker:
             chunk_copy = dict(chunk)
             chunk_copy["embedding"] = embeddings[i][: self.vector_dim].tolist()
 
-            status_str = str(chunk.get("metadata", {}).get("status", ""))
-            chunk_copy["is_effective"] = ("hết hiệu lực" not in status_str.lower())
+            chunk_copy["is_effective"] = is_currently_effective(chunk.get("metadata", {}))
 
             chunk_content = chunk.get("content") or chunk.get("text", "")
             chunk_copy["content"] = chunk_content
@@ -279,12 +287,13 @@ class IngestPipelineWorker:
             records=qdrant_payloads,
             collection_name=config.QDRANT_COLLECTION_NAME,
         )
-        if upserted == 0 and len(qdrant_payloads) > 0:
+        if upserted != len(qdrant_payloads):
             raise RuntimeError("Qdrant nạp thất bại toàn bộ batch. Dừng tiến trình để tránh lệch pha dữ liệu!")
 
         # 2. Nạp Elasticsearch
         try:
-            self.es.bulk_index_chunks(chunks)
+            if self.es.bulk_index_chunks(chunks) != len(chunks):
+                raise RuntimeError("Elasticsearch không nạp đủ batch")
         except Exception as es_err:
             logger.error("Ngoại lệ khi nạp Elasticsearch: %s", es_err)
             raise es_err

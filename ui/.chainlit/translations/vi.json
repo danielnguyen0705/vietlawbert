@@ -1,0 +1,16 @@
+{
+  "common": {
+    "actions": {"cancel": "Hủy", "confirm": "Xác nhận", "continue": "Tiếp tục", "goBack": "Quay lại", "reset": "Đặt lại", "submit": "Áp dụng"},
+    "status": {"loading": "Đang tải…", "error": {"default": "Có lỗi xảy ra", "serverConnection": "Không kết nối được máy chủ"}}
+  },
+  "chat": {
+    "input": {"placeholder": "Nhập câu hỏi của bạn…", "actions": {"send": "Gửi câu hỏi", "stop": "Dừng", "attachFiles": "Đính kèm tệp"}},
+    "messages": {"actions": {"copy": {"button": "Sao chép", "success": "Đã sao chép!"}}},
+    "settings": {"title": "Cài đặt hội thoại", "customize": "Chọn số căn cứ tối đa cho câu hỏi tiếp theo"},
+    "watermark": "Đối chiếu căn cứ gốc. Dữ liệu DEMO chỉ dùng minh họa."
+  },
+  "navigation": {
+    "header": {"chat": "Hội thoại", "readme": "Giới thiệu", "theme": {"light": "Giao diện sáng", "dark": "Giao diện tối", "system": "Theo hệ thống"}},
+    "newChat": {"button": "Hội thoại mới", "dialog": {"title": "Tạo hội thoại mới", "description": "Nội dung phiên hiện tại sẽ được xóa khỏi màn hình. Bạn muốn tiếp tục?", "tooltip": "Hội thoại mới"}}
+  }
+}

@@ -2,6 +2,7 @@
 
 ## Bắt đầu từ đâu?
 
+- Muốn chạy chatbot Chainlit + FastAPI không cần dữ liệu: đọc [guides/chat_ui_api.md](guides/chat_ui_api.md).
 - Muốn chạy toàn bộ pipeline crawl: đọc [guides/ubuntu_to_full_crawl.md](guides/ubuntu_to_full_crawl.md).
 - Muốn chạy pilot nhỏ: đọc [guides/pilot_100_runbook.md](guides/pilot_100_runbook.md).
 - Muốn xem kết quả kiểm định 8.000 văn bản: đọc
@@ -23,3 +24,6 @@ Các tác vụ vận hành chạy từ `law_dataset/src` bằng `python -m cli.<
 - `cli.audit`, `cli.verify`: quality gate.
 - `cli.publish`, `cli.consume_raw`, `cli.consume_embeddings`: Kafka và ingestion.
 - `cli.inspect_database`: kiểm tra nhanh Milvus/Neo4j.
+# Demo end-to-end
+
+- [VBPL → xử lý văn bản → tìm kiếm lai → NVIDIA → giao diện](guides/vbpl_end_to_end_demo.md)

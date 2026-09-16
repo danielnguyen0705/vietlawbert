@@ -81,14 +81,13 @@ class LegalHybridRetriever:
         """Truy vấn Elasticsearch kết hợp Custom Vietnamese Legal Analyzer."""
         es_query = {
             "query": {
-                "multi_match": {
-                    "query": query,
-                    "fields": [
-                        "doc_number^4",
-                        "hierarchy_path^3",
-                        "content^1.5",
-                    ],
-                    "fuzziness": "AUTO",
+                "bool": {
+                    "must": [{"multi_match": {
+                        "query": query,
+                        "fields": ["doc_number^4", "hierarchy_path^3", "content^1.5"],
+                        "fuzziness": "AUTO",
+                    }}],
+                    "filter": [{"term": {"is_effective": True}}],
                 }
             },
             "size": top_k,

@@ -1,0 +1,44 @@
+name: vietlawbert-chat
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.chat
+    environment:
+      CHAT_MODE: mock
+    # Use the current checkout, including main.py and pipeline/, inside Docker.
+    volumes:
+      - type: bind
+        source: .
+        target: /app
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.chat
+    working_dir: /app/ui
+    volumes:
+      - type: bind
+        source: .
+        target: /app
+    command: ["python", "-m", "chainlit", "run", "chainlit_app.py", "--host", "0.0.0.0", "--port", "8001", "--headless"]
+    environment:
+      CHAT_API_URL: http://api:8000
+      CHAT_TIMEOUT_SECONDS: "300"
+    ports:
+      - "127.0.0.1:8001:8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      api:
+        condition: service_healthy

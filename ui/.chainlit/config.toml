@@ -1,0 +1,17 @@
+[project]
+enable_telemetry = false
+
+[features]
+unsafe_allow_html = false
+latex = false
+spontaneous_file_upload.enabled = false
+audio.enabled = false
+
+[UI]
+name = "VietLawBERT"
+language = "vi"
+chat_settings_location = "sidebar"
+description = "Tra cứu và hỏi đáp pháp luật — demo học thuật"
+
+[meta]
+generated_by = "2.12.0"

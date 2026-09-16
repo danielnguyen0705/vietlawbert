@@ -2,6 +2,12 @@
 .gitignore
 .dockerignore
 .venv
+.venv-chat
+.tools
+.env
+.env.*
+!.env.example
+models/
 venv
 __pycache__
 *.pyc

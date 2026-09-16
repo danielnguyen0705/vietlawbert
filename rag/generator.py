@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import re
 import logging
+import unicodedata
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 
@@ -67,7 +68,7 @@ class ResilientLLMDispatcher:
                 model_id=primary_model,
                 api_base=cloud_base,
                 api_key=cloud_key,
-                timeout=45.0,
+                timeout=float(os.getenv("PRIMARY_LLM_TIMEOUT_SECONDS", "45")),
             ))
 
         fallback_key = os.getenv("FALLBACK_LLM_API_KEY")
@@ -87,13 +88,14 @@ class ResilientLLMDispatcher:
         local_model = getattr(config, "GENERATOR_MODEL", "Qwen/Qwen2.5-7B-Instruct")
         local_key = getattr(config, "LLM_API_KEY", "ollama")
 
-        chain.append(LLMProviderNode(
-            name="Local_Safety_Net",
-            model_id=local_model,
-            api_base=local_base,
-            api_key=local_key,
-            timeout=60.0,
-        ))
+        if os.getenv("ENABLE_LOCAL_LLM", "true").lower() == "true":
+            chain.append(LLMProviderNode(
+                name="Local_Safety_Net",
+                model_id=local_model,
+                api_base=local_base,
+                api_key=local_key,
+                timeout=60.0,
+            ))
 
         return chain
 
@@ -120,7 +122,7 @@ class ResilientLLMDispatcher:
                     temperature=temperature,
                     max_tokens=max_tokens,
                 )
-                answer = response.choices[0].message.content.strip()
+                answer = (response.choices[0].message.content or "").strip()
                 if answer:
                     logger.info("Mô hình [%s] phản hồi thành công.", node.name)
                     return answer, node.name
@@ -139,13 +141,13 @@ class LegalGenerator:
     def __init__(
         self,
         retriever: Optional[LegalHybridRetriever] = None,
-        temperature: float = 0.1,
-        max_tokens: int = 1024,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
     ):
         self.retriever = retriever or LegalHybridRetriever()
         self.dispatcher = ResilientLLMDispatcher()
-        self.temperature = temperature
-        self.max_tokens = max_tokens
+        self.temperature = temperature if temperature is not None else float(os.getenv("LLM_TEMPERATURE", "0.1"))
+        self.max_tokens = max_tokens if max_tokens is not None else int(os.getenv("LLM_MAX_TOKENS", "1024"))
         logger.info("LegalGenerator khởi tạo thành công với chuỗi điều phối %d tầng.", len(self.dispatcher.cascade_chain))
 
     def _format_context(self, contexts: List[Dict[str, Any]]) -> str:
@@ -171,18 +173,29 @@ class LegalGenerator:
         """Đo lường định lượng tỷ lệ căn cứ xuất hiện trong câu trả lời phục vụ RQ4 (Faithfulness)."""
         if not contexts:
             return 0.0
-        matched = 0
-        ans_lower = answer.lower()
-        for c in contexts:
-            doc_num = str(c.get("doc_number", "")).strip().lower()
-            h_path = str(c.get("hierarchy_path", "")).strip().lower()
 
-            art_match = re.search(r"điều\s+(\d+[a-za-z]?)", h_path)
+        def normalize_citation(value: Any) -> str:
+            text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+            text = re.sub(r"[‐‑‒–—―−]", "-", text)
+            return re.sub(r"\s+", " ", text).strip()
+
+        matched = 0
+        normalized_answer = normalize_citation(answer)
+        for c in contexts:
+            doc_num = normalize_citation(c.get("doc_number"))
+            h_path = normalize_citation(c.get("hierarchy_path"))
+
+            art_match = re.search(r"điều\s+(\d+[a-z]?)", h_path)
             art_str = art_match.group(0) if art_match else ""
 
-            # Dùng Regex word-boundary tránh so khớp nhầm Điều 1 với Điều 10, Điều 12
-            has_doc = bool(doc_num and doc_num != "n/a" and re.search(r"\b" + re.escape(doc_num) + r"\b", ans_lower))
-            has_art = bool(art_str and re.search(r"\b" + re.escape(art_str) + r"\b", ans_lower))
+            # Lookarounds avoid matching Điều 1 inside Điều 10/12 while still
+            # supporting Vietnamese letters and punctuation-heavy document IDs.
+            has_doc = bool(doc_num and doc_num != "n/a" and re.search(
+                r"(?<!\w)" + re.escape(doc_num) + r"(?!\w)", normalized_answer,
+            ))
+            has_art = bool(art_str and re.search(
+                r"(?<!\w)" + re.escape(art_str) + r"(?!\w)", normalized_answer,
+            ))
 
             if has_doc or has_art:
                 matched += 1

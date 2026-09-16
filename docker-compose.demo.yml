@@ -1,0 +1,93 @@
+name: vietlawbert-demo
+
+x-runtime: &runtime
+  image: vietlawbert-demo:latest
+  build:
+    context: .
+    dockerfile: Dockerfile.demo
+  working_dir: /app
+  volumes:
+    - .:/app
+    - demo_models:/root/.cache/huggingface
+  environment: &environment
+    DATA_STORAGE_ROOT: /app/data/demo
+    QDRANT_HOST: qdrant
+    QDRANT_PORT: "6333"
+    QDRANT_COLLECTION_NAME: vietlawbert_demo_chunks
+    ES_HOST: http://elasticsearch:9200
+    ES_INDEX_NAME: vietlawbert_demo_chunks
+    EMBED_DEVICE: cpu
+    BASE_MODEL_NAME: ${DEMO_EMBED_MODEL:-sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2}
+    QDRANT_VECTOR_DIM: "384"
+    EMBED_BATCH_SIZE: "2"
+    OMP_NUM_THREADS: "2"
+    MKL_NUM_THREADS: "2"
+    TOKENIZERS_PARALLELISM: "false"
+    CHAT_MODE: rag
+    CHAT_DEMO_REPORT_DIR: /app/data/demo/reports
+    ENABLE_LOCAL_LLM: "false"
+    PRIMARY_LLM_TIMEOUT_SECONDS: "120"
+    LLM_MAX_TOKENS: "4096"
+    LLM_TEMPERATURE: "1"
+  depends_on:
+    elasticsearch:
+      condition: service_healthy
+    qdrant:
+      condition: service_started
+
+services:
+  worker:
+    <<: *runtime
+    profiles: [tools]
+  api:
+    <<: *runtime
+    profiles: [chat]
+    command: [python, -m, uvicorn, "api.server:app", --host, "0.0.0.0", --port, "8000", --workers, "1"]
+    ports: ["127.0.0.1:8010:8000"]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+  ui:
+    image: vietlawbert-chat-ui:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.chat
+    profiles: [chat]
+    working_dir: /app/ui
+    volumes: [".:/app"]
+    environment:
+      CHAT_API_URL: http://api:8000
+      CHAT_TIMEOUT_SECONDS: "300"
+      CHAT_MODE: rag
+    command: [python, -m, chainlit, run, chainlit_app.py, --host, "0.0.0.0", --port, "8001", --headless]
+    ports: ["127.0.0.1:8011:8001"]
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8001/', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  qdrant:
+    image: qdrant/qdrant:v1.9.2
+    volumes: ["demo_qdrant:/qdrant/storage"]
+  elasticsearch:
+    image: elasticsearch:8.13.0
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    volumes: ["demo_es:/usr/share/elasticsearch/data"]
+    healthcheck:
+      test: [CMD-SHELL, "curl -fsS 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' >/dev/null"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+
+volumes:
+  demo_qdrant:
+  demo_es:
+  demo_models:
