@@ -54,11 +54,21 @@ def storage_snapshot(worker):
 
 def prepare(args, root):
     from pipeline.ingest_pipeline import IngestPipelineWorker
-    from quality.crawl_audit import evaluate_linguistic_quality
+    from quality.crawl_audit import audit_crawl, evaluate_linguistic_quality
     raw = root / "raw_shards"
     shards = sorted(raw.glob("crawl_pages_*.jsonl.gz"))
     if not shards:
         raise RuntimeError("No audited crawl shards. Run the crawl step first.")
+    for shard in shards:
+        audit_path = shard.with_name(shard.name.replace(".jsonl.gz", ".audit.json"))
+        if not audit_path.exists():
+            raise RuntimeError(f"Missing crawl audit: {shard.name}")
+        previous = json.loads(audit_path.read_text(encoding="utf-8"))
+        current = audit_crawl(shard, expected_documents=previous.get("records"),
+                              allow_upstream_missing=True, allow_ocr_pending=True)
+        save(audit_path, current)
+        if not current["passed"]:
+            raise RuntimeError(f"Failed current crawl audit: {shard.name}: {current['failures']}")
     # Replay deterministic chunk IDs into BOTH stores after any partial failure.
     worker = IngestPipelineWorker(skip_existing=False)
     accepted, rejected, seen = [], [], set()

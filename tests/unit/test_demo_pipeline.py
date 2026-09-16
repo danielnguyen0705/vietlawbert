@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from pipeline.ingest_pipeline import IngestPipelineWorker
-from cli.demo import render_report, storage_snapshot
+from cli.demo import prepare, render_report, storage_snapshot
 from preprocess.validity import is_currently_effective
 from rag.generator import LegalGenerator
 from datetime import date
@@ -109,3 +109,19 @@ def test_attribution_normalizes_unicode_dashes_and_spaces():
         [{"doc_number": "35/2026/NQ-HĐND", "hierarchy_path": "Điều 3 > Khoản 1"}],
     )
     assert score == 1.0
+
+
+def test_prepare_rechecks_stale_successful_audit_before_storage(tmp_path, monkeypatch):
+    from artifacts.canonical import write_jsonl
+    raw = tmp_path / "raw_shards"
+    raw.mkdir()
+    shard = raw / "crawl_pages_00001_00001.jsonl.gz"
+    write_jsonl(shard, [{"item_id": "invalid", "html_status": "VALID", "html_raw": ""}])
+    audit = raw / "crawl_pages_00001_00001.audit.json"
+    audit.write_text(json.dumps({"records": 1, "passed": True}), encoding="utf-8")
+    constructor = Mock()
+    monkeypatch.setattr("pipeline.ingest_pipeline.IngestPipelineWorker", constructor)
+    with pytest.raises(RuntimeError, match="Failed current crawl audit"):
+        prepare(SimpleNamespace(), tmp_path)
+    constructor.assert_not_called()
+    assert not json.loads(audit.read_text(encoding="utf-8"))["passed"]

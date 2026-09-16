@@ -43,3 +43,22 @@ def test_audit_crawl_detects_corrupted_encoding(tmp_path):
     report = audit_crawl(shard_path, expected_documents=2)
     assert report["linguistic_quality_rejected"] == 1
     assert report["records"] == 2
+
+
+def test_audit_checks_document_language_without_css_and_script_noise(tmp_path):
+    shard = tmp_path / "markup.jsonl"
+    text = "Căn cứ Luật Giao thông đường bộ quy định về xử phạt vi phạm. " * 3
+    markup = "<style>" + "body { color: black; }" * 1000 + "</style>"
+    markup += "<script>" + "console.log('noise');" * 1000 + "</script>"
+    write_jsonl(shard, [{"item_id": "valid", "html_status": "VALID",
+                        "html_raw": markup + "<p>" + text + "</p>"}])
+    report = audit_crawl(shard, expected_documents=1)
+    assert report["passed"]
+    assert report["linguistic_quality_rejected"] == 0
+
+
+def test_audit_rejects_empty_document_behind_large_markup(tmp_path):
+    shard = tmp_path / "empty.jsonl"
+    write_jsonl(shard, [{"item_id": "empty", "html_status": "VALID",
+                        "html_raw": "<style>" + "body { color: black; }" * 1000 + "</style>"}])
+    assert not audit_crawl(shard, expected_documents=1)["passed"]

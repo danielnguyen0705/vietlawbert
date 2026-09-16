@@ -188,6 +188,8 @@ def main() -> int:
                 raise RuntimeError(f"Tệp Shard {artifact.name} không đạt chuẩn Quality Gate.")
             print(f"[BỎ QUA VÌ ĐÃ CÀO] {index}/{len(shards)}: {artifact.name}", flush=True)
             result = existing
+            result["quarantined_content_records"] = write_content_quarantine(artifact)
+            write_json_atomic(artifact.with_name(artifact.name.replace(".jsonl.gz", ".audit.json")), result)
         else:
             print(f"[TIẾN HÀNH CÀO] {index}/{len(shards)}: Trang {shard.start_page} - {shard.end_page}", flush=True)
             result = run_shard(

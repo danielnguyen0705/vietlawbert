@@ -12,6 +12,7 @@ import json
 import re
 import argparse
 import logging
+from bs4 import BeautifulSoup
 from collections import Counter
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Set, Iterator
@@ -96,7 +97,13 @@ def audit_crawl(
         counters["html_valid"] += content_valid
 
         if content_valid:
-            ling_eval = evaluate_linguistic_quality(html_raw)
+            # Markup, CSS and scripts are not Vietnamese document content.
+            soup = BeautifulSoup(html_raw, "html.parser")
+            for tag in soup(["script", "style", "nav", "footer", "header", "noscript", "iframe"]):
+                tag.decompose()
+            ling_eval = evaluate_linguistic_quality(soup.get_text("\n", strip=True))
+            if "\ufffd" in html_raw or "\x00" in html_raw:
+                ling_eval["is_valid"] = False
             if not ling_eval["is_valid"]:
                 counters["linguistic_quality_rejected"] += 1
 
