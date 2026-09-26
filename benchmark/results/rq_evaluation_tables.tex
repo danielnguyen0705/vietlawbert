@@ -1,0 +1,64 @@
+% VIETLAWBERT EMPIRICAL BENCHMARK (Q1 STANDARD)
+
+\begin{table}[h]
+\centering
+\caption{RQ1: Hiệu năng đối chứng của HIN-Guided Hard Negatives.}
+\begin{tabular}{lccc}
+\toprule
+Chiến lược Khai phá & NDCG@10 & $p$-value ($t$-test) & Ý nghĩa \\
+\midrule
+BM25 Hard Negatives & 0.4538 & - & Baseline \\
+\textbf{HIN-Guided Hard Negatives (Ours)} & \textbf{0.6590}^{**} & \textbf{8.92e-04} & $p < 0.01$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\begin{table}[h]
+\centering
+\caption{RQ2: Đánh giá đường biên tối ưu Pareto trên các lát cắt Matryoshka.}
+\begin{tabular}{rccc}
+\toprule
+Kích thước Vector ($d$) & Hit-Rate@10 & Dung lượng RAM & Silhouette ($d=64$) \\
+\midrule
+64 & 0.7924 & 24.4 MB & 0.0748 (Macro) \\
+128 & 0.8351 & 48.8 MB & - \\
+256 & 0.8718 & 97.7 MB & - \\
+512 & 0.8882 & 195.3 MB & - \\
+768 & 0.8930 & 293.0 MB & - \\
+1024 & 0.8954 & 390.6 MB & - \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\begin{table}[h]
+\centering
+\caption{RQ3: Nghiên cứu triệt tiêu thành phần và kiểm chứng độ trễ toàn trình.}
+\begin{tabular}{lccc}
+\toprule
+Cấu hình Hệ thống & Hit-Rate@10 & Latency ($P_{95}$) & SLA Q1 \\
+\midrule
+Dense Only (Qdrant 256d) & 0.8124 & 45.2 ms & Đạt ($<500$ms) \\
+Sparse Only (ES BM25) & 0.7741 & 32.6 ms & Đạt ($<500$ms) \\
+Hybrid RRF (Dense + Sparse) & 0.8650 & 78.4 ms & Đạt ($<500$ms) \\
+Full Architecture (+ Graph Reranking) & 0.8954 & 285.0 ms & Đạt ($<500$ms) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\begin{table}[h]
+\centering
+\caption{RQ4: Đánh giá độ trung thực (Attribution Score) và Context Precision.}
+\begin{tabular}{lccc}
+\toprule
+Kiến trúc Hệ thống & Attribution Score & Answer Relevance & Context Precision \\
+\midrule
+Naive RAG (Baseline) & 0.7120 & 0.7650 & 0.6840 \\
+VNLawBERT (Chau et al., 2020) & 0.7480 & 0.7910 & 0.7250 \\
+\textbf{VietLawBERT (Proposed)} & \textbf{0.9250} & \textbf{0.9410} & \textbf{0.9120} \\
+\bottomrule
+\end{tabular}
+\end{table}
+

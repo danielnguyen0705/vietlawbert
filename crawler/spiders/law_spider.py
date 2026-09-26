@@ -1,6 +1,7 @@
 """
-law_spider.py - Con nhện thu thập toàn diện văn bản pháp luật Việt Nam (VBPL).
-Tích hợp Next.js Server Action, Strict Backpressure, Chromium V8 Refresh và Deferred OCR.
+law_spider.py - Con nhện thu thập toàn diện văn bản quy phạm pháp luật (VBPL).
+Tích hợp Next.js Server Action, Async Start Generator (Scrapy 2.17+), Strict Backpressure,
+Chromium V8 Periodic Refresh và Deferred OCR.
 Tối ưu hóa bộ nhớ: Loại bỏ hoàn toàn BeautifulSoup object khỏi Item tuần tự hóa đĩa JSONL.
 """
 
@@ -16,7 +17,7 @@ import zipfile
 import html as html_lib
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Dict, Any, List, Set, Optional, Tuple
+from typing import Dict, Any, List, Set, Optional, Tuple, AsyncIterator, Iterator
 
 import scrapy
 from scrapy import signals
@@ -76,6 +77,15 @@ class LawSpider(scrapy.Spider):
     allowed_domains = ["vbpl.vn", "moj.gov.vn", "vbpl-bientap-gateway.moj.gov.vn", "fptcloud.com"]
     handle_httpstatus_list = [403]
 
+    custom_settings = {
+        "ROBOTSTXT_OBEY": False,
+        "CONCURRENT_REQUESTS": 8,
+        "CONCURRENT_REQUESTS_PER_DOMAIN": 8,
+        "DOWNLOAD_TIMEOUT": 60,
+        "RETRY_TIMES": 3,
+        "TWISTED_REACTOR": "twisted.internet.asyncioreactor.AsyncioSelectorReactor",
+    }
+
     def __init__(
         self,
         start_page: int = 1,
@@ -92,8 +102,8 @@ class LawSpider(scrapy.Spider):
     ):
         super().__init__(*args, **kwargs)
         self.start_page = max(1, int(start_page))
-        self.max_pages = max(1, int(pages)) if pages else None
-        self.max_items = max(1, int(limit)) if limit else None
+        self.max_pages = max(1, int(pages)) if pages is not None and str(pages).strip() else None
+        self.max_items = max(1, int(limit)) if limit is not None and str(limit).strip() else None
         self.page_size = max(1, min(int(page_size), 100))
         self.keyword = keyword.strip()
         self.agency_ids = [v.strip() for v in agency_ids.split(",") if v.strip()]
@@ -128,13 +138,6 @@ class LawSpider(scrapy.Spider):
         return spider
 
     def _get_in_flight_count(self) -> int:
-        if hasattr(self, "crawler") and self.crawler.stats:
-            enqueued = self.crawler.stats.get_value("scheduler/enqueued", 0) or 0
-            dequeued = self.crawler.stats.get_value("scheduler/dequeued", 0) or 0
-            diff = enqueued - dequeued
-            if diff > 0:
-                return diff
-
         try:
             engine = getattr(self.crawler, "engine", None)
             if engine and engine.slot:
@@ -146,9 +149,22 @@ class LawSpider(scrapy.Spider):
         except Exception:
             pass
 
+        if hasattr(self, "crawler") and self.crawler.stats:
+            enqueued = self.crawler.stats.get_value("scheduler/enqueued", 0) or 0
+            dequeued = self.crawler.stats.get_value("scheduler/dequeued", 0) or 0
+            diff = enqueued - dequeued
+            if diff > 0:
+                return diff
+
         return 0
 
-    def start_requests(self):
+    async def start(self) -> AsyncIterator[scrapy.Request]:
+        """Entrypoint bất đồng bộ chuẩn mực bắt buộc từ Scrapy 2.13+."""
+        for request in self.start_requests():
+            yield request
+
+    def start_requests(self) -> Iterator[scrapy.Request]:
+        """Hàm fallback đồng bộ cho các phiên bản Scrapy cũ."""
         if self.requested_doc_ids:
             self.logger.info("[MỤC TIÊU] Cào cứu hộ trực tiếp %d Document IDs.", len(self.requested_doc_ids))
             for doc_id in self.requested_doc_ids:
@@ -192,19 +208,23 @@ class LawSpider(scrapy.Spider):
 
     async def extract_tokens_and_search(self, response):
         page = response.meta.get("playwright_page")
+        if not page:
+            self.logger.error("[LỖI KHỞI TẠO] Không tìm thấy Playwright page trong response.meta!")
+            return
+
         try:
             if response.status == 403:
                 self.logger.error("[CHẶN 403] vbpl.vn từ chối yêu cầu. Kiểm tra IP/Proxy.")
                 return
 
-            await page.wait_for_timeout(500)
+            await page.wait_for_timeout(1000)
 
             if not self.action_tokens and not self.search_action:
                 search_input = page.locator("input[type='text']")
                 if await search_input.count() > 0:
                     await search_input.first.fill("luật")
                     await page.keyboard.press("Enter")
-                    await page.wait_for_timeout(1000)
+                    await page.wait_for_timeout(1500)
 
             if not self.search_action:
                 if self.action_tokens:
@@ -310,8 +330,29 @@ class LawSpider(scrapy.Spider):
 
     @staticmethod
     def _decode_search_payload(text: str) -> dict:
-        json_part = text[text.index('{"total'):] if '{"total' in text else text
-        return json.loads(json_part)
+        for line in text.splitlines():
+            line_str = line.strip()
+            if line_str.startswith("1:") and '{"total' in line_str:
+                try:
+                    return json.loads(line_str[2:])
+                except Exception:
+                    pass
+            if '{"total' in line_str:
+                try:
+                    start_idx = line_str.index('{"total')
+                    return json.loads(line_str[start_idx:])
+                except Exception:
+                    pass
+
+        if '{"total' in text:
+            start_idx = text.index('{"total')
+            candidate = text[start_idx:].splitlines()[0]
+            try:
+                return json.loads(candidate)
+            except Exception:
+                pass
+
+        return json.loads(text)
 
     @staticmethod
     def _decode_action_value(text: str) -> Any:
@@ -322,7 +363,6 @@ class LawSpider(scrapy.Spider):
 
     @staticmethod
     def _prepare_html(html_raw: Optional[str]) -> Tuple[str, str]:
-        """Làm sạch HTML và chỉ trả về trạng thái cùng chuỗi string HTML (Loại bỏ BeautifulSoup object)."""
         if not html_raw:
             return HTMLStatus.EMPTY, ""
 

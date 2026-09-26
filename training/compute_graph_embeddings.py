@@ -7,6 +7,7 @@ Tương thích 100% chuẩn Neo4j 5.x GQL, Python 3.14 & NumPy 2.x, loại bỏ 
 
 from __future__ import annotations
 
+import os
 import json
 import random
 import logging
@@ -38,25 +39,26 @@ logger = logging.getLogger("VietLawBERT_GraphEmbedder")
 
 class Neo4jGraphExtractor:
     def __init__(self, uri: Optional[str] = None, user: Optional[str] = None, password: Optional[str] = None):
-        self.uri = uri or config.NEO4J_URI
-        self.user = user or config.NEO4J_USER
-        self.password = password or config.NEO4J_PASSWORD
+        self.uri = uri or os.getenv("NEO4J_URI") or config.NEO4J_URI
+        self.user = user or os.getenv("NEO4J_USER") or config.NEO4J_USER
+        self.password = password or os.getenv("NEO4J_PASSWORD") or getattr(config, "NEO4J_PASSWORD", "vietlawbert")
         self.driver = GraphDatabase.driver(self.uri, auth=(self.user, self.password), connection_acquisition_timeout=15.0)
         self.driver.verify_connectivity()
-        logger.info("Kết nối Neo4j Engine thành công tại %s.", self.uri)
+        logger.info("Kết nối Neo4j Engine thành công tại %s (User: %s).", self.uri, self.user)
 
     def close(self):
         self.driver.close()
 
     def fetch_legal_edges(self) -> List[Tuple[str, str]]:
-        """Trích xuất danh sách cặp đỉnh quan hệ pháp lý (Loại bỏ article_id tránh warning DBMS)."""
+        """Trích xuất danh sách cặp đỉnh quan hệ pháp lý (Bao gồm HAS_CHUNK và LEGAL_RELATION)."""
         cypher = """
         MATCH (s)-[r]->(t)
-        WHERE (s:LawDocument OR s:Chunk OR s:Article) AND (t:LawDocument OR t:Chunk OR t:Article)
-        RETURN coalesce(s.chunk_id, s.doc_id, elementId(s)) AS u,
-               coalesce(t.chunk_id, t.doc_id, elementId(t)) AS v
+        WHERE (s:LawDocument OR s:Chunk) AND (t:LawDocument OR t:Chunk)
+        RETURN coalesce(s.chunk_id, s.doc_id) AS u,
+               coalesce(t.chunk_id, t.doc_id) AS v
         """
         edges = []
+        logger.info("Đang truy xuất toàn bộ cạnh liên kết từ Neo4j...")
         with self.driver.session() as session:
             result = session.run(cypher)
             for record in result:
@@ -124,7 +126,6 @@ class FastGraphWalker:
                     continue
 
                 for _ in range(walk_length - 1):
-                    # Bước nhảy O(1) trực tiếp trên mảng số nguyên tĩnh
                     curr = random.choice(neighbors)
                     walk.append(curr)
                     neighbors = self.adj[curr]
@@ -160,7 +161,6 @@ class PyTorchSparseSGNS(nn.Module):
         pos_loss = -F.logsigmoid(pos_score)
 
         b_size, k_neg = negatives.shape
-        # Trải phẳng 1D tương thích tuyệt đối cơ chế Sparse Embedding trên mọi phiên bản PyTorch
         neg_v = self.context_embeddings(negatives.reshape(-1)).reshape(b_size, k_neg, self.embed_dim)
         neg_score = torch.bmm(neg_v, u.unsqueeze(-1)).squeeze(-1)  # [Batch, K_neg]
         neg_loss = -torch.sum(F.logsigmoid(-neg_score), dim=-1)    # [Batch]
@@ -227,7 +227,7 @@ def sync_embeddings_to_redis(node_list: List[str], weights: torch.Tensor) -> Non
     """Nạp vector đồ thị vào Redis RAM Cache (SLA < 500ms) theo luồng Pipeline an toàn."""
     try:
         import redis
-        r = redis.Redis(host=config.REDIS_HOST, port=config.REDIS_PORT, db=config.REDIS_DB, socket_timeout=10.0)
+        r = redis.Redis(host=config.REDIS_HOST, port=config.REDIS_PORT, db=config.REDIS_DB, socket_timeout=5.0)
         r.ping()
         pipe = r.pipeline(transaction=False)
         pushed = 0
@@ -295,12 +295,9 @@ def compute_and_export_embeddings(
     try:
         df.to_parquet(target_output, engine="pyarrow", compression="snappy", index=False)
     except Exception:
-        try:
-            df.to_parquet(target_output, engine="fastparquet", compression="snappy", index=False)
-        except Exception:
-            fallback_json = target_output.with_suffix(".json.gz")
-            df.to_json(fallback_json, orient="records", lines=True, compression="gzip")
-            logger.warning("Xuất định dạng fallback: %s", fallback_json)
+        fallback_json = target_output.with_suffix(".json.gz")
+        df.to_json(fallback_json, orient="records", lines=True, compression="gzip")
+        logger.warning("Xuất định dạng fallback: %s", fallback_json)
 
     logger.info("✓ Đã lưu trữ %d vector đồ thị (%dd) tại: %s", len(df), dimensions, target_output.resolve())
     del df
@@ -315,9 +312,9 @@ def main():
     parser.add_argument("--num-walks", type=int, default=5, help="Số lượt duyệt ngẫu nhiên trên mỗi nút")
     parser.add_argument("--walk-length", type=int, default=20, help="Độ dài mỗi đường duyệt")
     parser.add_argument("--epochs", type=int, default=3, help="Số epoch huấn luyện SGNS")
-    parser.add_argument("--uri", default=config.NEO4J_URI, help="URI Neo4j")
-    parser.add_argument("--user", default=config.NEO4J_USER, help="Tài khoản Neo4j")
-    parser.add_argument("--password", default=config.NEO4J_PASSWORD, help="Mật khẩu Neo4j")
+    parser.add_argument("--uri", default=os.getenv("NEO4J_URI", getattr(config, "NEO4J_URI", "bolt://localhost:7687")), help="URI Neo4j")
+    parser.add_argument("--user", default=os.getenv("NEO4J_USER", getattr(config, "NEO4J_USER", "neo4j")), help="Tài khoản Neo4j")
+    parser.add_argument("--password", default=os.getenv("NEO4J_PASSWORD", getattr(config, "NEO4J_PASSWORD", "vietlawbert")), help="Mật khẩu Neo4j")
     args = parser.parse_args()
 
     compute_and_export_embeddings(

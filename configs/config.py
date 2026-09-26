@@ -1,39 +1,62 @@
 """
 config.py - Trung tâm điều phối tham số cấu hình hệ thống VietLawBERT (Kiến trúc v3).
 Nạp biến môi trường từ .env và đồng bộ với Docker Compose (Qdrant, ES, Neo4j, Redis, Mongo).
-Tích hợp hàm kiểm tra Compute Capability an toàn và cấu hình đồng bộ Hugging Face Hub.
+Tích hợp hàm kiểm tra Compute Capability an toàn và cấu hình điều phối Cascading LLM.
 """
 
 from __future__ import annotations
 
 import os
+import logging
 from pathlib import Path
 from typing import Tuple, Optional
 from dotenv import load_dotenv
-import torch
 
 from .paths import ROOT_DIR, DATA_STORAGE_ROOT
 
-# Nạp tệp cấu hình bảo mật .env từ gốc dự án
+# Thiết lập Logger hệ thống
+logger = logging.getLogger("VietLawBERT_Config")
+
+# 1. NẠP BIẾN MÔI TRƯỜNG .ENV TRƯỚC KHI IMPORT TORCH
+# Bắt buộc nạp sớm để các cờ CUDA_VISIBLE_DEVICES có hiệu lực ở tầng C-extension
 ENV_PATH = ROOT_DIR / ".env"
 if ENV_PATH.exists():
-    load_dotenv(dotenv_path=ENV_PATH)
+    load_dotenv(dotenv_path=ENV_PATH, override=True)
+
+import torch  # Nạp sau khi môi trường đã được đồng bộ
 
 
 def _check_valid_cuda() -> bool:
-    """Kiểm tra CUDA khả dụng và phần cứng đạt chuẩn tối thiểu sm_75 (Turing/Ampere)."""
+    """Kiểm tra CUDA khả dụng và phần cứng đạt chuẩn tối thiểu sm_75 (Turing/Ampere/Ada Lovelace)."""
     if not torch.cuda.is_available() or torch.cuda.device_count() == 0:
         return False
     try:
         major, minor = torch.cuda.get_device_capability(0)
-        # Loại trừ kiến trúc cũ (như Pascal sm_61 trên GTX 1050 Ti) gây lỗi PyTorch 2.x
+        # Ngăn chặn các GPU cũ như Pascal sm_61 (GTX 1050 Ti) gây sập PyTorch cu130
         return (major > 7) or (major == 7 and minor >= 5)
     except Exception:
         return False
 
 
+def _resolve_embed_device() -> str:
+    """Cơ chế phòng thủ đa tầng: Ép về CPU nếu GPU không hỗ trợ Compute Capability >= 7.5."""
+    target_device = os.getenv("EMBED_DEVICE", "").strip().lower()
+    
+    if not target_device:
+        return "cuda" if _check_valid_cuda() else "cpu"
+    
+    if "cuda" in target_device and not _check_valid_cuda():
+        logger.warning(
+            "Phát hiện cấu hình EMBED_DEVICE='cuda' nhưng GPU hiện tại không hỗ trợ kernel sm_75+. "
+            "Tự động fallback an toàn về 'cpu' để tránh ngắt tiến trình."
+        )
+        return "cpu"
+        
+    return target_device
+
+
 class Config:
-    """Singleton Configuration Loader đảm bảo tính toàn vẹn kiểu dữ liệu."""
+    """Singleton Configuration Loader đảm bảo tính toàn vẹn kiểu dữ liệu và an toàn phần cứng."""
 
     # ==========================================
     # 1. HẠ TẦNG LƯU TRỮ TẬP TRUNG (STORAGE)
@@ -51,7 +74,7 @@ class Config:
     # ==========================================
     NEO4J_URI: str = os.getenv("NEO4J_URI", "bolt://localhost:7687")
     NEO4J_USER: str = os.getenv("NEO4J_USER", "neo4j")
-    NEO4J_PASSWORD: str = os.getenv("NEO4J_PASSWORD", "vietlawbert2026")
+    NEO4J_PASSWORD: str = os.getenv("NEO4J_PASSWORD", "vietlawbert_secure_pass")
 
     # ==========================================
     # 4. DENSE VECTOR ENGINE (QDRANT - MRL d=256)
@@ -75,18 +98,18 @@ class Config:
     REDIS_DB: int = int(os.getenv("REDIS_DB", 0))
 
     # ==========================================
-    # 7. MÔ HÌNH NHÚNG VIETLAWBERT-MRL & HUẤN LUYỆN
+    # 7. MÔ HÌNH NHÚNG VIETLAWBERT-MRL & THIẾT BỊ TÍNH TOÁN
     # ==========================================
-    BASE_MODEL_NAME: str = os.getenv("BASE_MODEL_NAME", "BAAI/bge-m3")
-    EMBEDDING_MODEL_NAME: str = os.getenv("EMBEDDING_MODEL_NAME", "BAAI/bge-m3")
+    BASE_MODEL_NAME: str = os.getenv("BASE_MODEL_NAME", "/mnt/data/vietlawbert_data/models/vietlawbert_mrl_final")
+    EMBEDDING_MODEL_NAME: str = os.getenv("EMBEDDING_MODEL_NAME", "/mnt/data/vietlawbert_data/models/vietlawbert_mrl_final")
     EMBEDDING_DIM: int = int(os.getenv("EMBEDDING_DIM", 1024))
     MATRYOSHKA_DIMS: Tuple[int, ...] = (64, 128, 256, 512, 768, 1024)
     TEMPERATURE: float = float(os.getenv("TEMPERATURE", 0.05))
     HIERARCHY_WEIGHT: float = float(os.getenv("HIERARCHY_WEIGHT", 0.15))
     MAX_SEQ_LENGTH: int = int(os.getenv("MAX_SEQ_LENGTH", 512))
 
-    # Tự động nhận diện thiết bị tính toán an toàn (Bảo vệ card sm_61)
-    EMBED_DEVICE: str = os.getenv("EMBED_DEVICE", "cuda" if _check_valid_cuda() else "cpu")
+    # Tự động phòng thủ phần cứng qua _resolve_embed_device()
+    EMBED_DEVICE: str = _resolve_embed_device()
     EMBED_BATCH_SIZE: int = int(os.getenv("EMBED_BATCH_SIZE", 16))
 
     # ==========================================
@@ -96,18 +119,31 @@ class Config:
     HF_MODEL_REPO_ID: Optional[str] = os.getenv("HF_MODEL_REPO_ID", None)
 
     # ==========================================
-    # 9. CỤM TRÍ TUỆ NHÂN TẠO & TRUY XUẤT LAI (RAG / LLM)
+    # 9. ĐIỀU PHỐI GENERATOR ĐA TẦNG (CASCADING DISPATCHER)
     # ==========================================
+    # Tầng 1: Cloud SOTA / Fast (Google AI Studio - Gemini 3.8 Flash)
+    PRIMARY_LLM_MODEL: str = os.getenv("PRIMARY_LLM_MODEL", "gemini-3.8-flash")
+    PRIMARY_LLM_API_KEY: str = os.getenv("PRIMARY_LLM_API_KEY", "")
+    PRIMARY_LLM_API_BASE: str = os.getenv("PRIMARY_LLM_API_BASE", "https://generativelanguage.googleapis.com/v1beta/openai/")
+
+    # Tầng 2: Cloud Open-weights (OpenRouter Free - Qwen 2.5 72B)
+    FALLBACK_LLM_MODEL: str = os.getenv("FALLBACK_LLM_MODEL", "qwen/qwen-2.5-72b-instruct:free")
+    FALLBACK_LLM_API_KEY: str = os.getenv("FALLBACK_LLM_API_KEY", "")
+    FALLBACK_LLM_API_BASE: str = os.getenv("FALLBACK_LLM_API_BASE", "https://openrouter.ai/api/v1")
+
+    # Tầng 3: Local Safety Net (Ollama cục bộ khi ngoại tuyến)
     LLM_API_BASE: str = os.getenv("LLM_API_BASE", "http://localhost:11434/v1")
     LLM_API_KEY: str = os.getenv("LLM_API_KEY", "ollama")
     GENERATOR_MODEL: str = os.getenv("GENERATOR_MODEL", "Qwen/Qwen2.5-7B-Instruct")
+    CONTEXTUALIZER_MODEL: str = os.getenv("CONTEXTUALIZER_MODEL", "Qwen/Qwen2.5-14B-Instruct")
 
+    # Cấu hình RRF & Rerank
     RRF_K: int = int(os.getenv("RRF_K", 60))
     RETRIEVAL_TOP_K: int = int(os.getenv("RETRIEVAL_TOP_K", 5))
     GRAPH_ALPHA: float = float(os.getenv("GRAPH_ALPHA", 0.2))
 
     # ==========================================
-    # 10. ĐIỀU PHỐI CLOUD GPU
+    # 10. ĐIỀU PHỐI CLOUD GPU (KHI ĐÀO TẠO PHÂN TÁN)
     # ==========================================
     ENABLE_CLOUD_GPU: bool = os.getenv("ENABLE_CLOUD_GPU", "false").lower() in ("true", "1", "yes")
     CLOUD_GPU_PROVIDER: str = os.getenv("CLOUD_GPU_PROVIDER", "runpod")

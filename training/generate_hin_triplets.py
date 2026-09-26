@@ -1,7 +1,7 @@
 """
 generate_hin_triplets.py - Động cơ khai phá mẫu khó đối lập dựa trên mạng thông tin dị thể (HIN).
-Triển khai giải thuật GG-SLM: Kết hợp tô-pô Node2Vec 128d và Elasticsearch BM25.
-Tối ưu hóa hiệu năng: Giảm thời gian khai phá 25.000 Triplets xuống dưới 3 phút.
+Triển khai giải thuật GG-SLM: Kết hợp tô-pô Node2Vec 128d và BM25 (Hỗ trợ kép Neo4j Fulltext & Elasticsearch).
+Tối ưu hóa hiệu năng: Giảm thời gian khai phá 50.000 Triplets xuống dưới 3 phút trên máy trạm Dell G7.
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from neo4j import GraphDatabase
-from elasticsearch import Elasticsearch
 
 import torch
 try:
@@ -27,7 +26,6 @@ try:
 except Exception:
     pass
 
-# Tắt log spam của Elasticsearch transport tránh nghẽn I/O terminal
 logging.getLogger("elastic_transport").setLevel(logging.WARNING)
 logging.getLogger("elasticsearch").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
@@ -38,7 +36,6 @@ from configs.paths import ARTIFACTS_DIR
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | [%(levelname)s] | %(message)s")
 logger = logging.getLogger("VietLawBERT_HINTripletMiner")
 
-# Tập từ dừng hành chính tiếng Việt thường làm chậm bộ đếm BM25 Lucene
 LEGAL_STOP_WORDS = {
     "căn", "cứ", "luật", "số", "ngày", "tháng", "năm", "của", "về", "việc",
     "quy", "định", "chính", "phủ", "bộ", "ban", "hành", "và", "các", "có",
@@ -56,11 +53,11 @@ class HINTripletMiner:
         es_index: Optional[str] = None,
         graph_emb_path: Optional[Path | str] = None,
     ):
-        self.neo4j_uri = neo4j_uri or config.NEO4J_URI
-        self.neo4j_user = neo4j_user or config.NEO4J_USER
-        self.neo4j_password = neo4j_password or config.NEO4J_PASSWORD
-        self.es_host = es_host or config.ES_HOST
-        self.es_index = es_index or config.ES_INDEX_NAME
+        self.neo4j_uri = neo4j_uri or os.getenv("NEO4J_URI") or config.NEO4J_URI
+        self.neo4j_user = neo4j_user or os.getenv("NEO4J_USER") or config.NEO4J_USER
+        self.neo4j_password = neo4j_password or os.getenv("NEO4J_PASSWORD") or getattr(config, "NEO4J_PASSWORD", "vietlawbert")
+        self.es_host = es_host or os.getenv("ES_HOST") or getattr(config, "ES_HOST", "http://localhost:9200")
+        self.es_index = es_index or getattr(config, "ES_INDEX_NAME", "vietlaw_chunks")
         self.graph_emb_file = Path(graph_emb_path) if graph_emb_path else (ARTIFACTS_DIR / "graph_embeddings_128d.parquet")
 
         self.driver = GraphDatabase.driver(
@@ -71,53 +68,83 @@ class HINTripletMiner:
         self.driver.verify_connectivity()
         logger.info("Kết nối Neo4j Engine thành công tại %s.", self.neo4j_uri)
 
-        self.es = Elasticsearch(hosts=[self.es_host], request_timeout=3.0)
-        logger.info("Kết nối Elasticsearch thành công tại %s.", self.es_host)
+        # Khởi tạo Fulltext Index trên Neo4j cho Chunk.content để hỗ trợ BM25 native
+        self._ensure_neo4j_fulltext_index()
+
+        self.es = None
+        self.es_available = False
+        try:
+            from elasticsearch import Elasticsearch
+            self.es = Elasticsearch(hosts=[self.es_host], request_timeout=2.0)
+            if self.es.ping() and self.es.indices.exists(index=self.es_index):
+                count = self.es.count(index=self.es_index).get("count", 0)
+                if count > 0:
+                    self.es_available = True
+                    logger.info("✓ Elasticsearch index [%s] sẵn sàng với %d văn bản.", self.es_index, count)
+        except Exception:
+            pass
+
+        if not self.es_available:
+            logger.info("⚡ Elasticsearch chưa có index. Hệ thống tự động chuyển sang Neo4j Lucene Fulltext BM25.")
 
         self.graph_embeddings: Dict[str, np.ndarray] = {}
 
+    def _ensure_neo4j_fulltext_index(self):
+        """Tạo chỉ mục Fulltext trên Neo4j để tính điểm BM25 trực tiếp từ đồ thị."""
+        with self.driver.session() as session:
+            try:
+                session.run("CREATE FULLTEXT INDEX chunk_fulltext IF NOT EXISTS FOR (c:Chunk) ON EACH [c.content]").consume()
+            except Exception as e:
+                logger.debug("Thông tin Fulltext Index: %s", e)
+
     def close(self):
         self.driver.close()
-        self.es.close()
+        if self.es:
+            try:
+                self.es.close()
+            except Exception:
+                pass
 
     def fetch_positive_pairs_from_neo4j(self, limit: int = 50000) -> List[Dict[str, str]]:
-        """Trích xuất trực tiếp các cặp Chunks quan hệ dương từ đồ thị Neo4j."""
+        """Trích xuất cặp Chunks liên kết dương tính từ cấu trúc văn bản và quan hệ pháp lý."""
         logger.info("Truy xuất cặp Chunks liên kết dương tính từ Neo4j...")
         pairs: List[Dict[str, str]] = []
         seen: Set[Tuple[str, str]] = set()
 
         half_limit = max(1000, limit // 2)
 
+        # 1. Quan hệ Nội văn bản: Cùng một văn bản quy phạm pháp luật
         intra_query = """
-        MATCH (a:Article)-[:HAS_CHUNK]->(c1:Chunk)
-        MATCH (a)-[:HAS_CHUNK]->(c2:Chunk)
-        WHERE elementId(c1) < elementId(c2)
+        MATCH (d:LawDocument)-[:HAS_CHUNK]->(c1:Chunk)
+        MATCH (d)-[:HAS_CHUNK]->(c2:Chunk)
+        WHERE c1.chunk_id < c2.chunk_id
           AND c1.chunk_id IS NOT NULL AND c2.chunk_id IS NOT NULL
         RETURN c1.chunk_id AS a_id,
                coalesce(c1.content, c1.text, '') AS a_text,
                c2.chunk_id AS p_id,
                coalesce(c2.content, c2.text, '') AS p_text,
-               coalesce(c1.macro_label, a.macro_label, 'CHUNG') AS macro
+               coalesce(d.doc_number, 'CHUNG') AS macro
         LIMIT $limit
         """
 
+        # 2. Quan hệ Liên văn bản: Dẫn chiếu, sửa đổi, căn cứ giữa 2 văn bản khác nhau
         inter_query = """
-        MATCH (d1:LawDocument)-[r]->(d2:LawDocument)
-        WHERE type(r) IN [
-            'CAN_CU_BAN_HANH', 'BAI_BO', 'THAY_THE', 'SUA_DOI_BO_SUNG',
-            'DAN_CHIEU', 'QUY_DINH_CHI_TIET_HUONG_DAN', 'HOP_NHAT'
+        MATCH (d1:LawDocument)-[r:LEGAL_RELATION]->(d2:LawDocument)
+        WHERE r.type IN [
+            'CAN_CU', 'CAN_CU_BAN_HANH', 'BAI_BO', 'THAY_THE', 'SUA_DOI_BO_SUNG',
+            'DAN_CHIEU', 'QUY_DINH_CHI_TIET_HUONG_DAN', 'HOP_NHAT', 'HUONG_DAN'
         ]
-        WITH d1, d2 LIMIT 3000
-        MATCH (d1)-[:HAS_CHAPTER|HAS_ARTICLE|HAS_CHUNK*1..3]->(c1:Chunk)
-        WITH d2, c1 LIMIT 15000
-        MATCH (d2)-[:HAS_CHAPTER|HAS_ARTICLE|HAS_CHUNK*1..3]->(c2:Chunk)
+        WITH d1, d2, r LIMIT 5000
+        MATCH (d1)-[:HAS_CHUNK]->(c1:Chunk)
+        WITH d2, c1, r LIMIT 25000
+        MATCH (d2)-[:HAS_CHUNK]->(c2:Chunk)
         WHERE c1.chunk_id <> c2.chunk_id
           AND c1.chunk_id IS NOT NULL AND c2.chunk_id IS NOT NULL
         RETURN c1.chunk_id AS a_id,
                coalesce(c1.content, c1.text, '') AS a_text,
                c2.chunk_id AS p_id,
                coalesce(c2.content, c2.text, '') AS p_text,
-               coalesce(c1.macro_label, 'CHUNG') AS macro
+               r.type AS macro
         LIMIT $limit
         """
 
@@ -151,52 +178,10 @@ class HINTripletMiner:
         logger.info("✓ Trích xuất thành công %d cặp Positive liên kết từ Neo4j.", len(pairs))
         return pairs
 
-    def resolve_texts_via_elasticsearch(self, pairs: List[Dict[str, str]]) -> List[Dict[str, str]]:
-        """Phân giải toàn văn từ Elasticsearch nếu Neo4j chưa có nội dung text."""
-        missing_ids = set()
-        for p in pairs:
-            if len(p["anchor_text"].strip()) < 30:
-                missing_ids.add(p["anchor_id"])
-            if len(p["positive_text"].strip()) < 30:
-                missing_ids.add(p["positive_id"])
-
-        if not missing_ids:
-            return [p for p in pairs if len(p["anchor_text"]) >= 30 and len(p["positive_text"]) >= 30]
-
-        logger.info("Đang nạp toàn văn cho %d chunks từ Elasticsearch index [%s]...", len(missing_ids), self.es_index)
-        id_to_text: Dict[str, str] = {}
-        batch_ids = list(missing_ids)
-        chunk_size = 1000
-
-        for i in range(0, len(batch_ids), chunk_size):
-            sub_ids = batch_ids[i : i + chunk_size]
-            try:
-                res = self.es.mget(index=self.es_index, body={"ids": sub_ids})
-                for doc in res.get("docs", []):
-                    if doc.get("found"):
-                        cid = doc["_id"]
-                        src = doc.get("_source", {})
-                        txt = src.get("content") or src.get("text") or ""
-                        if len(txt.strip()) >= 30:
-                            id_to_text[cid] = txt.strip()
-            except Exception as exc:
-                logger.warning("Lỗi mget Elasticsearch: %s", exc)
-
-        cleaned: List[Dict[str, str]] = []
-        for p in pairs:
-            a_text = p["anchor_text"] if len(p["anchor_text"].strip()) >= 30 else id_to_text.get(p["anchor_id"], "")
-            p_text = p["positive_text"] if len(p["positive_text"].strip()) >= 30 else id_to_text.get(p["positive_id"], "")
-            if len(a_text) >= 30 and len(p_text) >= 30:
-                p["anchor_text"] = a_text
-                p["positive_text"] = p_text
-                cleaned.append(p)
-
-        logger.info("✓ Sau phân giải toàn văn: %d cặp Positive khả dụng 100%%.", len(cleaned))
-        return cleaned
-
     def load_relevant_graph_embeddings(self, pairs: List[Dict[str, str]]) -> None:
-        """Chỉ nạp vector 128d cho các nút có trong danh sách cặp (Tiết kiệm 3.5GB RAM)."""
+        """Chỉ nạp vector 128d cho các nút có trong danh sách cặp (Tiết kiệm RAM)."""
         if not self.graph_emb_file.exists():
+            logger.warning("Không tìm thấy tệp vector đồ thị tại %s. Sẽ dùng BM25 thuần túy.", self.graph_emb_file)
             return
 
         needed_ids = set()
@@ -204,9 +189,8 @@ class HINTripletMiner:
             needed_ids.add(p["anchor_id"])
             needed_ids.add(p["positive_id"])
 
-        logger.info("Đang nạp có chọn lọc vector tô-pô 128d cho %d chunks liên quan...", len(needed_ids))
+        logger.info("Đang nạp vector tô-pô 128d cho %d chunks mục tiêu...", len(needed_ids))
         try:
-            # Đọc lọc theo filter tránh nạp toàn bộ 3,3 triệu vector vào RAM
             df_emb = pd.read_parquet(self.graph_emb_file, columns=["chunk_id", "graph_embedding"])
             matched = df_emb[df_emb["chunk_id"].isin(needed_ids)]
             for _, row in matched.iterrows():
@@ -214,17 +198,71 @@ class HINTripletMiner:
                 norm = np.linalg.norm(vec)
                 self.graph_embeddings[str(row["chunk_id"])] = vec / (norm + 1e-9)
             del df_emb, matched
-            logger.info("✓ Đã nạp %d vector tô-pô mục tiêu vào RAM (Không gây áp lực lên ES).", len(self.graph_embeddings))
+            logger.info("✓ Đã nạp %d vector tô-pô vào RAM.", len(self.graph_embeddings))
         except Exception as exc:
             logger.warning("Bỏ qua nạp vector đồ thị (%s). Sẽ dùng BM25 thuần túy.", exc)
 
     def extract_salient_query_terms(self, text: str) -> str:
-        """Lọc bỏ stop-words, chỉ giữ lại 10-12 từ khóa pháp lý thực chất."""
+        """Lọc bỏ stop-words, chỉ giữ lại các từ khóa pháp lý thực chất."""
         tokens = re.findall(r"\w+", text.lower())
         salient = [t for t in tokens if t not in LEGAL_STOP_WORDS and len(t) > 1]
         if len(salient) < 3:
             return " ".join(tokens[:10])
         return " ".join(salient[:12])
+
+    def _query_candidate_negatives(self, query_tokens: str, a_id: str, p_id: str, top_k: int = 10) -> List[Tuple[str, str, float]]:
+        """Truy xuất ứng viên mẫu âm theo độ tương đồng từ vựng BM25."""
+        candidates = []
+
+        # Phương án 1: Dùng Elasticsearch nếu index đã sẵn sàng
+        if self.es_available:
+            try:
+                res = self.es.search(
+                    index=self.es_index,
+                    body={
+                        "query": {
+                            "bool": {
+                                "must": [{"match": {"content": {"query": query_tokens, "operator": "or"}}}],
+                                "must_not": [{"ids": {"values": [a_id, p_id]}}],
+                            }
+                        },
+                        "size": top_k,
+                        "_source": ["content", "text"],
+                    },
+                )
+                for h in res.get("hits", {}).get("hits", []):
+                    c_id = str(h["_id"])
+                    c_text = h.get("_source", {}).get("content") or h.get("_source", {}).get("text") or ""
+                    score = float(h.get("_score") or 1.0)
+                    if len(c_text.strip()) >= 30:
+                        candidates.append((c_id, c_text, score))
+                return candidates
+            except Exception:
+                pass
+
+        # Phương án 2: Dùng Neo4j Native Lucene BM25 Fulltext Index
+        try:
+            clean_q = re.sub(r"[\+\-\&\|\!\(\)\{\}\[\]\^\"~*\?:\/\\]", " ", query_tokens)
+            clean_q = " ".join(clean_q.split())
+            if not clean_q:
+                return []
+
+            cypher = """
+            CALL db.index.fulltext.queryNodes("chunk_fulltext", $q) YIELD node, score
+            WHERE node.chunk_id <> $a_id AND node.chunk_id <> $p_id
+            RETURN node.chunk_id AS cand_id, node.content AS cand_text, score
+            LIMIT $limit
+            """
+            with self.driver.session() as session:
+                records = session.run(cypher, q=clean_q, a_id=a_id, p_id=p_id, limit=top_k)
+                for r in records:
+                    txt = str(r["cand_text"] or "")
+                    if len(txt.strip()) >= 30:
+                        candidates.append((str(r["cand_id"]), txt, float(r["score"] or 1.0)))
+        except Exception:
+            pass
+
+        return candidates
 
     def mine_triplets(
         self,
@@ -233,7 +271,7 @@ class HINTripletMiner:
         top_neg_candidates: int = 10,
         max_triplets: int = 50000,
     ) -> pd.DataFrame:
-        """Khai phá Hard Negatives theo giải thuật GG-SLM siêu tốc."""
+        """Khai phá Hard Negatives theo thuật toán GG-SLM."""
         triplets: List[Dict[str, Any]] = []
         validated_pool = [p["positive_text"] for p in pairs if len(p["positive_text"]) > 50]
 
@@ -252,46 +290,24 @@ class HINTripletMiner:
             best_neg_id = "N/A"
             max_hardness = -float("inf")
 
-            try:
-                res = self.es.search(
-                    index=self.es_index,
-                    body={
-                        "query": {
-                            "bool": {
-                                "must": [{"match": {"content": {"query": query_tokens, "operator": "or"}}}],
-                                "must_not": [{"ids": {"values": [a_id, p_id]}}],
-                            }
-                        },
-                        "size": top_neg_candidates,
-                        "_source": ["content", "text"],
-                    },
-                )
-                hits = res.get("hits", {}).get("hits", [])
-                for h in hits:
-                    cand_id = str(h["_id"])
-                    cand_text = h.get("_source", {}).get("content") or h.get("_source", {}).get("text") or ""
-                    if len(cand_text.strip()) < 30:
-                        continue
+            candidates = self._query_candidate_negatives(query_tokens, a_id, p_id, top_k=top_neg_candidates)
 
-                    # Tính độ tiệm cận đồ thị s_p qua cosine similarity vector 128d
-                    s_p = 0.0
-                    if p_id in self.graph_embeddings and cand_id in self.graph_embeddings:
-                        s_p = max(0.0, float(np.dot(self.graph_embeddings[p_id], self.graph_embeddings[cand_id])))
+            for cand_id, cand_text, bm25_score in candidates:
+                s_p = 0.0
+                if p_id in self.graph_embeddings and cand_id in self.graph_embeddings:
+                    s_p = max(0.0, float(np.dot(self.graph_embeddings[p_id], self.graph_embeddings[cand_id])))
 
-                    bm25_score = float(h.get("_score") or 1.0)
-                    norm_bm25 = min(bm25_score / 25.0, 1.0)
+                norm_bm25 = min(bm25_score / 25.0, 1.0)
 
-                    # Công thức GG-SLM: BM25 cao (từ khóa tương đồng) nhưng tô-pô HIN xa rời
-                    hardness = beta * norm_bm25 + (1.0 - beta) * (1.0 - s_p)
+                # Công thức GG-SLM: BM25 cao (từ vựng tương đồng) nhưng tô-pô HIN xa rời
+                hardness = beta * norm_bm25 + (1.0 - beta) * (1.0 - s_p)
 
-                    if hardness > max_hardness:
-                        max_hardness = hardness
-                        best_neg_text = cand_text
-                        best_neg_id = cand_id
-            except Exception:
-                pass
+                if hardness > max_hardness:
+                    max_hardness = hardness
+                    best_neg_text = cand_text
+                    best_neg_id = cand_id
 
-            # Fallback ngẫu nhiên tức thì nếu ES nghẽn mạng
+            # Fallback nếu không có candidate
             if best_neg_text is None and validated_pool:
                 best_neg_text = random.choice(validated_pool)
                 best_neg_id = "random_fallback"
@@ -324,11 +340,12 @@ def mine_and_export_hin_triplets(
     miner = HINTripletMiner()
     try:
         raw_pairs = miner.fetch_positive_pairs_from_neo4j(limit=limit)
-        cleaned_pairs = miner.resolve_texts_via_elasticsearch(raw_pairs)
-        miner.load_relevant_graph_embeddings(cleaned_pairs)
+        valid_pairs = [p for p in raw_pairs if len(p["anchor_text"].strip()) >= 30 and len(p["positive_text"].strip()) >= 30]
+
+        miner.load_relevant_graph_embeddings(valid_pairs)
 
         df_triplets = miner.mine_triplets(
-            pairs=cleaned_pairs,
+            pairs=valid_pairs,
             beta=beta,
             max_triplets=limit,
         )

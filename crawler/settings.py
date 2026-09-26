@@ -74,7 +74,7 @@ FEED_EXPORT_ENCODING = "utf-8"
 LOG_FILE = str(DAILY_LOGS_DIR / "crawler.log")
 LOG_FILE_APPEND = True
 LOG_LEVEL = "INFO"
-LOG_STDOUT = False
+LOG_STDOUT = True
 
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("filelock").setLevel(logging.WARNING)
