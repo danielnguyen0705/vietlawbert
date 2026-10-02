@@ -1,6 +1,7 @@
 """
 evaluate_rrf.py - Bộ công cụ đánh giá thực nghiệm động cơ truy xuất lai (Hybrid RRF).
-Khắc phục triệt để lỗi doc_number='N/A' và chuẩn hóa NDCG@K <= 1.0 qua cơ chế Target Deduplication.
+Khắc phục triệt để lỗi doc_number='N/A', chuẩn hóa NDCG@K <= 1.0 qua Target Deduplication,
+và triệt tiêu hoàn toàn lỗi rò rỉ chuỗi rỗng trong hàm đối soát pháp lý.
 """
 
 from __future__ import annotations
@@ -54,7 +55,10 @@ def is_ground_truth_match(
     gt_article: str,
     gt_chunk_id: Optional[str] = None
 ) -> bool:
-    """Kiểm tra ứng viên truy xuất khớp chính xác số hiệu văn bản, điều luật hoặc chunk_id."""
+    """
+    Kiểm tra ứng viên truy xuất khớp chính xác số hiệu văn bản, điều luật hoặc chunk_id.
+    Khắc phục triệt để lỗi logic: Không cho phép chuỗi rỗng tự khớp thành công.
+    """
     cand_chunk = str(candidate.get("chunk_id", "")).strip()
 
     # 1. Đối soát trực tiếp theo chunk_id (Tiêu chuẩn vàng IR benchmark)
@@ -63,7 +67,7 @@ def is_ground_truth_match(
             return True
         gt_prefix = gt_chunk_id.split("_cl_")[0]
         cand_prefix = cand_chunk.split("_cl_")[0]
-        if gt_prefix == cand_prefix:
+        if gt_prefix and cand_prefix and gt_prefix == cand_prefix:
             return True
 
     # 2. Khắc phục triệt để doc_number='N/A' bằng cách đọc thẻ [META]
@@ -78,18 +82,27 @@ def is_ground_truth_match(
     target_doc = normalize_legal_identifier(gt_doc_num)
     target_art = normalize_legal_identifier(gt_article)
 
-    doc_matched = True
+    # ĐỐI SOÁT VĂN BẢN (Loại bỏ lỗi rò rỉ chuỗi rỗng "")
+    doc_matched = False
     if target_doc and target_doc != "n/a":
-        doc_matched = (target_doc in cand_doc) or (cand_doc in target_doc)
+        if cand_doc:
+            doc_matched = (target_doc in cand_doc) or (cand_doc in target_doc)
+        else:
+            doc_matched = False
+    else:
+        doc_matched = True
 
-    art_matched = True
+    # ĐỐI SOÁT ĐIỀU KHOẢN
+    art_matched = False
     if target_art and target_art != "điều khoản liên quan":
         target_num = extract_article_number(target_art)
         cand_num = extract_article_number(cand_art)
         if target_num and cand_num:
             art_matched = (target_num == cand_num)
         else:
-            art_matched = bool(target_art and target_art in cand_art)
+            art_matched = bool(cand_art and target_art in cand_art)
+    else:
+        art_matched = True
 
     return doc_matched and art_matched
 
@@ -204,7 +217,6 @@ def run_benchmark_evaluation(
     mode: str = "hybrid",
     retriever_instance: Optional[Any] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Hàm đánh giá chuẩn hóa được export cho toàn bộ benchmark suite."""
     k_thresholds = sorted(list(set(k_list or [1, 3, 5, 10])))
     max_k = max(k_thresholds)
 
@@ -231,7 +243,7 @@ def run_benchmark_evaluation(
             continue
 
         dataset_query_scores: List[Dict[str, Any]] = []
-        for idx, sample in enumerate(samples, 1):
+        for sample in samples:
             query = sample.get("query", "")
             if not query:
                 continue
