@@ -1,9 +1,24 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # VIETLAWBERT: MASTER EXPERIMENT AUTOMATION HARNESS (13 BACKBONES)
+# Tự động hóa kiểm thử đa mô hình và đo đạc Pareto d* phục vụ Paper Q1
 # ==============================================================================
 
-DEVICE="cuda" # Chuyển thành "cpu" nếu chạy thử cục bộ
+# Cho phép truyền thiết bị qua tham số: ./run_all_experiments.sh cpu hoặc cuda
+REQUESTED_DEVICE="${1:-cuda}"
+
+# Kiểm tra tương thích CUDA
+if [ "$REQUESTED_DEVICE" = "cuda" ]; then
+    if ! command -v nvidia-smi &> /dev/null; then
+        echo "[CẢNH BÁO] Không tìm thấy card NVIDIA. Tự động chuyển sang thiết bị: cpu"
+        DEVICE="cpu"
+    else
+        DEVICE="cuda"
+    fi
+else
+    DEVICE="cpu"
+fi
+
 PARQUET_FILE="artifacts/triplets/hin_triplets.parquet"
 RESULTS_DIR="benchmark/results"
 CHECKPOINTS_DIR="checkpoints"
@@ -11,8 +26,9 @@ LOG_DIR="logs/experiments"
 
 mkdir -p "$RESULTS_DIR" "$CHECKPOINTS_DIR" "$LOG_DIR"
 
-# Danh sách đầy đủ 13 mô hình học thuật
+# Danh mục đầy đủ 13 mô hình học thuật
 MODELS=(
+  "Chau/VNLawBERT"
   "bert-base-multilingual-cased"
   "vinai/phobert-base-v2"
   "vinai/phobert-large"
@@ -25,11 +41,11 @@ MODELS=(
   "BAAI/bge-m3"
   "vinai/bartpho-syllable"
   "VietAI/vit5-base"
-  "Chau/VNLawBERT"
 )
 
 echo "=================================================================="
 echo "BẮT ĐẦU CHU KỲ HUẤN LUYỆN & TÌM DIMENSION TỐI ƯU CHO 13 MÔ HÌNH"
+echo "Thiết bị thực thi: $DEVICE"
 echo "Thời gian bắt đầu: $(date)"
 echo "=================================================================="
 
@@ -68,7 +84,8 @@ for MODEL_ID in "${MODELS[@]}"; do
   if python3 -u -m benchmark.evaluate_rqs \
       --checkpoint-path "$CKPT_PATH" \
       --output-dir "${RESULTS_DIR}/${SAFE_NAME}" \
-      --device "$DEVICE" >> "$MODEL_LOG" 2>&1; then
+      --device "$DEVICE" \
+      --rq "2" >> "$MODEL_LOG" 2>&1; then
       echo "    ✓ Hoàn tất đo đạc RQ2 cho: $MODEL_ID"
   else
       echo "    ✗ Lỗi đo đạc RQ2 cho $MODEL_ID. Xem log: $MODEL_LOG"

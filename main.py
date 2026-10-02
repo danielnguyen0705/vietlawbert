@@ -25,7 +25,7 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
-from configs.paths import ROOT_DIR, RAW_SHARDS_DIR
+from configs.paths import ROOT_DIR, RAW_SHARDS_DIR, MODELS_DIR, BENCHMARK_DIR
 from configs.config import config
 from configs.logging_config import setup_hierarchical_logging, get_subsystem_logger
 
@@ -104,14 +104,13 @@ def cmd_check_infrastructure() -> bool:
         if not wait_for_service(host, port, name):
             return False
 
-    # Đã sửa lỗi: Trỏ chính xác vào quality.crawl_audit --databases
     return run_subcommand(
         [sys.executable, "-u", "-m", "quality.crawl_audit", "--databases"],
         "Kiểm toán tính nhất quán CSDL (Qdrant & Neo4j)",
     )
 
 
-def cmd_crawl(total_docs: int = 160660, concurrency: int = 4) -> bool:
+def cmd_crawl(total_docs: int = 160660, concurrency: int = getattr(config, "CRAWLER_CONCURRENCY", 8)) -> bool:
     return run_subcommand(
         [
             sys.executable,
@@ -176,7 +175,9 @@ def cmd_train(
     epochs: int = 3,
     batch_size: int = config.EMBED_BATCH_SIZE,
     device: str = config.EMBED_DEVICE,
-    max_seq_length: int = 256,
+    max_seq_length: int = getattr(config, "MAX_SEQ_LENGTH", 256),
+    model_name: str = config.BASE_MODEL_NAME,
+    output_dir: str | None = None,
     push_to_hub: bool = False,
     hub_model_id: str | None = None,
     hf_token: str | None = None,
@@ -197,11 +198,16 @@ def cmd_train(
     if not triplet_ok:
         return False
 
+    out_ckpt = output_dir or str(MODELS_DIR / "vietlawbert_mrl_final")
     train_cmd = [
         sys.executable,
         "-u",
         "-m",
         "training.train_mrl",
+        "--model-name",
+        str(model_name),
+        "--output-dir",
+        str(out_ckpt),
         "--epochs",
         str(epochs),
         "--batch-size",
@@ -219,29 +225,29 @@ def cmd_train(
 
     return run_subcommand(
         train_cmd,
-        "Huấn luyện biểu diễn lồng nhau VietLawBERT-MRL với Hierarchy Loss",
+        f"Huấn luyện VietLawBERT-MRL ({model_name})",
         extra_env=cpu_env,
     )
 
 
 def cmd_benchmark() -> bool:
     bench_ok = run_subcommand(
-        [sys.executable, "-u", "-m", "benchmark.build_vietlawbench", "--single", "600", "--multi", "400"],
-        "Sinh tập kiểm chuẩn Ground-Truth VietLawBench (1.000 mẫu)",
+        [sys.executable, "-u", "-m", "benchmark.build_vietlawbench", "--total-size", "1000", "--mode", "master"],
+        "Sinh tập kiểm chuẩn Ground-Truth VietLawBench (1.000 mẫu chuẩn mực)",
     )
     if not bench_ok:
         return False
 
     rq_ok = run_subcommand(
-        [sys.executable, "-u", "-m", "benchmark.evaluate_rqs"],
-        "Đo lường các chỉ số khoa học RQ1-RQ4",
+        [sys.executable, "-u", "-m", "benchmark.evaluate_rqs", "--rq", "all"],
+        "Đo lường toàn diện các chỉ số khoa học RQ1-RQ4",
     )
     if not rq_ok:
         return False
 
     return run_subcommand(
         [sys.executable, "-u", "-m", "benchmark.baseline_comparator"],
-        "Thực nghiệm đối chứng trực diện Baseline (BM25 vs Dense vs VietLawBERT)",
+        "Thực nghiệm đối chứng trực diện 13 Mô hình Baseline vs VietLawBERT",
     )
 
 
@@ -284,7 +290,7 @@ def cmd_ask(query: str, top_k: int = 3) -> None:
     print("TRẢ LỜI:")
     print(result["answer"])
     print("-" * 60)
-    print(f"Model: {result.get('model_used')} | Attribution Score: {result.get('attribution_score')}")
+    print(f"Model Used: {result.get('model_used')} | Attribution Score (RQ4): {result.get('attribution_score')}")
     print("\nCĂN CỨ TRÍCH DẪN:")
     for i, ctx in enumerate(result.get("contexts", []), 1):
         print(f"[{i}] {ctx.get('hierarchy_path')} - Văn bản: {ctx.get('doc_number')}")
@@ -295,7 +301,7 @@ def cmd_ask(query: str, top_k: int = 3) -> None:
 def interactive_menu():
     while True:
         print("\n" + "=" * 60)
-        print("      VIETLAWBERT - HỆ THỐNG ĐIỀU PHỐI QUY TRÌNH")
+        print("      VIETLAWBERT - HỆ THỐNG ĐIỀU PHỐI QUY TRÌNH (V3)")
         print("=" * 60)
         print(" 1. Kiểm tra hạ tầng & CSDL (Docker + Health Check)")
         print(" 2. Cào dữ liệu phân đoạn (Shard Runner - Pha 1)")
@@ -343,16 +349,15 @@ def main():
     )
     parser.add_argument("--ask", type=str, help="Kiểm thử truy vấn hỏi đáp RAG trực tiếp")
     parser.add_argument("--top-k", type=int, default=3, help="Số lượng căn cứ trích xuất khi hỏi đáp")
-    parser.add_argument("--device", default=config.EMBED_DEVICE, choices=["cpu", "cuda"], help="Thiết bị tính toán (cpu/cuda)")
+    parser.add_argument("--device", default=config.EMBED_DEVICE, choices=["cpu", "cuda"], help="Thiết bị tính toán")
     parser.add_argument("--batch-size", type=int, default=config.EMBED_BATCH_SIZE, help="Kích thước lô tính toán")
     parser.add_argument("--epochs", type=int, default=3, help="Số epoch huấn luyện mô hình MRL")
     parser.add_argument("--max-seq-length", type=int, default=getattr(config, "MAX_SEQ_LENGTH", 256), help="Chiều dài tối đa token")
+    parser.add_argument("--model-name", type=str, default=config.BASE_MODEL_NAME, help="Backbone model name")
     parser.add_argument("--total-docs", type=int, default=160660, help="Tổng số văn bản cào")
-    
-    # Bổ sung các cờ hỗ trợ Cloud GPU Orchestration
     parser.add_argument("--push-to-hub", action="store_true", help="Tự động đồng bộ weights lên Hugging Face Hub")
-    parser.add_argument("--hub-model-id", type=str, default=getattr(config, "HF_MODEL_REPO_ID", None), help="Tên repo trên HF")
-    parser.add_argument("--hf-token", type=str, default=getattr(config, "HF_TOKEN", None), help="Access token ghi của HF")
+    parser.add_argument("--hub-model-id", type=str, default=os.getenv("HF_REPO_ID"), help="Tên repo trên HF")
+    parser.add_argument("--hf-token", type=str, default=os.getenv("HF_TOKEN"), help="Access token ghi của HF")
     args = parser.parse_args()
 
     if args.ask:
@@ -373,6 +378,7 @@ def main():
             batch_size=args.batch_size,
             device=args.device,
             max_seq_length=args.max_seq_length,
+            model_name=args.model_name,
             push_to_hub=args.push_to_hub,
             hub_model_id=args.hub_model_id,
             hf_token=args.hf_token,

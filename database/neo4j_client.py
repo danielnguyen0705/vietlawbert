@@ -72,6 +72,14 @@ class Neo4jClient:
                     logger.debug("Thông báo khởi tạo schema Neo4j: %s", exc)
         logger.info("Đã xác thực toàn bộ Constraints & Indices trên Neo4j.")
 
+    def execute_query(self, cypher: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """Thực thi truy vấn Cypher và thu hồi dữ liệu ngay lập tức (khắc phục AttributeError)."""
+        with self.driver.session() as session:
+            result = session.run(cypher, parameters or {})
+            data = result.data()
+            result.consume()
+            return data
+
     def execute_write(self, cypher: str, parameters: Optional[Dict[str, Any]] = None) -> Any:
         with self.driver.session() as session:
             return session.execute_write(lambda tx: tx.run(cypher, parameters or {}).data())
@@ -98,8 +106,7 @@ class Neo4jClient:
                 success = False
                 for attempt in range(1, max_retries + 1):
                     try:
-                        # Bắt buộc gọi .consume() để máy chủ hoàn tất giao dịch ghi và giải phóng socket
-                        summary = session.run(cypher, parameters={"batch": sub_batch}).consume()
+                        session.run(cypher, parameters={"batch": sub_batch}).consume()
                         total += len(sub_batch)
                         success = True
                         break

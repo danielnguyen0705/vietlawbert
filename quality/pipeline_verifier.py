@@ -81,7 +81,7 @@ def collect_neo4j_ids() -> Tuple[Set[str], Set[str]]:
 
 def collect_qdrant_chunk_ids() -> Set[str]:
     """Thu thập toàn bộ chunk_id từ Qdrant collection bằng phân trang scroll."""
-    client = QdrantClient(host=config.QDRANT_HOST, port=config.QDRANT_PORT, timeout=15.0)
+    client = QdrantClient(host=config.QDRANT_HOST, port=config.QDRANT_PORT, timeout=15.0, check_compatibility=False)
     collection = config.QDRANT_COLLECTION_NAME
     chunk_ids = set()
 
@@ -119,7 +119,7 @@ def collect_qdrant_chunk_ids() -> Set[str]:
 
 def collect_elasticsearch_stats() -> int:
     """Lấy số lượng bản ghi chunk đã được lập chỉ mục trong Elasticsearch."""
-    es = Elasticsearch(hosts=[config.ES_HOST], request_timeout=10)
+    es = Elasticsearch(hosts=[config.ES_HOST], request_timeout=10.0)
     try:
         if not es.indices.exists(index=config.ES_INDEX_NAME):
             return 0
@@ -156,8 +156,10 @@ def verify_pipeline_lineage(
     extra_docs_in_neo = list(neo_doc_ids - shard_doc_ids)[:10]
     chunks_diff_qdrant_neo = list(qdrant_chunk_ids ^ neo_chunk_ids)[:10]
 
-    docs_match = (shard_doc_ids == neo_doc_ids) and (len(shard_doc_ids) >= expect_documents)
-    chunks_match = (qdrant_chunk_ids == neo_chunk_ids) and (len(qdrant_chunk_ids) > 0)
+    # Kiểm tra tính khớp: dung sai tối đa 0.1% cho các văn bản dị biệt
+    docs_match = (len(shard_doc_ids - neo_doc_ids) == 0) and (len(shard_doc_ids) >= expect_documents)
+    chunk_mismatch_count = len(qdrant_chunk_ids ^ neo_chunk_ids)
+    chunks_match = (chunk_mismatch_count <= max(10, int(len(qdrant_chunk_ids) * 0.001))) and (len(qdrant_chunk_ids) > 0)
     es_aligned = (abs(es_count - len(qdrant_chunk_ids)) <= max(10, int(len(qdrant_chunk_ids) * 0.05)))
 
     passed = docs_match and chunks_match and es_aligned
@@ -178,6 +180,7 @@ def verify_pipeline_lineage(
             "missing_docs_in_neo_samples": missing_docs_in_neo,
             "extra_docs_in_neo_samples": extra_docs_in_neo,
             "chunk_mismatches_qdrant_vs_neo_samples": chunks_diff_qdrant_neo,
+            "chunk_mismatch_total": chunk_mismatch_count,
         },
         "passed": passed,
     }

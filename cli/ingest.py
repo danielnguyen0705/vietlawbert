@@ -1,6 +1,6 @@
 """
 ingest.py - CLI chính thức khởi chạy tiến trình nạp ngoại tuyến (Phase 2 Ingestion).
-Đọc Shards thô -> Bóc tách Hybrid AST -> Tiêm Metadata -> Nạp đồng thời Qdrant & ES.
+Quy trình: Đọc Shards thô -> Bóc tách Hybrid AST -> Tiêm Metadata/Hierarchy -> Nạp đồng thời Qdrant (Dense 256d) & ES (Sparse BM25).
 """
 
 from __future__ import annotations

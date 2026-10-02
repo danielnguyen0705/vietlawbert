@@ -65,8 +65,7 @@ LIMIT $limit
 """
 
 # ==============================================================================
-# Kịch bản 5: Khai phá Bộ ba Mẫu khó HIN-Guided Contrastive Triplet (Chuẩn Q1)
-# Đã sửa lỗi Neo4j Syntax và chặn đứng tích Descartes qua phân nhóm đại diện
+# Kịch bản 5: Khai phá Bộ ba Mẫu khó HIN-Guided Contrastive Triplet
 # ==============================================================================
 HIN_TRIPLET_MINING = """
 MATCH (d_anchor:LawDocument)-[r:LEGAL_RELATION]->(d_pos:LawDocument)

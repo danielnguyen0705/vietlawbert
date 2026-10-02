@@ -1,8 +1,6 @@
 """
 law_spider.py - Con nhện thu thập toàn diện văn bản quy phạm pháp luật (VBPL).
-Tích hợp Next.js Server Action, Async Start Generator (Scrapy 2.17+), Strict Backpressure,
-Chromium V8 Periodic Refresh và Deferred OCR.
-Tối ưu hóa bộ nhớ: Loại bỏ hoàn toàn BeautifulSoup object khỏi Item tuần tự hóa đĩa JSONL.
+Tích hợp Next.js Server Action, Backpressure chủ động, Periodic Page Refresh và Dual OCR Mode.
 """
 
 from __future__ import annotations
@@ -14,10 +12,11 @@ import json
 import shutil
 import asyncio
 import zipfile
+import subprocess
 import html as html_lib
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Dict, Any, List, Set, Optional, Tuple, AsyncIterator, Iterator
+from typing import Dict, Any, List, Set, Optional, Tuple, Iterator
 
 import scrapy
 from scrapy import signals
@@ -81,7 +80,7 @@ class LawSpider(scrapy.Spider):
         "ROBOTSTXT_OBEY": False,
         "CONCURRENT_REQUESTS": 8,
         "CONCURRENT_REQUESTS_PER_DOMAIN": 8,
-        "DOWNLOAD_TIMEOUT": 60,
+        "DOWNLOAD_TIMEOUT": 50,
         "RETRY_TIMES": 3,
         "TWISTED_REACTOR": "twisted.internet.asyncioreactor.AsyncioSelectorReactor",
     }
@@ -130,6 +129,7 @@ class LawSpider(scrapy.Spider):
         self.artifacts_dir = Path(ARTIFACTS_DIR)
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
         self.failed_file = self.artifacts_dir / "crawl_failures.jsonl"
+        self._ocr_semaphore: Optional[asyncio.Semaphore] = None
 
     @classmethod
     def from_crawler(cls, crawler, *args, **kwargs):
@@ -158,13 +158,8 @@ class LawSpider(scrapy.Spider):
 
         return 0
 
-    async def start(self) -> AsyncIterator[scrapy.Request]:
-        """Entrypoint bất đồng bộ chuẩn mực bắt buộc từ Scrapy 2.13+."""
-        for request in self.start_requests():
-            yield request
-
     def start_requests(self) -> Iterator[scrapy.Request]:
-        """Hàm fallback đồng bộ cho các phiên bản Scrapy cũ."""
+        """Entrypoint chuẩn hóa theo chuẩn Scrapy Engine."""
         if self.requested_doc_ids:
             self.logger.info("[MỤC TIÊU] Cào cứu hộ trực tiếp %d Document IDs.", len(self.requested_doc_ids))
             for doc_id in self.requested_doc_ids:
@@ -413,6 +408,62 @@ class LawSpider(scrapy.Spider):
         except Exception:
             return ""
 
+    async def _ocr_pdf_async(self, body: bytes) -> Tuple[str, str]:
+        if self._ocr_semaphore is None:
+            max_concurrency = max(1, int(getattr(config, "OCR_CONCURRENCY", 2)))
+            self._ocr_semaphore = asyncio.Semaphore(max_concurrency)
+        async with self._ocr_semaphore:
+            return await asyncio.to_thread(self._ocr_pdf, body)
+
+    @staticmethod
+    def _ocr_pdf(body: bytes) -> Tuple[str, str]:
+        if not body or len(body) < 10:
+            return "", "OCR_EMPTY_BODY"
+
+        executable = shutil.which("tesseract")
+        if not executable:
+            for fallback_path in ("/usr/bin/tesseract", "/usr/local/bin/tesseract", "/bin/tesseract"):
+                if os.path.isfile(fallback_path) and os.access(fallback_path, os.X_OK):
+                    executable = fallback_path
+                    break
+
+        if not executable:
+            return "", "OCR_ENGINE_UNAVAILABLE"
+
+        try:
+            import pymupdf
+            language = getattr(config, "OCR_LANG", "vie+eng")
+            dpi = max(100, int(getattr(config, "OCR_DPI", 200)))
+            max_pages = max(1, int(getattr(config, "OCR_MAX_PAGES", 200)))
+            timeout = max(10, int(os.getenv("OCR_PAGE_TIMEOUT_SECONDS", "60")))
+
+            document = pymupdf.open(stream=body, filetype="pdf")
+            texts = []
+            try:
+                for page_number, page in enumerate(document):
+                    if page_number >= max_pages:
+                        return "\n".join(texts), "OCR_PAGE_LIMIT"
+                    scale = dpi / 72
+                    pixmap = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False)
+                    image = pixmap.tobytes("png")
+                    result = subprocess.run(
+                        [executable, "stdin", "stdout", "-l", language, "--psm", "6"],
+                        input=image,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        timeout=timeout,
+                        check=False,
+                    )
+                    if result.returncode != 0:
+                        error = result.stderr.decode("utf-8", errors="replace")[:300]
+                        return "\n".join(texts), f"OCR_ERROR:{error}"
+                    texts.append(result.stdout.decode("utf-8", errors="replace"))
+            finally:
+                document.close()
+            return "\n".join(texts), "OCR_COMPLETED"
+        except Exception as exc:
+            return "", f"OCR_EXCEPTION:{exc}"
+
     @staticmethod
     def _fallback_file_priority(file_info: dict) -> int:
         name = str(file_info.get("fileName") or "").lower()
@@ -587,6 +638,7 @@ class LawSpider(scrapy.Spider):
             "fileName": current.get("fileName"),
             "size": current.get("size"),
             "relatedType": current.get("relatedType"),
+            "presignedUrl": current.get("presignedUrl"),
         }
 
         file_name = str(current.get("fileName") or "").lower()
@@ -650,6 +702,8 @@ class LawSpider(scrapy.Spider):
     async def parse_fallback_file(self, response, item: dict, file_info: dict, remaining_files: list):
         name = str(file_info.get("fileName") or "").lower()
         extracted_text = ""
+        source = "fallback"
+        status_name = "RECOVERED"
         try:
             if name.endswith(".html") or response.body.startswith(b"<!DOCTYPE") or response.body.startswith(b"<html"):
                 raw_html = response.body.decode("utf-8", errors="replace")
@@ -664,23 +718,42 @@ class LawSpider(scrapy.Spider):
             elif name.endswith(".docx") or response.body.startswith(b"PK\x03\x04"):
                 extracted_text = self._extract_docx_text(response.body)
                 source = "fallback_docx"
+                status_name = "DOCX_TEXT_RECOVERED"
             elif name.endswith(".pdf") or response.body.startswith(b"%PDF"):
                 extracted_text = await asyncio.to_thread(self._extract_pdf_text, response.body)
                 source = "fallback_pdf"
+                status_name = "PDF_TEXT_RECOVERED"
 
-                if len(extracted_text.strip()) < 100:
-                    item["ocr_status"] = "OCR_PENDING"
-                    item["rescue_status"] = "OCR_PENDING"
-                    item["html_status"] = HTMLStatus.EMPTY
-                    yield self._next_file_request(item, remaining_files)
-                    return
+                ocr_enabled = getattr(config, "OCR_ENABLED", True)
+                inline_ocr = getattr(config, "OCR_INLINE_ENABLED", True)
+
+                if len(extracted_text.strip()) < 100 and ocr_enabled:
+                    if not inline_ocr:
+                        item["ocr_status"] = "OCR_PENDING"
+                        item["rescue_status"] = "OCR_PENDING"
+                        item["html_status"] = HTMLStatus.EMPTY
+                        yield self._next_file_request(item, remaining_files)
+                        return
+                    else:
+                        extracted_text, ocr_status = await self._ocr_pdf_async(response.body)
+                        if ocr_status == "OCR_COMPLETED" and len(extracted_text.strip()) < 100:
+                            ocr_status = "OCR_EMPTY"
+                        item["ocr_status"] = ocr_status
+                        if len(extracted_text.strip()) >= 100:
+                            source = "fallback_pdf_ocr"
+                            status_name = "PDF_OCR_RECOVERED"
+                        else:
+                            item["rescue_status"] = ocr_status
+                            item["html_status"] = HTMLStatus.EMPTY
+                            yield self._next_file_request(item, remaining_files)
+                            return
 
             if len(extracted_text.strip()) >= 100:
                 recovered_html = "<html><body><pre>" + html_lib.escape(extracted_text) + "</pre></body></html>"
                 item["html_status"] = HTMLStatus.VALID
                 item["html_raw"] = recovered_html
                 item["content_source"] = source
-                item["rescue_status"] = "TEXT_RECOVERED"
+                item["rescue_status"] = status_name
                 yield self._diagram_request(item)
                 return
         except Exception as exc:

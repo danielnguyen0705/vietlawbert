@@ -18,8 +18,8 @@ from bs4 import BeautifulSoup
 
 import torch
 try:
-    # Khóa cứng luồng CPU tránh gây nghẽn giao diện người dùng Dell G7
-    torch.set_num_threads(2)
+    max_threads = min(4, os.cpu_count() or 2)
+    torch.set_num_threads(max_threads)
 except Exception:
     pass
 
@@ -59,6 +59,21 @@ def save_checkpoint(completed_shards: Set[str]) -> None:
         logger.warning("Không thể ghi checkpoint: %s", exc)
 
 
+def resolve_safe_device(device_param: Optional[str] = None) -> str:
+    target = (device_param or getattr(config, "EMBED_DEVICE", "cpu")).strip().lower()
+    if target == "cuda":
+        if not torch.cuda.is_available():
+            return "cpu"
+        try:
+            major, _ = torch.cuda.get_device_capability(0)
+            if major < 7:
+                logger.warning("GPU phát hiện Compute Capability %d.x < 7.0 (sm_70). Lùi về [cpu].", major)
+                return "cpu"
+        except Exception:
+            return "cpu"
+    return target
+
+
 class IngestPipelineWorker:
     def __init__(
         self,
@@ -86,8 +101,8 @@ class IngestPipelineWorker:
 
         self.es = LegalElasticsearchRetriever(hosts=[self.es_host], index_name=config.ES_INDEX_NAME)
 
-        self.device = device or config.EMBED_DEVICE
-        logger.info("Đang nạp mô hình %s trên [%s] (PyTorch threads=2)...", self.model_name, self.device)
+        self.device = resolve_safe_device(device)
+        logger.info("Đang nạp mô hình %s trên [%s]...", self.model_name, self.device)
         self.encoder = SentenceTransformer(self.model_name, device=self.device)
 
     def _extract_clean_text_fallback(self, doc_record: Dict[str, Any]) -> str:
@@ -128,7 +143,6 @@ class IngestPipelineWorker:
 
     @staticmethod
     def _parse_safe_status(doc_record: Dict[str, Any], meta_detail: Dict[str, Any], meta_api: Dict[str, Any]) -> str:
-        """Trích xuất trạng thái an toàn chống lỗi AttributeError khi effStatus là integer."""
         if doc_record.get("status"):
             return str(doc_record["status"])
 
@@ -175,7 +189,6 @@ class IngestPipelineWorker:
 
                     doc_id = str(doc_record.get("doc_id") or doc_record.get("item_id") or f"doc_{line_idx}")
 
-                    # Bỏ qua văn bản đã có trong Qdrant để tiết kiệm CPU
                     if self.qdrant.doc_exists(doc_id):
                         skipped_existing_docs += 1
                         continue
@@ -229,7 +242,6 @@ class IngestPipelineWorker:
                         continue
 
                     for ch in ast_chunks:
-                        # Đảm bảo UUID chuẩn RFC 4122 (có gạch nối) để Qdrant không từ chối Point ID
                         ch_id = str(ch.get("chunk_id") or ch.get("metadata", {}).get("chunk_id") or str(uuid.uuid4()))
                         ch["chunk_id"] = ch_id
                         ch["doc_id"] = doc_id
@@ -292,7 +304,6 @@ class IngestPipelineWorker:
             chunk["text"] = chunk_content
             qdrant_payloads.append(chunk_copy)
 
-        # 1. Nạp Qdrant - Cơ chế Fail-Fast bảo vệ tính toàn vẹn
         upserted = self.qdrant.upsert_batch(
             records=qdrant_payloads,
             collection_name=config.QDRANT_COLLECTION_NAME,
@@ -300,7 +311,6 @@ class IngestPipelineWorker:
         if upserted == 0 and len(qdrant_payloads) > 0:
             raise RuntimeError("Qdrant nạp thất bại toàn bộ batch. Dừng tiến trình để tránh lệch pha dữ liệu!")
 
-        # 2. Nạp Elasticsearch
         try:
             self.es.bulk_index_chunks(chunks)
         except Exception as es_err:
@@ -338,6 +348,7 @@ def main():
             and not f.name.endswith(".corrupted")
             and not f.name.endswith(".quarantine.jsonl")
             and not f.name.endswith(".tmp")
+            and not f.name.endswith(".audit.json")
         ]
         logger.info("Tìm thấy %d shards hợp lệ trong %s (Đã nạp trước đó: %d).", len(files), p, len(completed_shards))
         for f in files:

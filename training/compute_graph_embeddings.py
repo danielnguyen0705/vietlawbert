@@ -24,7 +24,6 @@ import pandas as pd
 from tqdm import tqdm
 from neo4j import GraphDatabase
 
-# Khóa cứng 2 luồng CPU bảo vệ nhiệt độ máy và giao diện hệ điều hành
 try:
     torch.set_num_threads(2)
 except Exception:
@@ -41,7 +40,7 @@ class Neo4jGraphExtractor:
     def __init__(self, uri: Optional[str] = None, user: Optional[str] = None, password: Optional[str] = None):
         self.uri = uri or os.getenv("NEO4J_URI") or config.NEO4J_URI
         self.user = user or os.getenv("NEO4J_USER") or config.NEO4J_USER
-        self.password = password or os.getenv("NEO4J_PASSWORD") or getattr(config, "NEO4J_PASSWORD", "vietlawbert")
+        self.password = password or os.getenv("NEO4J_PASSWORD") or getattr(config, "NEO4J_PASSWORD", "vietlawbert2026")
         self.driver = GraphDatabase.driver(self.uri, auth=(self.user, self.password), connection_acquisition_timeout=15.0)
         self.driver.verify_connectivity()
         logger.info("Kết nối Neo4j Engine thành công tại %s (User: %s).", self.uri, self.user)
@@ -92,7 +91,6 @@ class FastGraphWalker:
             adj_dict[u_idx].append(v_idx)
             adj_dict[v_idx].append(u_idx)
 
-        # Chuyển sang mảng tuple số nguyên tĩnh giúp truy xuất bộ nhớ đệm CPU ở tốc độ nano-giây
         self.adj = [tuple(set(adj_dict[i])) if i in adj_dict else () for i in range(self.num_nodes)]
         del adj_dict
 
@@ -180,7 +178,6 @@ def train_pytorch_node2vec(
     batch_size: int = 4096,
     steps_per_epoch: int = 5000,
 ) -> torch.Tensor:
-    """Huấn luyện biểu diễn đồ thị bằng PyTorch SGD thưa thớt (Zero State Overhead)."""
     n_walks, walk_len = walks_tensor.size()
 
     logger.info("Khởi động huấn luyện PyTorch SGNS (%d steps/epoch | Batch: %d)...", steps_per_epoch, batch_size)
@@ -314,7 +311,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=3, help="Số epoch huấn luyện SGNS")
     parser.add_argument("--uri", default=os.getenv("NEO4J_URI", getattr(config, "NEO4J_URI", "bolt://localhost:7687")), help="URI Neo4j")
     parser.add_argument("--user", default=os.getenv("NEO4J_USER", getattr(config, "NEO4J_USER", "neo4j")), help="Tài khoản Neo4j")
-    parser.add_argument("--password", default=os.getenv("NEO4J_PASSWORD", getattr(config, "NEO4J_PASSWORD", "vietlawbert")), help="Mật khẩu Neo4j")
+    parser.add_argument("--password", default=os.getenv("NEO4J_PASSWORD", getattr(config, "NEO4J_PASSWORD", "vietlawbert2026")), help="Mật khẩu Neo4j")
     args = parser.parse_args()
 
     compute_and_export_embeddings(

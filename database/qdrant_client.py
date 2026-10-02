@@ -41,10 +41,11 @@ class QdrantClientWrapper:
         self.default_collection = getattr(config, "QDRANT_COLLECTION_NAME", "vietlawbert_chunks")
         self.vector_dim = getattr(config, "QDRANT_VECTOR_DIM", 256)
 
+        client_kwargs = {"timeout": 120.0, "check_compatibility": False}
         if url:
-            self.client = QdrantClient(url=url, timeout=120.0)
+            self.client = QdrantClient(url=url, **client_kwargs)
         else:
-            self.client = QdrantClient(host=self.host, port=self.port, timeout=120.0)
+            self.client = QdrantClient(host=self.host, port=self.port, **client_kwargs)
 
         logger.info("Kết nối Qdrant Engine thành công tại %s:%s (Timeout: 120s).", self.host, self.port)
 
@@ -63,24 +64,26 @@ class QdrantClientWrapper:
                 collection_name=col_name,
                 vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
             )
-            for field, schema in [
-                ("is_effective", PayloadSchemaType.BOOL),
-                ("doc_id", PayloadSchemaType.KEYWORD),
-                ("doc_number", PayloadSchemaType.KEYWORD),
-                ("macro_label", PayloadSchemaType.KEYWORD),
-            ]:
-                try:
-                    self.client.create_payload_index(
-                        collection_name=col_name,
-                        field_name=field,
-                        field_schema=schema,
-                        wait=False,
-                    )
-                except Exception:
-                    pass
-            logger.info("Đã tạo mới Collection [%s] (dim=%d) kèm Payload Indices.", col_name, dim)
+            logger.info("Đã tạo mới Collection [%s] (dim=%d).", col_name, dim)
         else:
             logger.info("Collection [%s] đã tồn tại và sẵn sàng.", col_name)
+
+        # Đảm bảo Payload Indices luôn được áp dụng đầy đủ cho cả collection mới lẫn cũ
+        for field, schema in [
+            ("is_effective", PayloadSchemaType.BOOL),
+            ("doc_id", PayloadSchemaType.KEYWORD),
+            ("doc_number", PayloadSchemaType.KEYWORD),
+            ("macro_label", PayloadSchemaType.KEYWORD),
+        ]:
+            try:
+                self.client.create_payload_index(
+                    collection_name=col_name,
+                    field_name=field,
+                    field_schema=schema,
+                    wait=False,
+                )
+            except Exception:
+                pass
 
     def doc_exists(self, doc_id: str, collection_name: Optional[str] = None) -> bool:
         """Kiểm tra nhanh xem doc_id đã tồn tại trong Qdrant chưa để nhảy cóc bỏ qua."""
@@ -131,7 +134,6 @@ class QdrantClientWrapper:
                 if vec is None:
                     continue
 
-                # Chuẩn hóa ép kiểu về list[float] tránh lỗi serialization của NumPy array
                 vec_sub = vec[: self.vector_dim]
                 vec_list = vec_sub.tolist() if hasattr(vec_sub, "tolist") else [float(x) for x in vec_sub]
 
@@ -156,7 +158,6 @@ class QdrantClientWrapper:
                     "content": content,
                 }
 
-                # Định danh Point ID bằng UUIDv5 chuẩn RFC 4122
                 point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, chunk_id))
                 points.append(PointStruct(id=point_id, vector=vec_list, payload=payload))
 
@@ -219,6 +220,7 @@ class QdrantClientWrapper:
         for hit in results:
             data = dict(hit.payload or {})
             data["score"] = float(hit.score)
+            data["point_id"] = str(hit.id)
             hits.append(data)
         return hits
 

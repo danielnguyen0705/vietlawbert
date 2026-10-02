@@ -1,6 +1,6 @@
 """
 generator.py - Động cơ sinh câu trả lời pháp lý với cơ chế Cascading Fallback (Kiến trúc v3).
-Tự động luân chuyển mô hình theo độ ưu tiên: Cloud SOTA -> Cloud Fast -> Local vLLM/Ollama.
+Tự động luân chuyển mô hình theo độ ưu tiên: Cloud SOTA (Claude/OpenRouter) -> Cloud Fast (Gemini) -> Local vLLM/Ollama.
 Tích hợp tính toán Attribution Score phục vụ đánh giá RQ4 (Grounded Legal Reasoning).
 """
 
@@ -57,11 +57,12 @@ class ResilientLLMDispatcher:
     def _build_cascade_chain(self) -> List[LLMProviderNode]:
         chain = []
 
-        cloud_key = os.getenv("PRIMARY_LLM_API_KEY") or getattr(config, "LLM_API_KEY", "")
-        cloud_base = os.getenv("PRIMARY_LLM_API_BASE", "https://api.openai.com/v1")
-        primary_model = os.getenv("PRIMARY_LLM_MODEL", "gpt-4o")
+        # Tầng 1: Primary Cloud SOTA (Claude 3.5 Sonnet qua OpenRouter / Cloud API)
+        cloud_key = os.getenv("PRIMARY_LLM_API_KEY") or getattr(config, "PRIMARY_LLM_API_KEY", "")
+        cloud_base = os.getenv("PRIMARY_LLM_API_BASE") or getattr(config, "PRIMARY_LLM_API_BASE", "https://openrouter.ai/api/v1")
+        primary_model = os.getenv("PRIMARY_LLM_MODEL") or getattr(config, "PRIMARY_LLM_MODEL", "claude-3.5-sonnet")
 
-        if cloud_key and cloud_key.lower() != "ollama":
+        if cloud_key and cloud_key.strip() and cloud_key.lower() != "ollama":
             chain.append(LLMProviderNode(
                 name="Primary_Cloud_SOTA",
                 model_id=primary_model,
@@ -70,22 +71,24 @@ class ResilientLLMDispatcher:
                 timeout=45.0,
             ))
 
-        fallback_key = os.getenv("FALLBACK_LLM_API_KEY")
-        fallback_base = os.getenv("FALLBACK_LLM_API_BASE", "https://generativelanguage.googleapis.com/v1beta/openai/")
-        fallback_model = os.getenv("FALLBACK_LLM_MODEL", "gemini-1.5-flash")
+        # Tầng 2: Secondary Cloud Fast (Gemini Flash / Proxy)
+        fallback_key = os.getenv("FALLBACK_LLM_API_KEY") or getattr(config, "FALLBACK_LLM_API_KEY", "")
+        fallback_base = os.getenv("FALLBACK_LLM_API_BASE") or getattr(config, "FALLBACK_LLM_API_BASE", "https://generativelanguage.googleapis.com/v1beta/openai/")
+        fallback_model = os.getenv("FALLBACK_LLM_MODEL") or getattr(config, "FALLBACK_LLM_MODEL", "gemini-3.8-flash")
 
-        if fallback_key:
+        if fallback_key and fallback_key.strip():
             chain.append(LLMProviderNode(
                 name="Secondary_Cloud_Fast",
                 model_id=fallback_model,
                 api_base=fallback_base,
                 api_key=fallback_key,
-                timeout=20.0,
+                timeout=25.0,
             ))
 
-        local_base = getattr(config, "LLM_API_BASE", "http://localhost:11434/v1")
-        local_model = getattr(config, "GENERATOR_MODEL", "Qwen/Qwen2.5-7B-Instruct")
-        local_key = getattr(config, "LLM_API_KEY", "ollama")
+        # Tầng 3: Local Safety Net (vLLM / Ollama trên máy trạm - Luôn sẵn sàng)
+        local_base = os.getenv("LLM_API_BASE") or getattr(config, "LLM_API_BASE", "http://localhost:11434/v1")
+        local_model = os.getenv("GENERATOR_MODEL") or getattr(config, "GENERATOR_MODEL", "Qwen/Qwen2.5-7B-Instruct")
+        local_key = os.getenv("LLM_API_KEY") or getattr(config, "LLM_API_KEY", "ollama")
 
         chain.append(LLMProviderNode(
             name="Local_Safety_Net",
@@ -125,7 +128,7 @@ class ResilientLLMDispatcher:
                     logger.info("Mô hình [%s] phản hồi thành công.", node.name)
                     return answer, node.name
             except Exception as exc:
-                logger.warning("Mô hình [%s] không phản hồi (%s). Đang chuyển sang tầng kế tiếp...", node.name, exc)
+                logger.warning("Mô hình [%s] không phản hồi (%s). Chuyển sang tầng kế tiếp...", node.name, exc)
                 last_exception = exc
                 continue
 
@@ -180,8 +183,8 @@ class LegalGenerator:
             art_match = re.search(r"điều\s+(\d+[a-za-z]?)", h_path)
             art_str = art_match.group(0) if art_match else ""
 
-            has_doc = bool(doc_num and doc_num != "n/a" and re.search(r"\b" + re.escape(doc_num) + r"\b", ans_lower))
-            has_art = bool(art_str and re.search(r"\b" + re.escape(art_str) + r"\b", ans_lower))
+            has_doc = bool(doc_num and doc_num != "n/a" and doc_num in ans_lower)
+            has_art = bool(art_str and art_str in ans_lower)
 
             if has_doc or has_art:
                 matched += 1
@@ -244,9 +247,9 @@ def main():
     generator = LegalGenerator()
     test_query = args.query or "Vượt đèn đỏ đối với xe mô tô bị xử phạt bao nhiêu tiền?"
 
-    print("\n" + "=" * 55)
+    print("\n" + "=" * 60)
     print(f"CÂU HỎI: {test_query}")
-    print("=" * 55)
+    print("=" * 60)
 
     result = generator.ask(test_query, top_k=args.top_k)
 

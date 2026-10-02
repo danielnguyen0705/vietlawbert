@@ -9,14 +9,20 @@ from __future__ import annotations
 import os
 from datetime import datetime
 from pathlib import Path
+from dotenv import load_dotenv
 
 # 1. Thư mục gốc tuyệt đối của dự án (vietlawbert/)
 ROOT_DIR = Path(__file__).resolve().parent.parent
 BASE_DIR = ROOT_DIR  # Khả năng tương thích ngược
 
+# Nạp sớm tệp .env để đảm bảo biến DATA_STORAGE_ROOT sẵn sàng trước khi cấu hình đường dẫn
+ENV_PATH = ROOT_DIR / ".env"
+if ENV_PATH.exists():
+    load_dotenv(dotenv_path=ENV_PATH, override=False)
+
 # 2. Thư mục gốc lưu trữ dữ liệu lớn:
 # - Ưu tiên 1: Đọc biến môi trường DATA_STORAGE_ROOT từ file .env
-# - Ưu tiên 2: Phân vùng /mnt/data/vietlawbert_data (nếu đang chạy trên máy Ubuntu cũ)
+# - Ưu tiên 2: Phân vùng /mnt/data/vietlawbert_data (nếu đang chạy trên máy chủ Ubuntu)
 # - Ưu tiên 3: Thư mục "data" ngay trong project (ROOT_DIR / "data")
 env_storage = os.getenv("DATA_STORAGE_ROOT")
 if env_storage and str(env_storage).strip():

@@ -43,7 +43,7 @@ class LegalHybridRetriever:
                 port=config.QDRANT_PORT,
             )
 
-        # 2. Hỗ trợ cả 2 tên tham số es_client và es_retriever để tương thích ngược
+        # 2. Hỗ trợ cả hai tham số es_client và es_retriever
         chosen_es = es_client or es_retriever
         if chosen_es is not None:
             if hasattr(chosen_es, "client"):
@@ -73,7 +73,7 @@ class LegalHybridRetriever:
         self.reranker = reranker_model
         self.alpha = alpha_graph if alpha_graph is not None else getattr(config, "GRAPH_ALPHA", 0.2)
 
-        # 4. Tự động nạp cache véc-tơ đồ thị 128d phục vụ Compile-time Topo Scoring
+        # 4. Tự động nạp cache vector đồ thị 128d phục vụ Compile-time Topo Scoring
         if graph_embeddings_cache is not None:
             self.graph_cache = graph_embeddings_cache
         else:
@@ -81,15 +81,15 @@ class LegalHybridRetriever:
             graph_emb_file = Path(ARTIFACTS_DIR) / "graph_embeddings_128d.parquet"
             if graph_emb_file.exists():
                 try:
-                    logger.info("Đang nạp cache véc-tơ đồ thị 128d từ %s...", graph_emb_file.name)
+                    logger.info("Đang nạp cache vector đồ thị 128d từ %s...", graph_emb_file.name)
                     df_emb = pd.read_parquet(graph_emb_file, columns=["chunk_id", "graph_embedding"])
                     for _, row in df_emb.iterrows():
                         v = np.array(row["graph_embedding"], dtype=np.float32)
                         norm = np.linalg.norm(v)
                         self.graph_cache[str(row["chunk_id"])] = v / (norm + 1e-9)
-                    logger.info("✓ Nạp thành công %d véc-tơ đồ thị vào cache truy xuất.", len(self.graph_cache))
+                    logger.info("✓ Nạp thành công %d vector đồ thị vào cache truy xuất.", len(self.graph_cache))
                 except Exception as exc:
-                    logger.warning("Không thể nạp file véc-tơ đồ thị: %s", exc)
+                    logger.warning("Không thể nạp file vector đồ thị: %s", exc)
 
         logger.info(
             "LegalHybridRetriever sẵn sàng: Alpha=%.2f | VectorDim=%d | Qdrant=[%s] | ES=[%s]",
@@ -99,10 +99,9 @@ class LegalHybridRetriever:
             config.ES_INDEX_NAME,
         )
 
-    def _search_dense(self, query: str, top_k: int = 50) -> List[Dict[str, Any]]:
+    def _search_dense(self, query: str, top_k: int = 50, must_be_effective: bool = True) -> List[Dict[str, Any]]:
         """Mã hóa câu hỏi, cắt lát MRL d=256 và chuẩn hóa L2 trước khi truy vấn Qdrant."""
         raw_emb = self.encoder.encode([query], show_progress_bar=False, normalize_embeddings=False)[0]
-        # Cắt đúng chiều MRL được lập chỉ mục trong Qdrant
         sub_vec = raw_emb[: self.vector_dim].astype(np.float32)
         norm = np.linalg.norm(sub_vec)
         q_vec = (sub_vec / (norm + 1e-9)).tolist()
@@ -112,17 +111,18 @@ class LegalHybridRetriever:
                 query_vector=q_vec,
                 collection_name=config.QDRANT_COLLECTION_NAME,
                 top_k=top_k,
-                must_be_effective=True,
+                must_be_effective=must_be_effective,
             )
         except Exception as exc:
             logger.error("Lỗi truy vấn Qdrant Dense: %s", exc)
             return []
 
-    def _search_sparse_es(self, query: str, top_k: int = 50) -> List[Dict[str, Any]]:
+    def _search_sparse_es(self, query: str, top_k: int = 50, must_be_effective: bool = True) -> List[Dict[str, Any]]:
         """Truy vấn từ khóa qua bộ LegalElasticsearchRetriever chuẩn hóa."""
         if self._es_wrapper is not None:
-            return self._es_wrapper.search_sparse(query=query, top_k=top_k, must_be_effective=True)
+            return self._es_wrapper.search_sparse(query=query, top_k=top_k, must_be_effective=must_be_effective)
 
+        filter_clauses = [{"term": {"is_effective": True}}] if must_be_effective else []
         es_query = {
             "bool": {
                 "must": [
@@ -135,7 +135,7 @@ class LegalHybridRetriever:
                         }
                     }
                 ],
-                "filter": [{"term": {"is_effective": True}}],
+                "filter": filter_clauses,
             }
         }
         try:
@@ -143,7 +143,7 @@ class LegalHybridRetriever:
             hits = []
             for h in res["hits"]["hits"]:
                 src = h["_source"]
-                src["score"] = float(h["_score"])
+                src["score"] = float(h.get("_score") or 0.0)
                 src["chunk_id"] = str(src.get("chunk_id") or h["_id"])
                 hits.append(src)
             return hits
@@ -184,10 +184,10 @@ class LegalHybridRetriever:
             fused.append(elem)
         return fused
 
-    def retrieve(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    def retrieve(self, query: str, top_k: int = 5, must_be_effective: bool = True) -> List[Dict[str, Any]]:
         """Quy trình truy xuất lai toàn trình kiểm soát SLA dưới 500ms."""
-        dense_candidates = self._search_dense(query, top_k=50)
-        sparse_candidates = self._search_sparse_es(query, top_k=50)
+        dense_candidates = self._search_dense(query, top_k=50, must_be_effective=must_be_effective)
+        sparse_candidates = self._search_sparse_es(query, top_k=50, must_be_effective=must_be_effective)
 
         candidates = self._rrf_fusion(dense_candidates, sparse_candidates, k=getattr(config, "RRF_K", 60), top_k=50)
         if not candidates:

@@ -47,23 +47,7 @@ class HINGraphBuilder:
     def __init__(self, neo4j_client: Optional[Neo4jClient] = None):
         self.client = neo4j_client or Neo4jClient()
         self.parser = HybridASTParser()
-        self._init_schema_constraints()
-
-    def _init_schema_constraints(self) -> None:
-        """Đảm bảo các ràng buộc duy nhất và chỉ mục để MERGE đạt tốc độ mili-giây."""
-        constraints = [
-            "CREATE CONSTRAINT law_doc_id IF NOT EXISTS FOR (d:LawDocument) REQUIRE d.doc_id IS UNIQUE",
-            "CREATE CONSTRAINT chunk_id IF NOT EXISTS FOR (c:Chunk) REQUIRE c.chunk_id IS UNIQUE",
-            "CREATE CONSTRAINT article_id IF NOT EXISTS FOR (a:Article) REQUIRE a.article_id IS UNIQUE",
-            "CREATE INDEX law_doc_number IF NOT EXISTS FOR (d:LawDocument) ON (d.doc_number)",
-            "CREATE INDEX chunk_macro IF NOT EXISTS FOR (c:Chunk) ON (c.macro_label)",
-            "CREATE INDEX legal_rel_type IF NOT EXISTS FOR ()-[r:LEGAL_RELATION]-() ON (r.type)",
-        ]
-        for query in constraints:
-            try:
-                self.client.execute_query(query)
-            except Exception as exc:
-                logger.debug("Thông báo Schema Neo4j: %s", exc)
+        # Neo4jClient đã tự động khởi tạo constraints trong hàm khởi tạo của nó
 
     def ingest_documents_batch(self, docs: List[Dict[str, Any]], batch_size: int = 500) -> int:
         """Nạp các nút Văn bản pháp luật."""
@@ -171,7 +155,7 @@ class HINGraphBuilder:
                 }
                 docs_buffer.append(metadata)
 
-                # 1. Trích xuất quan hệ đã chuẩn hóa từ Pipeline
+                # Trích xuất quan hệ ontology đã chuẩn hóa
                 if item.get("relationships") and isinstance(item["relationships"], list):
                     for rel in item["relationships"]:
                         tgt_id = str(rel.get("target_id") or "").strip()
@@ -186,7 +170,6 @@ class HINGraphBuilder:
                                 "relation_type": rel_type,
                             })
                 else:
-                    # Fallback bóc tách trực tiếp diagram_json nguyên bản
                     diagram = item.get("diagram_json") or item.get("diagram_data") or {}
                     if isinstance(diagram, dict):
                         for group_name in ["documentNamesByType", "documentNamesBySource"]:
@@ -205,7 +188,7 @@ class HINGraphBuilder:
                                                     "relation_type": rel_type_clean,
                                                 })
 
-                # 2. Phân rã cây cú pháp AST và tiêm nhãn Article
+                # Bóc tách AST phân rã cây phân cấp
                 if parse_chunks:
                     raw_text = item.get("full_text") or item.get("text") or item.get("html_raw") or ""
                     if len(raw_text) > 100:
@@ -261,7 +244,10 @@ def run_build_hin(
     path = Path(metadata_path)
 
     if path.is_dir():
-        files = sorted(list(path.glob("*.jsonl*")))
+        files = sorted([
+            f for f in path.glob("*.jsonl*")
+            if not f.name.endswith(".quarantine.jsonl") and not f.name.endswith(".corrupted")
+        ])
         logger.info("Tìm thấy %d shards (Đã nạp HIN trước đó: %d).", len(files), len(completed))
         for f in files:
             if f.name in completed:

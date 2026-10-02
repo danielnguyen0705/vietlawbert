@@ -1,6 +1,6 @@
 """
-ast_batch_processor.py - Phân rã cấu trúc văn bản pháp luật bằng EBNF Grammar.
-Đọc song song 161 Shards .jsonl.gz và xuất ra định dạng Apache Parquet (O(1) Memory).
+ast_batch_processor.py - Phân rã cấu trúc văn bản pháp luật bằng Hybrid AST Parser.
+Đọc song song các Shards .jsonl.gz và xuất ra định dạng Apache Parquet chuẩn hóa schema V3.
 """
 
 from __future__ import annotations
@@ -8,154 +8,105 @@ from __future__ import annotations
 import os
 import gzip
 import json
-import glob
-import re
-import html as html_lib
+import logging
 from pathlib import Path
 from typing import List, Dict, Any
 from concurrent.futures import ProcessPoolExecutor
+
 import pyarrow as pa
 import pyarrow.parquet as pq
-from bs4 import BeautifulSoup
 
-RAW_SHARDS_DIR = Path("/mnt/data/vietlawbert_data/raw_shards")
-OUTPUT_PARQUET_DIR = Path("/mnt/data/vietlawbert_data/processed_parquet")
+from configs.paths import RAW_SHARDS_DIR, PROCESSED_DIR
+from preprocess.ast_parser import HybridASTParser
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | [%(levelname)s] | %(message)s")
+logger = logging.getLogger("VietLawBERT_ASTBatchProcessor")
+
+OUTPUT_PARQUET_DIR = PROCESSED_DIR / "parquet"
 OUTPUT_PARQUET_DIR.mkdir(parents=True, exist_ok=True)
-
-RE_DIEU = re.compile(r"^(Điều\s+\d+[\.\:]?)\s*(.*)", re.IGNORECASE)
-RE_KHOAN = re.compile(r"^(\d+)[\.\)]\s*(.*)")
-RE_DIEM = re.compile(r"^([a-zđ])[\.\)]\s*(.*)", re.IGNORECASE)
 
 PARQUET_SCHEMA = pa.schema([
     ("chunk_id", pa.string()),
     ("doc_id", pa.string()),
     ("doc_number", pa.string()),
     ("doc_title", pa.string()),
+    ("article_id", pa.string()),
+    ("article_num", pa.string()),
     ("hierarchy_path", pa.string()),
-    ("level", pa.string()),
+    ("macro_label", pa.string()),
     ("content", pa.string()),
     ("full_context_text", pa.string()),
     ("issue_date", pa.string()),
     ("effective_date", pa.string()),
+    ("status", pa.string()),
     ("is_administrative", pa.bool_()),
 ])
 
-def clean_html_text(raw_html: str) -> str:
-    if not raw_html:
-        return ""
-    soup = BeautifulSoup(raw_html, "lxml")
-    for tag in soup(["script", "style", "header", "footer"]):
-        tag.decompose()
-    text = soup.get_text(separator="\n")
-    text = html_lib.unescape(text)
-    return re.sub(r"[ \t]+", " ", text).strip()
-
-def parse_document_ast(record: Dict[str, Any]) -> List[Dict[str, Any]]:
-    doc_id = str(record.get("item_id") or record.get("doc_id") or "").strip()
-    doc_number = str(record.get("doc_number") or "N/A").strip()
-    meta_detail = record.get("metadata_detail") or {}
-    meta_api = record.get("metadata_api") or {}
-    
-    title = meta_detail.get("title") or meta_api.get("title") or ""
-    issue_date = str(meta_detail.get("issueDate") or meta_api.get("issueDate") or "")
-    effective_date = str(meta_detail.get("effFrom") or meta_api.get("effFrom") or "")
-    is_admin = bool(meta_detail.get("isAdministrativeDocument"))
-
-    html_raw = record.get("html_raw") or ""
-    if not html_raw or len(html_raw) < 100:
-        return []
-
-    plain_text = clean_html_text(html_raw)
-    lines = [line.strip() for line in plain_text.splitlines() if line.strip()]
-
-    chunks = []
-    current_chapter = ""
-    current_dieu = ""
-    current_dieu_content = []
-    
-    dieu_idx = 0
-    for line in lines:
-        if line.lower().startswith("chương ") or line.lower().startswith("mục "):
-            current_chapter = line
-            continue
-
-        match_dieu = RE_DIEU.match(line)
-        if match_dieu:
-            if current_dieu and current_dieu_content:
-                dieu_idx += 1
-                full_text = "\n".join(current_dieu_content)
-                hierarchy = f"{title} > {current_chapter} > {current_dieu}" if current_chapter else f"{title} > {current_dieu}"
-                chunks.append({
-                    "chunk_id": f"{doc_id}_art_{dieu_idx}",
-                    "doc_id": doc_id,
-                    "doc_number": doc_number,
-                    "doc_title": title,
-                    "hierarchy_path": hierarchy,
-                    "level": "ARTICLE",
-                    "content": full_text,
-                    "full_context_text": f"[{hierarchy}]\n{full_text}",
-                    "issue_date": issue_date,
-                    "effective_date": effective_date,
-                    "is_administrative": is_admin,
-                })
-            current_dieu = match_dieu.group(1)
-            current_dieu_content = [line]
-        else:
-            if current_dieu:
-                current_dieu_content.append(line)
-
-    if current_dieu and current_dieu_content:
-        dieu_idx += 1
-        full_text = "\n".join(current_dieu_content)
-        hierarchy = f"{title} > {current_chapter} > {current_dieu}" if current_chapter else f"{title} > {current_dieu}"
-        chunks.append({
-            "chunk_id": f"{doc_id}_art_{dieu_idx}",
-            "doc_id": doc_id,
-            "doc_number": doc_number,
-            "doc_title": title,
-            "hierarchy_path": hierarchy,
-            "level": "ARTICLE",
-            "content": full_text,
-            "full_context_text": f"[{hierarchy}]\n{full_text}",
-            "issue_date": issue_date,
-            "effective_date": effective_date,
-            "is_administrative": is_admin,
-        })
-
-    # Dự phòng cho các văn bản ngắn hoặc quyết định cá biệt không chia Điều
-    if not chunks and plain_text:
-        chunks.append({
-            "chunk_id": f"{doc_id}_full",
-            "doc_id": doc_id,
-            "doc_number": doc_number,
-            "doc_title": title,
-            "hierarchy_path": title,
-            "level": "DOCUMENT",
-            "content": plain_text[:4000],
-            "full_context_text": f"[{title}]\n{plain_text[:4000]}",
-            "issue_date": issue_date,
-            "effective_date": effective_date,
-            "is_administrative": is_admin,
-        })
-
-    return chunks
 
 def process_single_shard(shard_path_str: str) -> Dict[str, Any]:
     shard_path = Path(shard_path_str)
-    parquet_path = OUTPUT_PARQUET_DIR / shard_path.name.replace(".jsonl.gz", ".parquet")
+    parquet_path = OUTPUT_PARQUET_DIR / shard_path.name.replace(".jsonl.gz", ".parquet").replace(".jsonl", ".parquet")
 
     if parquet_path.exists():
         return {"shard": shard_path.name, "chunks": 0, "status": "ALREADY_EXISTS"}
 
+    parser = HybridASTParser()
     all_chunks = []
-    with gzip.open(shard_path, "rt", encoding="utf-8", errors="replace") as gz:
-        for line in gz:
-            if not line.strip():
+
+    opener = gzip.open(shard_path, "rt", encoding="utf-8", errors="replace") if shard_path.suffix == ".gz" else open(shard_path, "r", encoding="utf-8", errors="replace")
+    with opener as stream:
+        for line in stream:
+            clean_line = line.strip()
+            if not clean_line:
                 continue
             try:
-                record = json.loads(line)
-                chunks = parse_document_ast(record)
-                all_chunks.extend(chunks)
+                record = json.loads(clean_line)
+            except Exception:
+                continue
+
+            raw_text = record.get("full_text") or record.get("text") or record.get("html_raw") or ""
+            if len(raw_text.strip()) < 50:
+                continue
+
+            meta_detail = record.get("metadata_detail") or {}
+            meta_api = record.get("metadata_api") or {}
+
+            doc_id = str(record.get("doc_id") or record.get("item_id") or "")
+            doc_number = str(record.get("doc_number") or meta_detail.get("docNum") or meta_api.get("docNum") or "N/A")
+            title = str(record.get("title") or meta_detail.get("title") or meta_api.get("title") or "")
+            issue_date = str(meta_detail.get("issueDate") or meta_api.get("issueDate") or "")
+            effective_date = str(record.get("effective_date") or meta_detail.get("effFrom") or meta_api.get("effFrom") or "")
+            status_val = str(record.get("status") or (meta_detail.get("effStatus") or {}).get("name") or "Còn hiệu lực")
+            is_admin = bool(meta_detail.get("isAdministrativeDocument"))
+
+            metadata = {
+                "doc_id": doc_id,
+                "doc_number": doc_number,
+                "title": title,
+                "effective_date": effective_date,
+                "status": status_val,
+                "co_quan": str(record.get("co_quan") or meta_detail.get("agencyName") or "N/A"),
+            }
+
+            try:
+                chunks = parser.parse_document(raw_text, metadata)
+                for c in chunks:
+                    all_chunks.append({
+                        "chunk_id": str(c.get("chunk_id") or ""),
+                        "doc_id": doc_id,
+                        "doc_number": doc_number,
+                        "doc_title": title,
+                        "article_id": str(c.get("article_id") or ""),
+                        "article_num": str(c.get("article_num") or ""),
+                        "hierarchy_path": str(c.get("hierarchy_path") or ""),
+                        "macro_label": str(c.get("macro_label") or "CHUNG"),
+                        "content": str(c.get("content") or c.get("text") or ""),
+                        "full_context_text": str(c.get("content") or c.get("text") or ""),
+                        "issue_date": issue_date,
+                        "effective_date": effective_date,
+                        "status": status_val,
+                        "is_administrative": is_admin,
+                    })
             except Exception:
                 continue
 
@@ -165,9 +116,13 @@ def process_single_shard(shard_path_str: str) -> Dict[str, Any]:
 
     return {"shard": shard_path.name, "chunks": len(all_chunks), "status": "SUCCESS"}
 
+
 def main():
-    shard_files = sorted(glob.glob(str(RAW_SHARDS_DIR / "crawl_pages_*_*.jsonl.gz")))
-    print(f"Bắt đầu bóc tách AST phân cấp cho {len(shard_files)} Shards...")
+    shard_files = sorted([
+        str(f) for f in RAW_SHARDS_DIR.glob("*.jsonl*")
+        if not f.name.endswith(".quarantine.jsonl") and not f.name.endswith(".corrupted")
+    ])
+    logger.info("Bắt đầu bóc tách AST phân cấp chuẩn hóa cho %d Shards...", len(shard_files))
 
     num_workers = max(1, (os.cpu_count() or 4) - 1)
     total_extracted_chunks = 0
@@ -176,12 +131,13 @@ def main():
         for res in executor.map(process_single_shard, shard_files):
             total_extracted_chunks += res["chunks"]
             if res["status"] == "SUCCESS":
-                print(f"[AST PARSED] {res['shard']}: Trích xuất thành công {res['chunks']:,} Chunks")
+                logger.info("[AST PARSED] %s: Trích xuất thành công %d Chunks", res["shard"], res["chunks"])
 
-    print("=" * 65)
-    print(f"HOÀN THÀNH PHA 2: Tổng số Chunks phân cấp: {total_extracted_chunks:,}")
-    print(f"Thư mục lưu trữ: {OUTPUT_PARQUET_DIR}")
-    print("=" * 65)
+    logger.info("=================================================================")
+    logger.info("✓ HOÀN THÀNH PHA 2: Tổng số Chunks phân cấp Parquet: %d", total_extracted_chunks)
+    logger.info("Thư mục lưu trữ: %s", OUTPUT_PARQUET_DIR)
+    logger.info("=================================================================")
+
 
 if __name__ == "__main__":
     main()

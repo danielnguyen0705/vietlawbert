@@ -1,5 +1,6 @@
 """
-verify.py - CLI đối chiếu chính xác ID và mã băm SHA-256 ba chiều giữa Artifact, Kafka và Neo4j.
+verify.py - CLI đối soát toàn vẹn dữ liệu 4 chiều End-to-End (Lineage Verification).
+Kiểm tra tính nhất quán: Canonical Shards == MongoDB == Neo4j HIN == Qdrant Vector Points == ES Docs.
 """
 
 from __future__ import annotations

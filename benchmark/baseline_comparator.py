@@ -1,7 +1,7 @@
 """
 baseline_comparator.py - Hệ thống thực nghiệm đối chứng Master Benchmark.
 Tự động đối đầu trực diện giữa [Mô hình Gốc (Zero-shot)] và [Mô hình Đã Tinh Chỉnh (Ours-MRL)]
-trên toàn bộ 13 kiến trúc. Tính toán Paired t-test và xuất bảng tổng hợp CSV.
+trên toàn bộ 13 kiến trúc. Đo đạc Paired Student's t-test và xuất bảng tổng hợp CSV.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from sentence_transformers import SentenceTransformer
 from configs.paths import ROOT_DIR, BENCHMARK_DIR
 from configs.config import config
 from configs.logging_config import get_subsystem_logger
-from benchmark.evaluate_rrf import load_benchmark, evaluate_query, extract_doc_number_from_text
+from benchmark.evaluate_rrf import load_benchmark, evaluate_query
 
 logger = get_subsystem_logger("benchmark", "comparator")
 
@@ -35,13 +35,12 @@ class UniversalEncoderWrapper:
         self.is_e5 = is_e5
         path_obj = Path(model_id_or_path)
 
-        # Kiểm tra xem có phải checkpoint fine-tune nội bộ dạng vietlawbert_mrl.pt không
         if path_obj.exists() and (path_obj / "vietlawbert_mrl.pt").exists():
             logger.info("Nạp Checkpoint Fine-tuned nội bộ: %s", model_id_or_path)
             self.is_custom = True
             with open(path_obj / "model_meta.json", "r", encoding="utf-8") as f:
                 meta = json.load(f)
-            
+
             self.tokenizer = AutoTokenizer.from_pretrained(str(path_obj), trust_remote_code=True)
             model_cfg = AutoConfig.from_dict(meta["base_config"])
 
@@ -51,21 +50,20 @@ class UniversalEncoderWrapper:
             else:
                 self.core_encoder = AutoModel.from_pretrained(str(path_obj), config=model_cfg).to(device)
 
-            state_dict = torch.load(path_obj / "vietlawbert_mrl.pt", map_location=device)
-            # Khử tiền tố "encoder." nếu có
-            cleaned_state = {}
-            for k, v in state_dict.items():
-                new_k = k.replace("encoder.", "") if k.startswith("encoder.") else k
-                cleaned_state[new_k] = v
+            try:
+                state_dict = torch.load(path_obj / "vietlawbert_mrl.pt", map_location=device, weights_only=False)
+            except TypeError:
+                state_dict = torch.load(path_obj / "vietlawbert_mrl.pt", map_location=device)
+
+            cleaned_state = {k.replace("encoder.", ""): v for k, v in state_dict.items()}
             self.core_encoder.load_state_dict(cleaned_state, strict=False)
             self.core_encoder.eval()
-
         else:
             try:
                 self.sbert = SentenceTransformer(model_id_or_path, device=device)
                 self.is_custom = False
             except Exception:
-                logger.info("Nạp trực tiếp qua HuggingFace AutoModel cho: %s", model_id_or_path)
+                logger.info("Nạp trực tiếp qua HuggingFace AutoModel: %s", model_id_or_path)
                 self.is_custom = True
                 model_cfg = AutoConfig.from_pretrained(model_id_or_path, trust_remote_code=True)
                 self.tokenizer = AutoTokenizer.from_pretrained(model_id_or_path, trust_remote_code=True)
@@ -130,7 +128,6 @@ class MultiModelBaselineComparator:
         from rag.es_retriever import LegalElasticsearchRetriever
         es = LegalElasticsearchRetriever(hosts=[config.ES_HOST], index_name=config.ES_INDEX_NAME)
 
-        # Danh mục đầy đủ 13 mô hình nghiên cứu
         raw_backbones = [
             ("VNLawBERT (Chau et al., 2020)", "Chau/VNLawBERT", False, 256),
             ("bert-base-multilingual-cased", "bert-base-multilingual-cased", False, 256),
@@ -154,52 +151,60 @@ class MultiModelBaselineComparator:
                 continue
 
             test_samples = samples[:100]
-            logger.info("=== ĐỐI CHUẨN MA TRẬN MASTER BENCHMARK TRÊN: %s (%d MẪU) ===", ds_name.upper(), len(test_samples))
+            logger.info("=== ĐỐI CHUẨN MA TRẬN MASTER BENCHMARK: %s (%d MẪU) ===", ds_name.upper(), len(test_samples))
 
-            corpus_pool = []
+            # Bảo toàn metadata đầy đủ cho candidate pool để hàm evaluate_query không bị điểm 0 ảo
+            candidate_pool_dicts = []
+            seen_chunks = set()
             for s in test_samples:
-                if s.get("evidence_text") and s["evidence_text"] not in corpus_pool:
-                    corpus_pool.append(s["evidence_text"])
+                c_id = s.get("ground_truth_chunk") or str(len(seen_chunks))
+                if c_id not in seen_chunks:
+                    seen_chunks.add(c_id)
+                    candidate_pool_dicts.append({
+                        "chunk_id": c_id,
+                        "doc_number": s.get("ground_truth_doc_number", ""),
+                        "article": s.get("ground_truth_article", ""),
+                        "content": s.get("raw_content") or s.get("evidence_text", "")
+                    })
 
+            candidate_texts = [c["content"] for c in candidate_pool_dicts]
             eval_results = {}
             ndcg_vectors = {}
 
-            # 1. Đánh giá Sparse BM25
+            # 1. Đánh giá BM25 (Elasticsearch Lexical)
             bm25_scores, bm25_ndcg = [], []
             for s in test_samples:
                 cands = es.search(s["query"], top_k=10)
                 m = evaluate_query(cands, s, [1, 5, 10])
                 bm25_scores.append(m)
                 bm25_ndcg.append(m.get("NDCG@10", 0.0))
-            t = len(bm25_scores)
-            eval_results["BM25 (Elasticsearch Lexical)"] = {k: round(sum(x[k] for x in bm25_scores) / t, 4) for k in bm25_scores[0].keys()}
+            t = len(bm25_scores) if bm25_scores else 1
+            eval_results["BM25 (Elasticsearch Lexical)"] = {k: round(sum(x[k] for x in bm25_scores) / t, 4) for k in bm25_scores[0].keys()} if bm25_scores else {}
             ndcg_vectors["BM25 (Elasticsearch Lexical)"] = bm25_ndcg
 
-            # 2. Đánh giá lần lượt cả bản Gốc và bản Fine-tuned của 13 mô hình
+            # 2. Đánh giá 13 Backbone (Zero-shot & Fine-tuned MRL)
             for display_name, model_id, is_e5, d_star in raw_backbones:
-                # 2.1 Bản Gốc (Zero-shot)
                 label_zero = f"{display_name} (Zero-shot)"
                 try:
                     wrap_zero = UniversalEncoderWrapper(model_id, device=self.device, is_e5=is_e5)
                     q_z = wrap_zero.encode([s["query"] for s in test_samples])
-                    c_z = wrap_zero.encode(corpus_pool)
+                    c_z = wrap_zero.encode(candidate_texts)
                     sim_z = np.dot(q_z, c_z.T)
 
                     scores_z, ndcg_z = [], []
                     for idx, s in enumerate(test_samples):
                         top_idx = np.argsort(-sim_z[idx])[:10]
-                        cands = [{"content": corpus_pool[i], "doc_number": extract_doc_number_from_text(corpus_pool[i])} for i in top_idx]
+                        cands = [candidate_pool_dicts[i] for i in top_idx]
                         m = evaluate_query(cands, s, [1, 5, 10])
                         scores_z.append(m)
                         ndcg_z.append(m.get("NDCG@10", 0.0))
 
-                    t_z = len(scores_z)
+                    t_z = len(scores_z) if scores_z else 1
                     eval_results[label_zero] = {k: round(sum(x[k] for x in scores_z) / t_z, 4) for k in scores_z[0].keys()}
                     ndcg_vectors[label_zero] = ndcg_z
                 except Exception as ex:
-                    logger.warning("Không nạp được bản gốc [%s]: %s", label_zero, ex)
+                    logger.warning("Bỏ qua bản gốc [%s]: %s", label_zero, ex)
 
-                # 2.2 Bản Fine-tuned (nếu có trong checkpoints/)
                 safe_name = model_id.replace("/", "_")
                 ckpt_path = self.checkpoints_dir / safe_name
                 if ckpt_path.exists():
@@ -207,24 +212,26 @@ class MultiModelBaselineComparator:
                     try:
                         wrap_ft = UniversalEncoderWrapper(str(ckpt_path), device=self.device, slice_dim=d_star, is_e5=is_e5)
                         q_ft = wrap_ft.encode([s["query"] for s in test_samples])
-                        c_ft = wrap_ft.encode(corpus_pool)
+                        c_ft = wrap_ft.encode(candidate_texts)
                         sim_ft = np.dot(q_ft, c_ft.T)
 
                         scores_ft, ndcg_ft = [], []
                         for idx, s in enumerate(test_samples):
                             top_idx = np.argsort(-sim_ft[idx])[:10]
-                            cands = [{"content": corpus_pool[i], "doc_number": extract_doc_number_from_text(corpus_pool[i])} for i in top_idx]
+                            cands = [candidate_pool_dicts[i] for i in top_idx]
                             m = evaluate_query(cands, s, [1, 5, 10])
                             scores_ft.append(m)
                             ndcg_ft.append(m.get("NDCG@10", 0.0))
 
-                        t_ft = len(scores_ft)
+                        t_ft = len(scores_ft) if scores_ft else 1
                         eval_results[label_ft] = {k: round(sum(x[k] for x in scores_ft) / t_ft, 4) for k in scores_ft[0].keys()}
                         ndcg_vectors[label_ft] = ndcg_ft
                     except Exception as ex:
                         logger.warning("Lỗi đánh giá bản fine-tune [%s]: %s", label_ft, ex)
 
-            # Chọn vector tốt nhất làm Proposed SOTA để tính p-value đối chứng
+            if not eval_results:
+                continue
+
             best_model_key = max(eval_results.keys(), key=lambda k: eval_results[k].get("NDCG@10", 0.0))
             proposed_vec = ndcg_vectors[best_model_key]
             logger.info("Mô hình đạt SOTA cao nhất: %s (NDCG@10: %.4f)", best_model_key, eval_results[best_model_key].get("NDCG@10", 0.0))
@@ -255,7 +262,6 @@ class MultiModelBaselineComparator:
         logger.info("✓ Đã lưu bảng tổng hợp Master Benchmark tại: %s", sum_file.resolve())
 
 
-# Alias tương thích ngược
 BaselineComparator = MultiModelBaselineComparator
 
 

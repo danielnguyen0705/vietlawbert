@@ -15,12 +15,19 @@ logger = logging.getLogger("VietLawBERT_ESRetriever")
 class LegalElasticsearchRetriever:
     def __init__(
         self,
-        hosts: Optional[List[str]] = None,
+        hosts: Optional[List[str] | str] = None,
         index_name: str = "vietlaw_sparse_idx",
     ):
-        self.hosts = hosts or ["http://localhost:9200"]
+        if hosts is None:
+            raw_hosts = ["http://localhost:9200"]
+        elif isinstance(hosts, str):
+            raw_hosts = [hosts]
+        else:
+            raw_hosts = list(hosts)
+
+        self.hosts = raw_hosts
         self.index_name = index_name
-        self.client = Elasticsearch(self.hosts, request_timeout=60)
+        self.client = Elasticsearch(hosts=self.hosts, request_timeout=60.0)
         self._ensure_index_and_analyzer()
 
     def _ensure_index_and_analyzer(self) -> None:
@@ -29,61 +36,61 @@ class LegalElasticsearchRetriever:
             logger.info("Elasticsearch index [%s] đã sẵn sàng.", self.index_name)
             return
 
-        index_settings = {
-            "settings": {
-                "number_of_shards": 1,
-                "number_of_replicas": 0,
-                "analysis": {
-                    "filter": {
-                        "vietnamese_stop": {
-                            "type": "stop",
-                            "stopwords": ["và", "hoặc", "của", "tại", "theo", "về", "các", "những", "căn", "cứ", "quy", "định"],
-                        },
-                        "legal_shingle": {
-                            "type": "shingle",
-                            "min_shingle_size": 2,
-                            "max_shingle_size": 3,
-                            "output_unigrams": True,
-                        },
+        settings = {
+            "number_of_shards": 1,
+            "number_of_replicas": 0,
+            "analysis": {
+                "filter": {
+                    "vietnamese_stop": {
+                        "type": "stop",
+                        "stopwords": ["và", "hoặc", "của", "tại", "theo", "về", "các", "những", "căn", "cứ", "quy", "định"],
                     },
-                    "analyzer": {
-                        "vietnamese_legal_analyzer": {
-                            "type": "custom",
-                            "tokenizer": "standard",
-                            "filter": [
-                                "lowercase",
-                                "vietnamese_stop",   # Phải lọc từ dừng có dấu trước
-                                "asciifolding",      # Sau đó mới bóc tách dấu thanh
-                                "legal_shingle",
-                            ],
-                        }
+                    "legal_shingle": {
+                        "type": "shingle",
+                        "min_shingle_size": 2,
+                        "max_shingle_size": 3,
+                        "output_unigrams": True,
                     },
                 },
-            },
-            "mappings": {
-                "properties": {
-                    "chunk_id": {"type": "keyword"},
-                    "doc_id": {"type": "keyword"},
-                    "doc_number": {
-                        "type": "text",
-                        "analyzer": "vietnamese_legal_analyzer",
-                        "fields": {"raw": {"type": "keyword"}},
-                    },
-                    "hierarchy_path": {
-                        "type": "text",
-                        "analyzer": "vietnamese_legal_analyzer",
-                    },
-                    "macro_label": {"type": "keyword"},
-                    "content": {
-                        "type": "text",
-                        "analyzer": "vietnamese_legal_analyzer",
-                    },
-                    "is_effective": {"type": "boolean"},
-                }
+                "analyzer": {
+                    "vietnamese_legal_analyzer": {
+                        "type": "custom",
+                        "tokenizer": "standard",
+                        "filter": [
+                            "lowercase",
+                            "vietnamese_stop",   # Lọc từ dừng có dấu trước
+                            "asciifolding",      # Sau đó mới bóc tách dấu thanh
+                            "legal_shingle",
+                        ],
+                    }
+                },
             },
         }
 
-        self.client.indices.create(index=self.index_name, body=index_settings)
+        mappings = {
+            "properties": {
+                "chunk_id": {"type": "keyword"},
+                "doc_id": {"type": "keyword"},
+                "doc_number": {
+                    "type": "text",
+                    "analyzer": "vietnamese_legal_analyzer",
+                    "fields": {"raw": {"type": "keyword"}},
+                },
+                "hierarchy_path": {
+                    "type": "text",
+                    "analyzer": "vietnamese_legal_analyzer",
+                },
+                "macro_label": {"type": "keyword"},
+                "content": {
+                    "type": "text",
+                    "analyzer": "vietnamese_legal_analyzer",
+                },
+                "is_effective": {"type": "boolean"},
+            }
+        }
+
+        # ES 8.x: Sử dụng tham số settings và mappings trực tiếp thay vì body
+        self.client.indices.create(index=self.index_name, settings=settings, mappings=mappings)
         logger.info("Đã tạo mới chỉ mục Elasticsearch [%s] với Legal Analyzer thành công.", self.index_name)
 
     def bulk_index_chunks(self, chunks: List[Dict[str, Any]], batch_size: int = 500) -> int:
@@ -164,7 +171,7 @@ class LegalElasticsearchRetriever:
             results = []
             for hit in response["hits"]["hits"]:
                 src = hit["_source"]
-                src["score"] = float(hit["_score"])
+                src["score"] = float(hit.get("_score") or 0.0)
                 src["id"] = str(hit["_id"])
                 src["chunk_id"] = str(src.get("chunk_id") or hit["_id"])
                 results.append(src)

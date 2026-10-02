@@ -1,11 +1,12 @@
 """
 consume_embeddings.py - CLI điều phối vector hóa ngữ nghĩa và nạp vào Qdrant & Elasticsearch.
-Tích hợp Checkpoint Shard tự phục hồi, bộ lọc whitelist file và hỗ trợ điều phối GPU/CPU.
+Tích hợp Checkpoint Shard tự phục hồi, kiểm soát tài nguyên CPU/GPU và dọn rác bộ nhớ tự động.
 """
 
 from __future__ import annotations
 
 import os
+import gc
 import sys
 import argparse
 import logging
@@ -18,11 +19,38 @@ if str(ROOT_DIR) not in sys.path:
 from cli import bootstrap_cli_env
 bootstrap_cli_env()
 
+import torch
 from configs.paths import RAW_SHARDS_DIR
 from configs.config import config
 from pipeline.ingest_pipeline import IngestPipelineWorker, load_checkpoint, save_checkpoint
 
 logger = logging.getLogger("VietLawBERT_EmbeddingConsumerCLI")
+
+
+def resolve_compute_device(requested_device: str) -> str:
+    """Kiểm tra tính tương thích phần cứng phần cứng; tự động lùi về CPU nếu GPU không hỗ trợ."""
+    if requested_device == "cuda":
+        if not torch.cuda.is_available():
+            logger.warning("CUDA được yêu cầu nhưng torch.cuda.is_available() = False. Tự động lùi về [cpu].")
+            return "cpu"
+        try:
+            # Kiểm thử phân bổ tensor trên GPU để phát hiện lỗi compute capability (như sm_61)
+            test_tensor = torch.zeros(1, device="cuda")
+            del test_tensor
+            return "cuda"
+        except Exception as e:
+            logger.warning("GPU phát hiện lỗi không tương thích kernel (%s). Tự động lùi về [cpu].", e)
+            return "cpu"
+    return "cpu"
+
+
+def configure_cpu_runtime():
+    """Khống chế luồng tính toán CPU tránh nghẽn luồng hệ thống trên laptop."""
+    max_threads = min(4, os.cpu_count() or 2)
+    os.environ["OMP_NUM_THREADS"] = str(max_threads)
+    os.environ["MKL_NUM_THREADS"] = str(max_threads)
+    torch.set_num_threads(max_threads)
+    logger.info("Đã thiết lập PyTorch CPU execution threads: %d", max_threads)
 
 
 def main() -> int:
@@ -51,15 +79,9 @@ def main() -> int:
     )
     parser.add_argument(
         "--device",
-        default=config.EMBED_DEVICE,
+        default=getattr(config, "EMBED_DEVICE", "cpu"),
         choices=["cpu", "cuda"],
         help="Thiết bị tính toán (cpu/cuda)",
-    )
-    parser.add_argument(
-        "--idle-exit-seconds",
-        type=float,
-        default=0.0,
-        help="Tham số tương thích ngược kiến trúc streaming cũ",
     )
     args = parser.parse_args()
 
@@ -68,12 +90,16 @@ def main() -> int:
         logger.error("Đường dẫn shard không tồn tại: %s", target_path)
         return 1
 
+    effective_device = resolve_compute_device(args.device)
+    if effective_device == "cpu":
+        configure_cpu_runtime()
+
     try:
         logger.info(
             "Khởi động IngestPipelineWorker: Dim=%d | Batch=%d | Device=%s | Model=%s",
             args.dim,
             args.batch_size,
-            args.device,
+            effective_device,
             args.model_name,
         )
         worker = IngestPipelineWorker(
@@ -83,20 +109,20 @@ def main() -> int:
             model_name_or_path=args.model_name,
             vector_dim=args.dim,
             batch_size=args.batch_size,
-            device=args.device,
+            device=effective_device,
         )
 
         completed_shards = load_checkpoint()
 
         if target_path.is_dir():
             all_candidates = sorted(list(target_path.glob("*.jsonl*")))
-            # Chỉ nhận tệp shard chuẩn, loại bỏ tệp quarantine và tệp tạm
             shard_files = [
                 f for f in all_candidates
                 if (f.name.endswith(".jsonl.gz") or f.name.endswith(".jsonl"))
                 and not f.name.endswith(".corrupted")
                 and not f.name.endswith(".quarantine.jsonl")
                 and not f.name.endswith(".tmp")
+                and not f.name.endswith(".audit.json")
             ]
 
             if not shard_files:
@@ -104,15 +130,28 @@ def main() -> int:
                 return 0
 
             logger.info("Tìm thấy %d tệp shard hợp lệ (Đã nạp trước đó: %d).", len(shard_files), len(completed_shards))
-            for shard_file in shard_files:
+            for idx, shard_file in enumerate(shard_files, 1):
                 if shard_file.name in completed_shards:
-                    logger.info("[CHECKPOINT SKIP] Bỏ qua Shard đã nạp: %s", shard_file.name)
+                    logger.info("[%d/%d] [CHECKPOINT SKIP] Bỏ qua Shard đã nạp: %s", idx, len(shard_files), shard_file.name)
                     continue
+
+                logger.info("[%d/%d] Bắt đầu nạp Shard: %s", idx, len(shard_files), shard_file.name)
                 worker.process_raw_shard(shard_file)
                 completed_shards.add(shard_file.name)
                 save_checkpoint(completed_shards)
+
+                # Dọn dẹp rác bộ nhớ giữa các shard lớn
+                gc.collect()
+                if effective_device == "cuda":
+                    torch.cuda.empty_cache()
         else:
+            if target_path.name in completed_shards:
+                logger.info("[CHECKPOINT SKIP] Tệp đơn lẻ đã nạp trước đó: %s", target_path.name)
+                return 0
+
             worker.process_raw_shard(target_path)
+            completed_shards.add(target_path.name)
+            save_checkpoint(completed_shards)
 
         logger.info("✓ Hoàn tất nạp vector embeddings vào Qdrant và Elasticsearch.")
         return 0

@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import List
 
 from configs.paths import ROOT_DIR, RAW_SHARDS_DIR
-from artifacts.canonical import read_jsonl
+from configs.config import config
 
 
 @dataclass(frozen=True)
@@ -55,24 +55,24 @@ def artifact_path(output_dir: Path, shard: Shard) -> Path:
 
 
 def write_content_quarantine(artifact: Path) -> int:
+    """Đọc-ghi streaming kiểm tra điều kiện cách ly, tiết kiệm 100% dung lượng RAM."""
     quarantine_path = artifact.with_name(artifact.name.replace(".jsonl.gz", ".quarantine.jsonl"))
     count = 0
-    records = []
 
-    if artifact.suffix == ".gz":
-        with gzip.open(artifact, "rt", encoding="utf-8") as f:
-            for line in f:
-                if line.strip():
-                    records.append(json.loads(line))
-    else:
-        records = list(read_jsonl(artifact))
-
-    with quarantine_path.open("w", encoding="utf-8", newline="\n") as stream:
-        for record in records:
-            if record.get("html_status") == "VALID" and len(str(record.get("html_raw") or "").strip()) >= 100:
+    opener = gzip.open(artifact, "rt", encoding="utf-8") if artifact.suffix == ".gz" else open(artifact, "rt", encoding="utf-8")
+    with opener as stream, quarantine_path.open("w", encoding="utf-8", newline="\n") as out_stream:
+        for line in stream:
+            clean_line = line.strip()
+            if not clean_line:
                 continue
-            stream.write(json.dumps(record, ensure_ascii=False) + "\n")
-            count += 1
+            try:
+                record = json.loads(clean_line)
+                if record.get("html_status") == "VALID" and len(str(record.get("html_raw") or "").strip()) >= 100:
+                    continue
+                out_stream.write(clean_line + "\n")
+                count += 1
+            except Exception:
+                continue
 
     if count == 0 and quarantine_path.exists():
         quarantine_path.unlink()
@@ -94,6 +94,9 @@ def run_shard(
     audit_path = artifact.with_name(artifact.name.replace(".jsonl.gz", ".audit.json"))
     log_file = artifact.with_name(artifact.name.replace(".jsonl.gz", ".log"))
     job_dir = output_dir / f".job_state_{shard.start_page:05d}_{shard.end_page:05d}"
+
+    # Đảm bảo Scrapy kích hoạt FifoDiskQueue
+    env["SCRAPY_JOBDIR"] = str(job_dir.resolve())
 
     command = [
         sys.executable,
@@ -153,11 +156,11 @@ def run_shard(
 def main() -> int:
     parser = argparse.ArgumentParser(description="Chương trình cào phân đoạn chống OOM cho VietLawBERT")
     parser.add_argument("--total-documents", type=int, default=160660, help="Tổng số lượng văn bản cần cào")
-    parser.add_argument("--page-size", type=int, default=100, help="Số văn bản trên 1 trang API")
+    parser.add_argument("--page-size", type=int, default=getattr(config, "CRAWL_PAGE_SIZE", 100), help="Số văn bản trên 1 trang API")
     parser.add_argument("--pages-per-shard", type=int, default=10, help="Số trang gom vào 1 Shard (1.000 docs)")
     parser.add_argument("--output-dir", type=Path, default=RAW_SHARDS_DIR, help="Thư mục xuất Shards")
-    parser.add_argument("--concurrency", type=int, default=4, help="Số luồng cào song song")
-    parser.add_argument("--download-delay", type=float, default=0.1, help="Độ trễ giữa các request")
+    parser.add_argument("--concurrency", type=int, default=getattr(config, "CRAWLER_CONCURRENCY", 8), help="Số luồng cào song song")
+    parser.add_argument("--download-delay", type=float, default=getattr(config, "CRAWLER_DOWNLOAD_DELAY", 0.1), help="Độ trễ giữa các request")
     parser.add_argument("--allow-upstream-missing", action="store_true", default=True, help="Chấp nhận template rỗng")
     parser.add_argument("--defer-ocr", action="store_true", default=True, help="Trì hoãn OCR vào phân vùng cách ly")
     args = parser.parse_args()

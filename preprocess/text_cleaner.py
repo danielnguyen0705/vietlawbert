@@ -13,18 +13,13 @@ from configs.logging_config import get_subsystem_logger
 
 logger = get_subsystem_logger("preprocess", "text_cleaner")
 
-# ============================================================
-# CÁC MẪU BIỂU THỨC CHÍNH QUY KHỬ NHIỄU (BOILERPLATE NOISE)
-# ============================================================
-
 HEADER_PATTERNS = [
     re.compile(r"^\s*CỘNG\s*HÒA\s*XÃ\s*HỘI\s*CHỦ\s*NGHĨA\s*VIỆT\s*NAM\b", re.IGNORECASE | re.MULTILINE),
     re.compile(r"^\s*CHÍNH\s*PHỦ\s*[-–—|]*\s*CỘNG\s*HÒA\s*XÃ\s*HỘI\s*CHỦ\s*NGHĨA\s*VIỆT\s*NAM\b", re.IGNORECASE | re.MULTILINE),
     re.compile(r"^\s*Độc\s*lập\s*[-–—]\s*Tự\s*do\s*[-–—]\s*Hạnh\s*phúc\b", re.IGNORECASE | re.MULTILINE),
     re.compile(r"^\s*\*{0,2}\s*(?:CHÍNH\s*PHỦ|QUỐC\s*HỘI|ỦY\s*BAN\s*THƯỜNG\s*VỤ\s*QUỐC\s*HỘI)\s*\*{0,2}\s*$", re.IGNORECASE | re.MULTILINE),
     re.compile(r"^\s*\*{0,2}\s*(?:NGHỊ\s*ĐỊNH|QUYẾT\s*ĐỊNH|THÔNG\s*TƯ|NGHỊ\s*QUYẾT)\s*\*{0,2}\s*$", re.IGNORECASE | re.MULTILINE),
-    re.compile(r"^\s*Số:\s*[\d]+[-–/][\w\-/]+", re.IGNORECASE | re.MULTILINE),
-    # Hỗ trợ nhận diện thời gian ban hành của tất cả 63 tỉnh thành
+    re.compile(r"^\s*Số:\s*[\d]+(?:\s*[-–/]\s*[\w\-]+)+", re.IGNORECASE | re.MULTILINE),
     re.compile(r"^\s*[\w\s\.\,\-]+,\s*ngày\s+\d+\s+tháng\s+\d+\s+năm\s+\d+", re.IGNORECASE | re.MULTILINE),
 ]
 
@@ -38,7 +33,7 @@ SIGNATURE_PATTERNS = [
 
 NOI_NHAN_START_PATTERN = re.compile(r"^\s*(?:[-*]\s*)?Nơi\s*nhận\s*[:\.]?", re.IGNORECASE)
 STRUCTURAL_BOUNDARY_PATTERN = re.compile(
-    r"^\s*(?:#{1,6}\s*|Điều\s+\d+|CHƯƠNG\s+[IVXLCDM\d]+|MỤC\s+\d+|PHẦN\s+[IVXLCDM\d]+)",
+    r"^\s*(?:#{1,6}\s*|Điều\s+\d+[a-zA-Z]?|CHƯƠNG\s+[IVXLCDM\d]+|MỤC\s+\d+|PHẦN\s+[IVXLCDM\d]+)",
     re.IGNORECASE,
 )
 
@@ -58,10 +53,7 @@ def normalize_unicode(text: str) -> str:
 
 
 def clean_boilerplate(text: str, keep_preamble: bool = False) -> str:
-    """
-    Loại bỏ siêu dữ liệu thừa và boilerplate khỏi văn bản pháp luật.
-    Khóa vùng: Không áp dụng lọc căn cứ/tiêu đề sau khi đã vào nội dung Điều khoản.
-    """
+    """Loại bỏ siêu dữ liệu thừa và boilerplate khỏi văn bản pháp luật."""
     if not text:
         return ""
 
@@ -77,7 +69,6 @@ def clean_boilerplate(text: str, keep_preamble: bool = False) -> str:
             cleaned_lines.append("")
             continue
 
-        # Đánh dấu đã bước vào phần nội dung quy định chính thức
         if STRUCTURAL_BOUNDARY_PATTERN.match(stripped):
             body_started = True
 
@@ -93,7 +84,6 @@ def clean_boilerplate(text: str, keep_preamble: bool = False) -> str:
             else:
                 in_noi_nhan = False
 
-        # Chỉ lọc phần mở đầu nếu chưa bước vào thân văn bản
         if not body_started:
             if any(pat.search(stripped) for pat in HEADER_PATTERNS):
                 continue
@@ -165,11 +155,11 @@ def extract_doc_number(text: str) -> Optional[str]:
         return None
 
     text_clean = normalize_unicode(text)
-    match = re.search(r"Số\s*:\s*([\d]+[-–/][\w\-/]+)", text_clean, re.IGNORECASE)
+    match = re.search(r"Số\s*:\s*([0-9]+(?:\s*[-–/]\s*[\w\-]+)+)", text_clean, re.IGNORECASE)
     if match:
         return match.group(1).replace(" ", "").rstrip(".").upper()
 
-    match_alt = re.search(r"\b(?:số|số\s+hiệu)\s+([\d]+/[A-Z0-9\-/]+)", text_clean, re.IGNORECASE)
+    match_alt = re.search(r"\b(?:số|số\s+hiệu)\s+([0-9]+(?:\s*[-–/]\s*[\w\-]+)+)", text_clean, re.IGNORECASE)
     if match_alt:
         return match_alt.group(1).replace(" ", "").rstrip(".").upper()
 
@@ -177,16 +167,11 @@ def extract_doc_number(text: str) -> Optional[str]:
 
 
 def extract_effective_date(text: str) -> Optional[str]:
-    """
-    Trích xuất chuẩn xác ngày hiệu lực của văn bản và chuẩn hóa về ISO YYYY-MM-DD.
-    Khắc phục triệt để lỗi nuốt cụm từ 'thi hành kể từ ngày'.
-    """
+    """Trích xuất chuẩn xác ngày hiệu lực của văn bản và chuẩn hóa về ISO YYYY-MM-DD."""
     if not text:
         return None
 
     text_clean = normalize_unicode(text)
-
-    # Khớp mọi biến thể biểu đạt hiệu lực thời gian
     date_match = re.search(
         r"(?:có\s+hiệu\s+lực|hiệu\s+lực\s+thi\s+hành|thi\s+hành)(?:[^\d\n]{1,40})?"
         r"(\d{1,2})\s+tháng\s+(\d{1,2})\s+năm\s+(\d{4})",

@@ -1,6 +1,6 @@
 """
 ast_parser.py - Bộ phân tích cú pháp phân cấp pháp lý lai (Hybrid Legal AST Parser).
-Bóc tách toàn diện: Phần -> Chương -> Mục -> Điều -> Khoản -> Điểm.
+Bóc tách toàn diện: Phần -> Chương -> Mục -> Điều (hỗ trợ Điều 15a, 28b) -> Khoản -> Điểm.
 Xuất đầy đủ định danh article_id chuẩn hóa phục vụ liên kết Heterogeneous Information Network (HIN).
 """
 
@@ -69,12 +69,13 @@ class LegalHierarchyTracker:
 
 class HybridASTParser:
     def __init__(self):
-        self.re_part = re.compile(r'^(?:PHẦN|Phần)\s+([IVXLCDM]+)[\.:\s]*(.*)$', re.MULTILINE)
-        self.re_chapter = re.compile(r'^(?:CHƯƠNG|Chương)\s+([IVXLCDM]+)[\.:\s]*(.*)$', re.MULTILINE)
+        self.re_part = re.compile(r'^(?:PHẦN|Phần)\s+([IVXLCDM\d]+)[\.:\s]*(.*)$', re.MULTILINE)
+        self.re_chapter = re.compile(r'^(?:CHƯƠNG|Chương)\s+([IVXLCDM\d]+)[\.:\s]*(.*)$', re.MULTILINE)
         self.re_section = re.compile(r'^(?:MỤC|Mục)\s+(\d+)[\.:\s]*(.*)$', re.MULTILINE)
-        self.re_article = re.compile(r'^(?:ĐIỀU|Điều)\s+(\d+)[\.:\s]*(.*)$', re.MULTILINE)
-        self.re_clause = re.compile(r'^(\d+)[\.\)]\s+(.*)$')
-        self.re_point = re.compile(r'^([a-zđ])[\.\)]\s+(.*)$')
+        # Hỗ trợ cả số nguyên lẫn số kèm chữ cái (Điều 15a, Điều 28b)
+        self.re_article = re.compile(r'^(?:ĐIỀU|Điều)\s+(\d+[a-zA-Z]?)[\.:\s]*(.*)$', re.MULTILINE)
+        self.re_clause = re.compile(r'^(?:[*_]{0,2})(\d+)[\.\)\/][\s\xa0]+(.*)$')
+        self.re_point = re.compile(r'^(?:[*_]{0,2})([a-zđ])[\.\)\/][\s\xa0]+(.*)$', re.IGNORECASE)
 
     def parse_document(self, text: str, metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
         if not text or not text.strip():
@@ -148,6 +149,7 @@ class HybridASTParser:
                     chunks.append({
                         "chunk_id": f"{doc_id}_preamble_{len(chunks)}",
                         "doc_id": doc_id,
+                        "doc_number": doc_number,
                         "article_id": "",
                         "article_num": "",
                         "macro_label": "CAN_CU",
@@ -195,6 +197,7 @@ class HybridASTParser:
 
         macro_label = tracker.get_macro_label()
         canonical_art_id = f"{doc_id}_art_{art_num}"
+        doc_number = metadata.get("doc_number", "N/A")
 
         if not clauses:
             h_path = tracker.get_hierarchy_path()
@@ -202,6 +205,7 @@ class HybridASTParser:
             sub_chunks.append({
                 "chunk_id": canonical_art_id,
                 "doc_id": doc_id,
+                "doc_number": doc_number,
                 "article_id": canonical_art_id,
                 "article_num": str(art_num),
                 "macro_label": macro_label,
@@ -218,6 +222,7 @@ class HybridASTParser:
             sub_chunks.append({
                 "chunk_id": f"{canonical_art_id}_root",
                 "doc_id": doc_id,
+                "doc_number": doc_number,
                 "article_id": canonical_art_id,
                 "article_num": str(art_num),
                 "macro_label": macro_label,
@@ -234,6 +239,7 @@ class HybridASTParser:
             sub_chunks.append({
                 "chunk_id": f"{canonical_art_id}_cl_{cl_num}",
                 "doc_id": doc_id,
+                "doc_number": doc_number,
                 "article_id": canonical_art_id,
                 "article_num": str(art_num),
                 "macro_label": macro_label,

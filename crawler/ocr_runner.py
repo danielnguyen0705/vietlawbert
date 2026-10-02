@@ -16,8 +16,10 @@ import urllib.request
 import html as html_lib
 from pathlib import Path
 from typing import List, Dict, Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from configs.paths import ROOT_DIR, ARTIFACTS_DIR
+from configs.paths import ROOT_DIR, RAW_SHARDS_DIR
+from configs.config import config
 from artifacts.canonical import read_jsonl, write_jsonl
 from artifacts.merge import merge_records_streaming
 from crawler.shard_runner import write_json_atomic
@@ -110,8 +112,9 @@ def process_quarantine_record(record: Dict[str, Any]) -> Dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Bộ điều phối OCR thực thụ cho danh mục văn bản cách ly")
-    parser.add_argument("--input-dir", type=Path, default=ARTIFACTS_DIR / "full_crawl", help="Thư mục chứa Shards")
+    parser.add_argument("--input-dir", type=Path, default=RAW_SHARDS_DIR, help="Thư mục chứa Shards")
     parser.add_argument("--max-shards", type=int, help="Giới hạn số Shard cần xử lý")
+    parser.add_argument("--concurrency", type=int, default=getattr(config, "OCR_CONCURRENCY", 2), help="Số luồng tải và OCR song song")
     args = parser.parse_args()
 
     input_dir = args.input_dir.resolve()
@@ -144,17 +147,25 @@ def main() -> int:
             continue
 
         stem = quarantine.name.replace(".quarantine.jsonl", "")
-        print(f"[TIẾN HÀNH OCR] Shard: {stem} | Số lượng tài liệu: {len(records)}...", flush=True)
+        print(f"[TIẾN HÀNH OCR] Shard: {stem} | Số lượng tài liệu: {len(records)} (Đa luồng: {args.concurrency})...", flush=True)
 
         recovered = []
         unresolved = []
 
-        for r in records:
-            processed = process_quarantine_record(r)
-            if processed.get("html_status") == "VALID":
-                recovered.append(processed)
-            else:
-                unresolved.append(processed)
+        # Xử lý đa luồng an toàn bộ nhớ bằng ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=max(1, args.concurrency)) as executor:
+            future_to_rec = {executor.submit(process_quarantine_record, r): r for r in records}
+            for future in as_completed(future_to_rec):
+                try:
+                    processed = future.result()
+                    if processed.get("html_status") == "VALID":
+                        recovered.append(processed)
+                    else:
+                        unresolved.append(processed)
+                except Exception as ex:
+                    rec_err = future_to_rec[future]
+                    rec_err["ocr_status"] = f"OCR_WORKER_ERROR:{ex}"
+                    unresolved.append(rec_err)
 
         recovered_path = output_dir / f"{stem}.ocr_recovered.jsonl"
         unresolved_path = output_dir / f"{stem}.ocr_unresolved.jsonl"

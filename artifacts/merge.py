@@ -1,6 +1,7 @@
 """
 merge.py - Ghép nối overlay vào checkpoint JSONL streaming an toàn bộ nhớ.
 Cung cấp API cho pipeline và điểm vào CLI cho cli.merge_artifacts.
+Khắc phục điểm nghẽn thuật toán O(N^2) khi hợp nhất danh sách ID lớn.
 """
 
 from __future__ import annotations
@@ -49,21 +50,23 @@ def merge_records_streaming(
     overlay_paths: List[Path | str],
     output_path: Path | str
 ) -> Dict[str, int]:
-    """Hợp nhất stream tiết kiệm RAM: ghi đè bản ghi cũ và bổ sung bản ghi mới."""
+    """Hợp nhất stream tiết kiệm RAM: ghi đè bản ghi cũ và bổ sung bản ghi mới với độ phức tạp O(N)."""
     b_path = Path(base_path)
     out_path = Path(output_path)
 
     overlay_map: Dict[str, Dict[str, Any]] = {}
     overlay_new_order: List[str] = []
+    seen_overlay_ids = set()
 
     for o_path in overlay_paths:
         p = Path(o_path)
         if not p.exists():
-            logger.warning(f"Bỏ qua overlay không tồn tại: {p}")
+            logger.warning("Bỏ qua overlay không tồn tại: %s", p)
             continue
         for record in read_jsonl(p, require_item_id=True):
             item_id = extract_item_id(record)
-            if item_id not in overlay_map and item_id not in overlay_new_order:
+            if item_id not in seen_overlay_ids:
+                seen_overlay_ids.add(item_id)
                 overlay_new_order.append(item_id)
             overlay_map[item_id] = record
 
@@ -95,7 +98,7 @@ def merge_records_streaming(
         "appended_records": total_written - (base_count - overwritten_count),
         "total_final_records": total_written,
     }
-    logger.info(f"Hoàn tất hợp nhất: {stats}")
+    logger.info("Hoàn tất hợp nhất: %s", stats)
     return stats
 
 
@@ -111,7 +114,7 @@ def main() -> int:
         merge_records_streaming(args.base, args.overlays, args.output)
         return 0
     except Exception as exc:
-        logger.error(f"Lỗi hợp nhất artifacts: {exc}", exc_info=True)
+        logger.error("Lỗi hợp nhất artifacts: %s", exc, exc_info=True)
         return 1
 
 

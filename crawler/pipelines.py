@@ -1,6 +1,6 @@
 """
 pipelines.py - Pipeline bóc tách bản đồ tri thức quan hệ pháp luật và lưu trữ Shard Staging.
-Chuẩn hóa Schema đồ thị (22 quan hệ HIN), Lazy Parsing đối sánh Jaccard và nén Shard cục bộ.
+Chuẩn hóa Schema đồ thị (22 quan hệ HIN), Memoized Lazy Parsing đối sánh Jaccard và nén Shard cục bộ.
 """
 
 from __future__ import annotations
@@ -40,13 +40,13 @@ class LegalOntologyMappingPipeline:
         pipeline.feed_export_active = bool(feeds)
         return pipeline
 
-    def open_spider(self, spider):
+    def open_spider(self, spider=None):
         self.logger.info(
             "[PIPELINE KHỞI ĐỘNG] LegalOntologyMappingPipeline sẵn sàng. Tự động gom Shard đĩa: %s",
             "TẮT (Scrapy Feed -O đang kích hoạt)" if self.feed_export_active else "BẬT (Ghi trực tiếp raw_shards/)",
         )
 
-    def close_spider(self, spider):
+    def close_spider(self, spider=None):
         if not self.feed_export_active and self.shard_buffer:
             self._flush_buffer_to_shard()
 
@@ -158,17 +158,10 @@ class LegalOntologyMappingPipeline:
             return match_cp.group(1).replace(" ", "")
         return text_lower.strip()
 
-    def _jaccard_fallback(self, raw_key: str, html_raw: str, json_docs_list: list) -> Tuple[str, float]:
+    def _jaccard_fallback_memoized(self, raw_key: str, html_groups: Dict[str, set], json_docs_list: list) -> Tuple[str, float]:
         json_set = set(self._extract_doc_number_only(d.get("name") or d.get("title") or "") for d in json_docs_list)
         json_set = {x for x in json_set if x}
-        if not json_set or not html_raw:
-            return f"REL_TYPE_{raw_key}", 0.0
-
-        try:
-            soup = BeautifulSoup(html_raw, "html.parser")
-            html_groups = self._parse_html_groups(soup)
-            del soup
-        except Exception:
+        if not json_set or not html_groups:
             return f"REL_TYPE_{raw_key}", 0.0
 
         best_label = f"REL_TYPE_{raw_key}"
@@ -232,6 +225,16 @@ class LegalOntologyMappingPipeline:
         relationships = []
         unresolved = []
 
+        # Tối ưu hóa: Parse DOM duy nhất 1 lần cho toàn bộ các nhóm quan hệ của tài liệu này
+        parsed_html_groups: Optional[Dict[str, set]] = None
+        if html_raw:
+            try:
+                soup = BeautifulSoup(html_raw, "html.parser")
+                parsed_html_groups = self._parse_html_groups(soup)
+                del soup
+            except Exception:
+                parsed_html_groups = None
+
         for group_name in ["documentNamesByType", "documentNamesBySource"]:
             group_data = diagram_json.get(group_name) or {}
             direction = "OUTGOING" if group_name == "documentNamesByType" else "INCOMING"
@@ -242,8 +245,8 @@ class LegalOntologyMappingPipeline:
                 method = "static"
 
                 if not edge_type:
-                    if html_raw:
-                        edge_type, score = self._jaccard_fallback(raw_key, html_raw, docs_list)
+                    if parsed_html_groups:
+                        edge_type, score = self._jaccard_fallback_memoized(raw_key, parsed_html_groups, docs_list)
                         method = "dynamic_jaccard"
                     else:
                         edge_type = f"REL_TYPE_{raw_key}"
@@ -274,7 +277,7 @@ class LegalOntologyMappingPipeline:
 
         return item
 
-    def process_item(self, item: Any, spider: Any) -> Any:
+    def process_item(self, item: Any, spider: Any = None) -> Any:
         if not item.get("text") and item.get("html_raw"):
             try:
                 soup = BeautifulSoup(item["html_raw"], "html.parser")

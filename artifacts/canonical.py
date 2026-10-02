@@ -1,5 +1,6 @@
 """
-canonical.py - Công cụ chuẩn hóa Artifacts và đóng gói Kafka Envelope.
+canonical.py - Công cụ chuẩn hóa Artifacts và đóng gói dữ liệu nguyên tử.
+Tối ưu hóa khả năng nhận diện Shard linh hoạt và thẩm định tính toàn vẹn (Lineage Manifest).
 """
 
 from __future__ import annotations
@@ -58,17 +59,25 @@ def write_jsonl(path: Path | str, records: Iterable[Dict[str, Any]]) -> int:
 
 
 def canonical_artifacts(input_dir: Path | str, expected_shards: Optional[int] = None) -> List[Path]:
+    """
+    Quét và sắp xếp danh mục Shards chuẩn hóa.
+    Tự động thay thế Shard gốc bằng bản .rescued. nếu có và loại trừ tệp rác/tạm.
+    """
     dir_path = Path(input_dir)
     if not dir_path.is_dir():
         raise NotADirectoryError(f"Đường dẫn không phải thư mục: {dir_path}")
 
-    bases = sorted(
-        path for path in dir_path.glob("crawl_pages_*.jsonl.gz")
+    # Nhận diện linh hoạt mọi tệp Shard .jsonl.gz hợp lệ (crawl_pages_*, shard_*, v.v.)
+    all_shards = sorted(
+        path for path in dir_path.glob("*.jsonl.gz")
         if ".rescued." not in path.name
+        and not path.name.endswith(".quarantine.jsonl.gz")
+        and not path.name.endswith(".corrupted.jsonl.gz")
+        and not path.name.endswith(".tmp")
     )
 
     selected: List[Path] = []
-    for base in bases:
+    for base in all_shards:
         rescued = base.with_name(base.name.replace(".jsonl.gz", ".rescued.jsonl.gz"))
         selected.append(rescued if rescued.exists() else base)
 
@@ -78,6 +87,7 @@ def canonical_artifacts(input_dir: Path | str, expected_shards: Optional[int] = 
 
 
 def encode_payload(record: Dict[str, Any]) -> bytes:
+    """Tuần tự hóa JSON có sắp xếp khóa để bảo đảm mã băm SHA-256 tất định 100%."""
     return json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 

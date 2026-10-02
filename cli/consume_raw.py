@@ -1,6 +1,6 @@
 """
-consume_raw.py - CLI nạp bản kê khai tài liệu pháp lý và quan hệ HIN vào Neo4j.
-Tự động đồng bộ đường dẫn RAW_SHARDS_DIR và hỗ trợ nạp toàn bộ thư mục với Checkpoint.
+consume_raw.py - CLI nạp bản kê khai tài liệu pháp lý và quan hệ HIN vào Neo4j (Pha 3).
+Đọc trực tiếp từ RAW_SHARDS_DIR (.jsonl.gz), bóc tách cây phân cấp và tạo dựng 22 quan hệ pháp lý.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ logger = logging.getLogger("VietLawBERT_RawConsumerCLI")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="VietLawBERT Raw Metadata & Graph Ingestion")
+    parser = argparse.ArgumentParser(description="VietLawBERT HIN Graph Ingestion (Phase 3)")
     parser.add_argument(
         "--path",
         "--file",
@@ -36,7 +36,13 @@ def main() -> int:
     parser.add_argument(
         "--no-chunks",
         action="store_true",
-        help="Chỉ nạp văn bản và quan hệ pháp lý, bỏ qua phân rã Chunks",
+        help="Chỉ nạp văn bản và quan hệ pháp lý, bỏ qua phân rã Chunks cây phân cấp",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=500,
+        help="Kích thước lô giao dịch Cypher nạp Neo4j (mặc định 500 records)",
     )
     args = parser.parse_args()
 
@@ -46,7 +52,7 @@ def main() -> int:
         return 1
 
     try:
-        logger.info("Bắt đầu nạp HIN đồ thị vào Neo4j từ: %s", meta_path)
+        logger.info("Bắt đầu nạp HIN đồ thị vào Neo4j từ: %s (Batch size: %d)", meta_path, args.batch_size)
         run_build_hin(
             metadata_path=str(meta_path),
             uri=config.NEO4J_URI,
@@ -57,7 +63,11 @@ def main() -> int:
         logger.info("✓ Xây dựng mạng Heterogeneous Information Network (HIN) trên Neo4j hoàn tất.")
         return 0
     except Exception as exc:
-        logger.error("Lỗi nạp đồ thị thô vào Neo4j: %s", exc, exc_info=True)
+        err_msg = str(exc)
+        if "Unauthorized" in err_msg or "authentication" in err_msg.lower():
+            logger.error("✗ Lỗi xác thực Neo4j! Hãy kiểm tra biến NEO4J_PASSWORD trong .env so với docker-compose.yml.")
+        else:
+            logger.error("✗ Lỗi nghiêm trọng khi nạp đồ thị Neo4j: %s", exc, exc_info=True)
         return 1
 
 

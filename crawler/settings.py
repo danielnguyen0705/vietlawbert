@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import logging
 from configs.paths import DAILY_LOGS_DIR, DATA_STORAGE_ROOT
+from configs.config import config
 
 BOT_NAME = "vietlaw_crawler"
 
@@ -23,22 +24,22 @@ USER_AGENT = (
 )
 
 # ==============================================================================
-# 1. HẠ TẦNG HÀNG ĐỢI ĐĨA CỨNG ĐỘNG (TRÁNH XUNG ĐỘT TRẠNG THÁI GIỮA CÁC SHARD)
+# 1. HẠ TẦNG HÀNG ĐỢI ĐĨA CỨNG ĐỘNG (DISK QUEUE)
 # ==============================================================================
-# Chỉ bật JOBDIR khi có biến môi trường chỉ định rõ, tránh xung đột giữa các lượt chạy phân đoạn
-if os.getenv("SCRAPY_JOBDIR"):
-    JOBDIR = os.getenv("SCRAPY_JOBDIR")
+active_jobdir = os.getenv("SCRAPY_JOBDIR") or os.getenv("JOBDIR")
+if active_jobdir:
+    JOBDIR = active_jobdir
     SCHEDULER_DISK_QUEUE = "scrapy.squeues.FifoDiskQueue"
     SCHEDULER_MEMORY_QUEUE = "scrapy.squeues.FifoMemoryQueue"
     SCHEDULER_PRIORITY_QUEUE = "scrapy.pqueues.DownloaderAwarePriorityQueue"
 
 # ==============================================================================
-# 2. ĐIỀU TIẾT TẢI LUỒNG & CHỐNG NGHẼN CPU CORE
+# 2. ĐIỀU TIẾT TẢI LUỒNG & CHỐNG NGHẼN CPU
 # ==============================================================================
-CONCURRENT_REQUESTS = int(os.getenv("CRAWLER_CONCURRENCY", "4"))
-CONCURRENT_REQUESTS_PER_DOMAIN = int(os.getenv("CRAWLER_CONCURRENCY", "4"))
+CONCURRENT_REQUESTS = int(os.getenv("CRAWLER_CONCURRENCY", "8"))
+CONCURRENT_REQUESTS_PER_DOMAIN = int(os.getenv("CRAWLER_CONCURRENCY", "8"))
 
-DOWNLOAD_DELAY = float(os.getenv("CRAWLER_DOWNLOAD_DELAY", "0.15"))
+DOWNLOAD_DELAY = float(os.getenv("CRAWLER_DOWNLOAD_DELAY", "0.1"))
 RANDOMIZE_DOWNLOAD_DELAY = True
 
 AUTOTHROTTLE_ENABLED = True
@@ -46,7 +47,7 @@ AUTOTHROTTLE_START_DELAY = 1.0
 AUTOTHROTTLE_MAX_DELAY = 15.0
 AUTOTHROTTLE_TARGET_CONCURRENCY = 3.0
 
-DOWNLOAD_TIMEOUT = 30
+DOWNLOAD_TIMEOUT = 35
 REACTOR_THREADPOOL_MAXSIZE = 16
 
 RETRY_TIMES = 4
@@ -56,7 +57,7 @@ HTTPCACHE_ENABLED = False
 COOKIES_ENABLED = True
 
 # ==============================================================================
-# 3. GIỚI HẠN BỘ NHỚ RAM BẢO VỆ TIẾN TRÌNH HỆ ĐIỀU HÀNH
+# 3. GIỚI HẠN BỘ NHỚ RAM BẢO VỆ TIẾN TRÌNH
 # ==============================================================================
 MEMUSAGE_ENABLED = True
 MEMUSAGE_WARNING_MB = int(os.getenv("CRAWLER_MEMUSAGE_WARNING_MB", "3584"))
@@ -80,7 +81,7 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("filelock").setLevel(logging.WARNING)
 
 # ==============================================================================
-# 5. HẠ TẦNG PLAYWRIGHT SIÊU NHẸ (HEADLESS CHROME TỐI GIẢN)
+# 5. HẠ TẦNG PLAYWRIGHT
 # ==============================================================================
 DOWNLOAD_HANDLERS = {
     "http": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
@@ -99,10 +100,9 @@ PLAYWRIGHT_CONTEXTS = {
         "bypass_csp": True,
     },
 }
-# Loại bỏ hoàn toàn cờ --single-process để bảo đảm Chromium vận hành ổn định trên Linux
 PLAYWRIGHT_LAUNCH_OPTIONS = {
     "headless": True,
-    "timeout": 20 * 1000,
+    "timeout": 25 * 1000,
     "args": [
         "--no-sandbox",
         "--disable-dev-shm-usage",

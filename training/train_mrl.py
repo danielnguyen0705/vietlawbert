@@ -4,6 +4,7 @@ Hỗ trợ đầy đủ 13 backbones:
 - Pure Encoders (768d & 1024d): BERT, PhoBERT (base/large), XLM-RoBERTa, viELECTRA,
   viDeBERTa, BGE-M3, Multilingual-E5 (base/large), BKAI Bi-Encoder, VNLawBERT.
 - Seq2Seq Encoders: BARTpho, ViT5 (tự động bóc tách tầng Encoder).
+Tích hợp tự động đẩy mô hình đã huấn luyện lên Hugging Face Hub khi có cấu hình.
 """
 
 from __future__ import annotations
@@ -218,20 +219,34 @@ def save_checkpoint(model: VietLawBERTMRL, tokenizer: AutoTokenizer, out_dir: Pa
     if not model.is_seq2seq:
         model.encoder.save_pretrained(out_dir)
     else:
-        # Với Seq2Seq, lưu trực tiếp state_dict của encoder
         torch.save(model.encoder.state_dict(), out_dir / "encoder_model.bin")
         model.model_config.save_pretrained(out_dir)
 
     tokenizer.save_pretrained(out_dir)
     torch.save(model.state_dict(), out_dir / "vietlawbert_mrl.pt")
 
-    # Lưu metadata định danh số chiều gốc
     with open(out_dir / "model_meta.json", "w", encoding="utf-8") as f:
         json.dump({
             "hidden_size": model.hidden_size,
             "is_seq2seq": model.is_seq2seq,
             "base_config": model.model_config.to_dict()
         }, f, indent=2)
+
+
+def upload_to_huggingface_hub(output_dir: Path, repo_id: str, token: str):
+    try:
+        from huggingface_hub import HfApi
+        logger.info("Đang đồng bộ trọng số mô hình lên Hugging Face Hub: %s...", repo_id)
+        api = HfApi(token=token)
+        api.create_repo(repo_id=repo_id, exist_ok=True, private=False)
+        api.upload_folder(
+            folder_path=str(output_dir.resolve()),
+            repo_id=repo_id,
+            commit_message="Add fine-tuned VietLawBERT-MRL checkpoint",
+        )
+        logger.info("✓ Tải mô hình lên Hugging Face Hub hoàn tất: https://huggingface.co/%s", repo_id)
+    except Exception as exc:
+        logger.error("Lỗi đồng bộ Hugging Face Hub: %s", exc)
 
 
 def train(args):
@@ -253,7 +268,6 @@ def train(args):
         is_cuda=not is_cpu,
     ).to(device)
 
-    # Tự động xác định dải cắt lát Matryoshka theo hidden_size gốc
     if args.matryoshka_dims:
         dims = [d for d in args.matryoshka_dims if d <= model.hidden_size]
     else:
@@ -328,12 +342,17 @@ def train(args):
     save_checkpoint(model, tokenizer, out_dir)
     logger.info("✓ Hoàn tất huấn luyện. Trọng số đã lưu tại: %s", out_dir.resolve())
 
+    if getattr(args, "push_to_hub", False) and getattr(args, "hub_model_id", None):
+        hf_token = getattr(args, "hf_token", None) or os.getenv("HF_TOKEN")
+        if hf_token:
+            upload_to_huggingface_hub(out_dir, args.hub_model_id, hf_token)
+
 
 def main():
     parser = argparse.ArgumentParser(description="VietLawBERT Multi-Backbone MRL Trainer")
-    parser.add_argument("--model-name", required=True, help="Tên hoặc đường dẫn backbone HuggingFace")
+    parser.add_argument("--model-name", default=config.BASE_MODEL_NAME, help="Tên hoặc đường dẫn backbone HuggingFace")
     parser.add_argument("--train-parquet", default=str(ARTIFACTS_DIR / "triplets" / "hin_triplets.parquet"))
-    parser.add_argument("--output-dir", required=True, help="Thư mục lưu checkpoint")
+    parser.add_argument("--output-dir", default=str(MODELS_DIR / "vietlawbert_mrl_final"), help="Thư mục lưu checkpoint")
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=2)
@@ -349,6 +368,9 @@ def main():
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--logging-steps", type=int, default=25)
     parser.add_argument("--num-workers", type=int, default=2)
+    parser.add_argument("--push-to-hub", action="store_true", help="Tự động upload mô hình lên Hugging Face Hub")
+    parser.add_argument("--hub-model-id", type=str, default=os.getenv("HF_REPO_ID"), help="ID Repo trên HF Hub")
+    parser.add_argument("--hf-token", type=str, default=os.getenv("HF_TOKEN"), help="Access Token của HF")
 
     args = parser.parse_args()
     train(args)

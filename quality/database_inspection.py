@@ -104,7 +104,7 @@ def inspect_qdrant() -> Dict[str, Any]:
 
     client = None
     try:
-        client = QdrantClient(host=host, port=port, timeout=5.0)
+        client = QdrantClient(host=host, port=port, timeout=5.0, check_compatibility=False)
         collections = [c.name for c in client.get_collections().collections]
         if collection in collections:
             info = client.get_collection(collection_name=collection)
@@ -145,7 +145,7 @@ def inspect_elasticsearch() -> Dict[str, Any]:
 
     es = None
     try:
-        es = Elasticsearch([es_host], request_timeout=5)
+        es = Elasticsearch(hosts=[es_host], request_timeout=5.0)
         if not es.ping():
             result["error"] = "Ping Elasticsearch thất bại"
             return result
@@ -181,7 +181,7 @@ def inspect_redis() -> Dict[str, Any]:
 
     r = None
     try:
-        r = redis.Redis(host=host, port=port, db=db, socket_timeout=3)
+        r = redis.Redis(host=host, port=port, db=db, socket_timeout=3.0)
         r.ping()
         result.update({
             "status": "HEALTHY",

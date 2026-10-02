@@ -1,11 +1,12 @@
 """
 llm_judge.py - Hệ thống thẩm phán LLM-as-a-Judge tự động đánh giá chất lượng RAG.
 Đo đạc định lượng 3 chỉ số theo chuẩn Ragas/G-Eval: Faithfulness, Answer Relevance, Context Precision.
-Khử triệt để markdown fences để không bao giờ bị ngoại lệ JSONDecodeError.
+Khử triệt để markdown fences, tự động bóc tách regex khi LLM sinh lời dẫn thừa.
 """
 
 from __future__ import annotations
 
+import os
 import re
 import csv
 import json
@@ -46,14 +47,18 @@ Trả về kết quả DUY NHẤT dưới định dạng JSON sau (không thêm 
 
 class LegalLLMJudge:
     def __init__(self):
+        # Tự động đọc cấu hình EVAL riêng từ .env hoặc fallback về PRIMARY
+        eval_base = getattr(config, "EVAL_API_BASE", None) or os.getenv("EVAL_API_BASE") or getattr(config, "PRIMARY_LLM_API_BASE", "[https://openrouter.ai/api/v1](https://openrouter.ai/api/v1)")
+        eval_key = getattr(config, "EVAL_API_KEY", None) or os.getenv("EVAL_API_KEY") or getattr(config, "PRIMARY_LLM_API_KEY", "dummy_key")
+        self.model = getattr(config, "EVAL_MODEL", None) or os.getenv("EVAL_MODEL") or getattr(config, "PRIMARY_LLM_MODEL", "anthropic/claude-3.5-sonnet")
+
         self.client = OpenAI(
-            base_url=config.PRIMARY_LLM_API_BASE,
-            api_key=config.PRIMARY_LLM_API_KEY or "dummy_key"
+            base_url=eval_base,
+            api_key=eval_key or "dummy_key"
         )
-        self.model = config.PRIMARY_LLM_MODEL
 
     def evaluate_sample(self, query: str, contexts: List[str], answer: str) -> Dict[str, Any]:
-        context_str = "\n---\n".join(contexts)
+        context_str = "\n---\n".join(contexts) if contexts else "Không có ngữ cảnh."
         prompt = JUDGE_PROMPT_TEMPLATE.format(
             query=query,
             contexts=context_str,
@@ -68,7 +73,6 @@ class LegalLLMJudge:
             )
             raw_content = resp.choices[0].message.content.strip()
 
-            # Bóc tách Markdown fences an toàn nếu LLM tự động chèn ```json ... ```
             if "```" in raw_content:
                 match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", raw_content, re.IGNORECASE)
                 if match:
@@ -76,13 +80,24 @@ class LegalLLMJudge:
 
             return json.loads(raw_content)
         except Exception as e:
-            logger.warning("Lỗi trong quá trình thẩm định của LLM Judge: %s. Trả về điểm mặc định đánh giá khắt khe.", e)
-            return {
-                "faithfulness": 0.50,
-                "answer_relevance": 0.50,
-                "context_precision": 0.50,
-                "reasoning": f"Thất bại phân tích phản hồi LLM: {e}"
-            }
+            logger.warning("Lỗi trong quá trình thẩm định của LLM Judge (%s). Thử trích xuất điểm số bằng regex.", e)
+            try:
+                f_m = re.search(r'"faithfulness"\s*:\s*([0-9.]+)', raw_content)
+                r_m = re.search(r'"answer_relevance"\s*:\s*([0-9.]+)', raw_content)
+                p_m = re.search(r'"context_precision"\s*:\s*([0-9.]+)', raw_content)
+                return {
+                    "faithfulness": float(f_m.group(1)) if f_m else 0.5,
+                    "answer_relevance": float(r_m.group(1)) if r_m else 0.5,
+                    "context_precision": float(p_m.group(1)) if p_m else 0.5,
+                    "reasoning": "Parsed by regex fallback"
+                }
+            except Exception:
+                return {
+                    "faithfulness": 0.50,
+                    "answer_relevance": 0.50,
+                    "context_precision": 0.50,
+                    "reasoning": f"Lỗi phân tích phản hồi LLM: {e}"
+                }
 
     def evaluate_benchmark_results(
         self,

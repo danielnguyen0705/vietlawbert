@@ -55,9 +55,9 @@ class HINTripletMiner:
     ):
         self.neo4j_uri = neo4j_uri or os.getenv("NEO4J_URI") or config.NEO4J_URI
         self.neo4j_user = neo4j_user or os.getenv("NEO4J_USER") or config.NEO4J_USER
-        self.neo4j_password = neo4j_password or os.getenv("NEO4J_PASSWORD") or getattr(config, "NEO4J_PASSWORD", "vietlawbert")
+        self.neo4j_password = neo4j_password or os.getenv("NEO4J_PASSWORD") or getattr(config, "NEO4J_PASSWORD", "vietlawbert2026")
         self.es_host = es_host or os.getenv("ES_HOST") or getattr(config, "ES_HOST", "http://localhost:9200")
-        self.es_index = es_index or getattr(config, "ES_INDEX_NAME", "vietlaw_chunks")
+        self.es_index = es_index or getattr(config, "ES_INDEX_NAME", "vietlaw_sparse_idx")
         self.graph_emb_file = Path(graph_emb_path) if graph_emb_path else (ARTIFACTS_DIR / "graph_embeddings_128d.parquet")
 
         self.driver = GraphDatabase.driver(
@@ -74,7 +74,7 @@ class HINTripletMiner:
         self.es_available = False
         try:
             from elasticsearch import Elasticsearch
-            self.es = Elasticsearch(hosts=[self.es_host], request_timeout=2.0)
+            self.es = Elasticsearch(hosts=[self.es_host], request_timeout=3.0)
             if self.es.ping() and self.es.indices.exists(index=self.es_index):
                 count = self.es.count(index=self.es_index).get("count", 0)
                 if count > 0:
@@ -223,7 +223,6 @@ class HINTripletMiner:
             except Exception:
                 pass
 
-        # Fallback Neo4j Lucene BM25
         try:
             clean_q = re.sub(r"[\+\-\&\|\!\(\)\{\}\[\]\^\"~*\?:\/\\]", " ", query_tokens)
             clean_q = " ".join(clean_q.split())
@@ -290,7 +289,6 @@ class HINTripletMiner:
                     best_neg_text = cand_text
                     best_neg_id = cand_id
 
-            # Fallback an toàn: Tuyệt đối không chọn trùng positive
             if best_neg_text is None and validated_pool:
                 safe_fallbacks = [t for t in validated_pool if t.strip() != p_text.strip()]
                 if safe_fallbacks:

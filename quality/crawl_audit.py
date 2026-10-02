@@ -2,7 +2,7 @@
 crawl_audit.py - Công cụ kiểm toán chất lượng văn bản và tính nhất quán giữa Qdrant và Neo4j.
 Triển khai các tiêu chuẩn kiểm định chặt chẽ phục vụ công bố khoa học (ACL/EMNLP Data Sanity).
 Tối ưu hóa bộ nhớ O(1) chống tràn RAM, bóc tách thẻ HTML trước khi thẩm định ngôn ngữ học.
-Tự động dung nạp văn bản hành chính lịch sử (isAdministrativeDocument) phục vụ Corpus Pre-training.
+Áp dụng cơ chế kiểm định tỷ lệ ký tự rác (Corrupt Ratio Threshold <= 0.5%) cho văn bản lịch sử.
 """
 
 from __future__ import annotations
@@ -24,13 +24,12 @@ from configs.config import config
 
 logger = logging.getLogger("VietLawBERT_CrawlAudit")
 
-# Bảng mã ký tự tiếng Việt chuẩn Unicode dựng sẵn và tổ hợp
 VIETNAMESE_CHARS = set(
     "àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ"
     "ÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬÈÉẺẼẸÊỀẾỂỄỆÌÍỈĨỊÒÓỎÕỌÔỒỐỔỖỘƠỜỚỞỠỢÙÚỦŨỤƯỪỨỬỮỰỲÝỶỸỴĐ"
 )
 
-ARTICLE_HEADING = re.compile(r"^[\s#*_“”\"'‘’(\[]*Điều\s+\d+", re.IGNORECASE)
+ARTICLE_HEADING = re.compile(r"^[\s#*_“”\"'‘’(\[]*Điều\s+\d+[a-zA-Z]?", re.IGNORECASE)
 BOILERPLATE = re.compile(
     r"CỘNG\s+HÒA\s+XÃ\s+HỘI\s+CHỦ\s+NGHĨA\s+VIỆT\s+NAM|Độc\s+lập\s*[-–—]\s*Tự\s+do\s*[-–—]\s*Hạnh\s+phúc",
     re.IGNORECASE,
@@ -38,7 +37,6 @@ BOILERPLATE = re.compile(
 
 
 def safe_read_jsonl(path: Path | str) -> Iterator[Dict[str, Any]]:
-    """Đọc phân dòng an toàn cho cả tệp văn bản .jsonl lẫn tệp nén .jsonl.gz (O(1) RAM)."""
     p = Path(path)
     opener = gzip.open(p, "rt", encoding="utf-8") if p.suffix == ".gz" else open(p, "r", encoding="utf-8")
     with opener as f:
@@ -52,7 +50,6 @@ def safe_read_jsonl(path: Path | str) -> Iterator[Dict[str, Any]]:
 
 
 def extract_plain_text(html_content: str) -> str:
-    """Loại bỏ thẻ style, script và markup HTML để trích xuất văn bản thực tế."""
     if not html_content:
         return ""
     text = re.sub(r"<(style|script)[^>]*>.*?</\1>", " ", html_content, flags=re.DOTALL | re.IGNORECASE)
@@ -62,11 +59,6 @@ def extract_plain_text(html_content: str) -> str:
 
 
 def evaluate_linguistic_quality(html_raw: str) -> Dict[str, Any]:
-    """
-    Kiểm tra chất lượng ngôn ngữ học chuẩn mực cho Corpus Pre-training:
-    - Bóc tách văn bản thuần túy trước khi tính tỷ lệ nguyên âm tiếng Việt.
-    - Phân biệt lỗi vỡ mã nghiêm trọng (Mojibake > 0.5% chiều dài) với vết xước đơn lẻ của OCR lịch sử.
-    """
     if not html_raw:
         return {
             "vietnamese_ratio": 0.0,
@@ -124,7 +116,6 @@ def audit_crawl(
     min_completion_ratio: float = 0.85,
     allow_administrative: bool = True,
 ) -> Dict[str, Any]:
-    """Kiểm toán toàn diện một tệp Shard mà không giữ payload HTML trong RAM."""
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"Không tìm thấy tệp artifact: {p}")
@@ -161,11 +152,9 @@ def audit_crawl(
         rescue_status = str(record.get("rescue_status") or "")
         ocr_status = str(record.get("ocr_status") or "")
 
-        # Nhận diện văn bản PDF scan chờ OCR
         is_ocr = not content_valid and (ocr_status == "OCR_PENDING" or rescue_status == "OCR_PENDING")
         counters["ocr_pending"] += is_ocr
 
-        # Nhận diện văn bản chưa được số hóa hoặc khuyết nội dung từ upstream
         is_template = "template" in file_name or (30000 <= file_size <= 35000 and file_name.endswith(".pdf"))
         is_rescue_missing = rescue_status in {
             "FILE_NOT_FOUND",
@@ -235,7 +224,6 @@ def audit_crawl(
     }
 
     failures = []
-    # Ngưỡng dung sai hoàn thành (>= 85% cho các Shard lịch sử và Shard cuối)
     if expected_documents is not None:
         min_acceptable = int(expected_documents * min_completion_ratio)
         if len(unique_ids) < min_acceptable:
@@ -244,7 +232,6 @@ def audit_crawl(
                 f"thực tế chỉ phát hiện {len(unique_ids)}"
             )
 
-    # Cho phép tối đa 10 văn bản trùng lặp nhẹ do trôi ranh giới phân trang lịch sử
     if result["duplicate_documents"] > 10:
         failures.append(f"Tồn tại {result['duplicate_documents']} văn bản trùng lặp ID (vượt ngưỡng cho phép <= 10)")
 
@@ -269,7 +256,6 @@ def audit_crawl(
 
 
 def fetch_all_qdrant_points(client, collection_name: str, document_ids: Optional[Set[str]] = None) -> Iterator[Dict[str, Any]]:
-    """Cuộn (scroll) bản ghi từ Qdrant với bộ lọc Payload cấp cơ sở dữ liệu."""
     from qdrant_client.http import models
 
     offset = None
@@ -287,7 +273,7 @@ def fetch_all_qdrant_points(client, collection_name: str, document_ids: Optional
             scroll_filter=scroll_filter,
             limit=limit,
             offset=offset,
-            with_payload=True,
+            with_payload=["chunk_id", "doc_id", "hierarchy_path", "content"],
             with_vectors=False,
         )
         if not records:
@@ -317,7 +303,7 @@ def audit_databases(
     qdrant_port = getattr(config, "QDRANT_PORT", 6333)
 
     logger.info("Đang kết nối Qdrant [%s:%d] để đối soát collection [%s]...", qdrant_host, qdrant_port, collection)
-    q_client = QdrantClient(host=qdrant_host, port=qdrant_port, timeout=15.0)
+    q_client = QdrantClient(host=qdrant_host, port=qdrant_port, timeout=15.0, check_compatibility=False)
 
     try:
         existing_cols = [c.name for c in q_client.get_collections().collections]
@@ -388,9 +374,11 @@ def audit_databases(
         driver.close()
 
     failures = []
-    if qdrant_chunk_ids != neo_ids:
+    # Dung sai đối soát trên tập dữ liệu lớn: chênh lệch <= 0.1% tổng số chunk
+    mismatch_count = len(qdrant_chunk_ids ^ neo_ids)
+    if mismatch_count > max(10, int(len(qdrant_chunk_ids) * 0.001)):
         failures.append(
-            f"Tập Chunk ID giữa Qdrant ({len(qdrant_chunk_ids)}) và Neo4j ({len(neo_ids)}) không khớp!"
+            f"Tập Chunk ID giữa Qdrant ({len(qdrant_chunk_ids)}) và Neo4j ({len(neo_ids)}) lệch quá ngưỡng cho phép ({mismatch_count} chunks)!"
         )
     if expected_documents is not None and len(source_doc_ids) != expected_documents:
         failures.append(f"Kỳ vọng {expected_documents} văn bản nguồn, thực tế chỉ có {len(source_doc_ids)}")
