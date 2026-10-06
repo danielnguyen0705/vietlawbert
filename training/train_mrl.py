@@ -4,7 +4,7 @@ Hỗ trợ đầy đủ 13 backbones:
 - Pure Encoders (768d & 1024d): BERT, PhoBERT (base/large), XLM-RoBERTa, viELECTRA,
   viDeBERTa, BGE-M3, Multilingual-E5 (base/large), BKAI Bi-Encoder, VNLawBERT.
 - Seq2Seq Encoders: BARTpho, ViT5 (tự động bóc tách tầng Encoder).
-Tích hợp tự động đẩy mô hình đã huấn luyện lên Hugging Face Hub khi có cấu hình.
+Tối ưu hóa GPU tương thích PyTorch 2.x SDPA tự nhiên, loại bỏ xung đột Flash Attention 2.
 """
 
 from __future__ import annotations
@@ -81,7 +81,6 @@ class HierarchyAwareMatryoshkaLoss(nn.Module):
             logits = torch.matmul(sub_anchor, sub_candidates.T) / self.tau
             total_loss = total_loss + weight * F.cross_entropy(logits, labels)
 
-        # Ràng buộc phân cụm hình học vĩ mô tại d=64
         if hierarchy_labels is not None and self.gamma > 0 and anchor_rep.size(-1) >= 64:
             sub_macro = F.normalize(anchor_rep[:, :64], p=2, dim=-1)
             sim_macro = torch.matmul(sub_macro, sub_macro.T) / self.tau
@@ -114,25 +113,29 @@ class VietLawBERTMRL(nn.Module):
         is_cuda: bool = False,
     ):
         super().__init__()
-        logger.info("Khởi tạo backbone: %s", base_model_name)
+        logger.info("Khởi tạo backbone: %s (Device CUDA: %s, Precision: %s)", base_model_name, is_cuda, precision)
+        
         model_kwargs = {}
         if is_cuda:
-            model_kwargs["torch_dtype"] = torch.bfloat16 if precision == "bf16" else (torch.float16 if precision == "fp16" else torch.float32)
-            try:
-                model_kwargs["attn_implementation"] = "flash_attention_2"
-            except Exception:
-                model_kwargs["attn_implementation"] = "sdpa"
+            model_kwargs["torch_dtype"] = torch.bfloat16 if (precision == "bf16" and torch.cuda.is_bf16_supported()) else (torch.float16 if precision == "fp16" else torch.float32)
 
         self.model_config = AutoConfig.from_pretrained(base_model_name, trust_remote_code=True)
         self.is_seq2seq = getattr(self.model_config, "is_encoder_decoder", False)
 
+        # Nạp mô hình có cơ chế fallback an toàn: thử SDPA trước, nếu không hỗ trợ thì lùi về mặc định
         if self.is_seq2seq:
             logger.info("-> Bóc tách khối Encoder từ Seq2Seq LM (%s)...", base_model_name)
-            full_model = AutoModelForSeq2SeqLM.from_pretrained(base_model_name, config=self.model_config, **model_kwargs)
+            try:
+                full_model = AutoModelForSeq2SeqLM.from_pretrained(base_model_name, config=self.model_config, attn_implementation="sdpa", **model_kwargs)
+            except Exception:
+                full_model = AutoModelForSeq2SeqLM.from_pretrained(base_model_name, config=self.model_config, **model_kwargs)
             self.encoder = full_model.get_encoder()
             self.hidden_size = getattr(self.encoder.config, "d_model", getattr(self.encoder.config, "hidden_size", 768))
         else:
-            self.encoder = AutoModel.from_pretrained(base_model_name, config=self.model_config, **model_kwargs)
+            try:
+                self.encoder = AutoModel.from_pretrained(base_model_name, config=self.model_config, attn_implementation="sdpa", **model_kwargs)
+            except Exception:
+                self.encoder = AutoModel.from_pretrained(base_model_name, config=self.model_config, **model_kwargs)
             self.hidden_size = getattr(self.encoder.config, "hidden_size", 768)
 
         if enable_checkpointing and hasattr(self.encoder, "gradient_checkpointing_enable"):
@@ -233,22 +236,6 @@ def save_checkpoint(model: VietLawBERTMRL, tokenizer: AutoTokenizer, out_dir: Pa
         }, f, indent=2)
 
 
-def upload_to_huggingface_hub(output_dir: Path, repo_id: str, token: str):
-    try:
-        from huggingface_hub import HfApi
-        logger.info("Đang đồng bộ trọng số mô hình lên Hugging Face Hub: %s...", repo_id)
-        api = HfApi(token=token)
-        api.create_repo(repo_id=repo_id, exist_ok=True, private=False)
-        api.upload_folder(
-            folder_path=str(output_dir.resolve()),
-            repo_id=repo_id,
-            commit_message="Add fine-tuned VietLawBERT-MRL checkpoint",
-        )
-        logger.info("✓ Tải mô hình lên Hugging Face Hub hoàn tất: https://huggingface.co/%s", repo_id)
-    except Exception as exc:
-        logger.error("Lỗi đồng bộ Hugging Face Hub: %s", exc)
-
-
 def train(args):
     device = torch.device(args.device if torch.cuda.is_available() and args.device == "cuda" else "cpu")
     is_cpu = device.type == "cpu"
@@ -292,7 +279,7 @@ def train(args):
     total_steps = args.max_steps if args.max_steps is not None else (steps_per_epoch * args.epochs)
     scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=max(10, int(total_steps * 0.1)), num_training_steps=total_steps)
 
-    amp_dtype = torch.bfloat16 if args.precision == "bf16" else (torch.float16 if args.precision == "fp16" else torch.float32)
+    amp_dtype = torch.bfloat16 if (args.precision == "bf16" and torch.cuda.is_bf16_supported()) else (torch.float16 if args.precision == "fp16" else torch.float32)
     use_amp = (not is_cpu) and (args.precision in ["bf16", "fp16"])
 
     model.train()
@@ -342,11 +329,6 @@ def train(args):
     save_checkpoint(model, tokenizer, out_dir)
     logger.info("✓ Hoàn tất huấn luyện. Trọng số đã lưu tại: %s", out_dir.resolve())
 
-    if getattr(args, "push_to_hub", False) and getattr(args, "hub_model_id", None):
-        hf_token = getattr(args, "hf_token", None) or os.getenv("HF_TOKEN")
-        if hf_token:
-            upload_to_huggingface_hub(out_dir, args.hub_model_id, hf_token)
-
 
 def main():
     parser = argparse.ArgumentParser(description="VietLawBERT Multi-Backbone MRL Trainer")
@@ -368,9 +350,6 @@ def main():
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--logging-steps", type=int, default=25)
     parser.add_argument("--num-workers", type=int, default=2)
-    parser.add_argument("--push-to-hub", action="store_true", help="Tự động upload mô hình lên Hugging Face Hub")
-    parser.add_argument("--hub-model-id", type=str, default=os.getenv("HF_REPO_ID"), help="ID Repo trên HF Hub")
-    parser.add_argument("--hf-token", type=str, default=os.getenv("HF_TOKEN"), help="Access Token của HF")
 
     args = parser.parse_args()
     train(args)

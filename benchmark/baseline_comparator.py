@@ -1,11 +1,12 @@
 """
 baseline_comparator.py - Hệ thống thực nghiệm đối chứng Master Benchmark.
 Tự động đối đầu trực diện giữa [Mô hình Gốc (Zero-shot)] và [Mô hình Đã Tinh Chỉnh (Ours-MRL)]
-trên toàn bộ 13 kiến trúc. Đo đạc Paired Student's t-test và xuất bảng tổng hợp CSV.
+trên toàn bộ các kiến trúc backbone. Đo đạc Paired Student's t-test và xuất bảng tổng hợp CSV.
 """
 
 from __future__ import annotations
 
+import re
 import csv
 import json
 import argparse
@@ -38,24 +39,42 @@ class UniversalEncoderWrapper:
         if path_obj.exists() and (path_obj / "vietlawbert_mrl.pt").exists():
             logger.info("Nạp Checkpoint Fine-tuned nội bộ: %s", model_id_or_path)
             self.is_custom = True
-            with open(path_obj / "model_meta.json", "r", encoding="utf-8") as f:
-                meta = json.load(f)
 
+            model_cfg = AutoConfig.from_pretrained(str(path_obj), trust_remote_code=True)
             self.tokenizer = AutoTokenizer.from_pretrained(str(path_obj), trust_remote_code=True)
-            model_cfg = AutoConfig.from_dict(meta["base_config"])
 
-            if meta.get("is_seq2seq", False):
-                full_seq = AutoModelForSeq2SeqLM.from_pretrained(str(path_obj), config=model_cfg).to(device)
-                self.core_encoder = full_seq.get_encoder()
-            else:
-                self.core_encoder = AutoModel.from_pretrained(str(path_obj), config=model_cfg).to(device)
+            is_seq2seq = getattr(model_cfg, "is_encoder_decoder", False)
+            if (path_obj / "model_meta.json").exists():
+                try:
+                    with open(path_obj / "model_meta.json", "r", encoding="utf-8") as f:
+                        meta = json.load(f)
+                        is_seq2seq = meta.get("is_seq2seq", is_seq2seq)
+                except Exception:
+                    pass
+
+            try:
+                if is_seq2seq:
+                    try:
+                        full_seq = AutoModelForSeq2SeqLM.from_pretrained(str(path_obj), config=model_cfg).to(device)
+                        self.core_encoder = full_seq.get_encoder()
+                    except Exception:
+                        self.core_encoder = AutoModel.from_pretrained(str(path_obj), config=model_cfg).to(device)
+                else:
+                    self.core_encoder = AutoModel.from_pretrained(str(path_obj), config=model_cfg).to(device)
+            except Exception:
+                self.core_encoder = AutoModel.from_config(model_cfg).to(device)
 
             try:
                 state_dict = torch.load(path_obj / "vietlawbert_mrl.pt", map_location=device, weights_only=False)
-            except TypeError:
+            except Exception:
                 state_dict = torch.load(path_obj / "vietlawbert_mrl.pt", map_location=device)
 
-            cleaned_state = {k.replace("encoder.", ""): v for k, v in state_dict.items()}
+            # Bóc tách chính xác tiền tố ngoài cùng (0 missing / 0 unexpected)
+            cleaned_state = {}
+            for k, v in state_dict.items():
+                new_k = re.sub(r"^(encoder\.|model\.)", "", k)
+                cleaned_state[new_k] = v
+
             self.core_encoder.load_state_dict(cleaned_state, strict=False)
             self.core_encoder.eval()
         else:
@@ -74,21 +93,31 @@ class UniversalEncoderWrapper:
                     self.core_encoder = AutoModel.from_pretrained(model_id_or_path, config=model_cfg).to(device)
                 self.core_encoder.eval()
 
-    def encode(self, texts: List[str]) -> np.ndarray:
+    def encode(self, texts: List[str], batch_size: int = 16) -> np.ndarray:
+        if not texts:
+            return np.empty((0, self.slice_dim or 768))
+
         if self.is_e5:
             texts = [f"query: {t}" for t in texts]
 
         if not self.is_custom:
-            embs = self.sbert.encode(texts, show_progress_bar=False, normalize_embeddings=False)
+            embs = self.sbert.encode(texts, batch_size=batch_size, show_progress_bar=False, normalize_embeddings=False)
         else:
-            tok = self.tokenizer(texts, padding=True, truncation=True, max_length=256, return_tensors="pt").to(self.device)
-            with torch.no_grad():
-                outputs = self.core_encoder(**tok)
-                last_hidden = outputs.last_hidden_state if hasattr(outputs, "last_hidden_state") else outputs[0]
-                mask = tok["attention_mask"].unsqueeze(-1).expand(last_hidden.size()).float()
-                sum_emb = torch.sum(last_hidden * mask, dim=1)
-                sum_mask = torch.clamp(mask.sum(dim=1), min=1e-9)
-                embs = (sum_emb / sum_mask).cpu().numpy()
+            all_embs = []
+            for i in range(0, len(texts), batch_size):
+                batch_texts = texts[i : i + batch_size]
+                tok = self.tokenizer(batch_texts, padding=True, truncation=True, max_length=256, return_tensors="pt").to(self.device)
+                encoder_inputs = {k: v for k, v in tok.items() if k in ["input_ids", "attention_mask"]}
+                
+                with torch.no_grad():
+                    outputs = self.core_encoder(**encoder_inputs)
+                    last_hidden = outputs.last_hidden_state if hasattr(outputs, "last_hidden_state") else outputs[0]
+                    mask = encoder_inputs["attention_mask"].unsqueeze(-1).expand(last_hidden.size()).float()
+                    sum_emb = torch.sum(last_hidden * mask, dim=1)
+                    sum_mask = torch.clamp(mask.sum(dim=1), min=1e-9)
+                    batch_vecs = (sum_emb / sum_mask).cpu().numpy()
+                    all_embs.append(batch_vecs)
+            embs = np.vstack(all_embs)
 
         if self.slice_dim is not None and self.slice_dim < embs.shape[1]:
             embs = embs[:, :self.slice_dim]
@@ -153,7 +182,6 @@ class MultiModelBaselineComparator:
             test_samples = samples[:100]
             logger.info("=== ĐỐI CHUẨN MA TRẬN MASTER BENCHMARK: %s (%d MẪU) ===", ds_name.upper(), len(test_samples))
 
-            # Bảo toàn metadata đầy đủ cho candidate pool để hàm evaluate_query không bị điểm 0 ảo
             candidate_pool_dicts = []
             seen_chunks = set()
             for s in test_samples:
@@ -164,7 +192,7 @@ class MultiModelBaselineComparator:
                         "chunk_id": c_id,
                         "doc_number": s.get("ground_truth_doc_number", ""),
                         "article": s.get("ground_truth_article", ""),
-                        "content": s.get("raw_content") or s.get("evidence_text", "")
+                        "content": s.get("raw_content") or s.get("evidence_text", "N/A")
                     })
 
             candidate_texts = [c["content"] for c in candidate_pool_dicts]
@@ -174,7 +202,12 @@ class MultiModelBaselineComparator:
             # 1. Đánh giá BM25 (Elasticsearch Lexical)
             bm25_scores, bm25_ndcg = [], []
             for s in test_samples:
-                cands = es.search(s["query"], top_k=10)
+                if hasattr(es, "search_bm25"):
+                    cands = es.search_bm25(s["query"], top_k=10)
+                elif hasattr(es, "search"):
+                    cands = es.search(s["query"], top_k=10)
+                else:
+                    cands = es.search_sparse(s["query"], top_k=10)
                 m = evaluate_query(cands, s, [1, 5, 10])
                 bm25_scores.append(m)
                 bm25_ndcg.append(m.get("NDCG@10", 0.0))
@@ -182,7 +215,7 @@ class MultiModelBaselineComparator:
             eval_results["BM25 (Elasticsearch Lexical)"] = {k: round(sum(x[k] for x in bm25_scores) / t, 4) for k in bm25_scores[0].keys()} if bm25_scores else {}
             ndcg_vectors["BM25 (Elasticsearch Lexical)"] = bm25_ndcg
 
-            # 2. Đánh giá 13 Backbone (Zero-shot & Fine-tuned MRL)
+            # 2. Đánh giá các Backbone (Zero-shot & Fine-tuned MRL)
             for display_name, model_id, is_e5, d_star in raw_backbones:
                 label_zero = f"{display_name} (Zero-shot)"
                 try:
@@ -226,6 +259,7 @@ class MultiModelBaselineComparator:
                         t_ft = len(scores_ft) if scores_ft else 1
                         eval_results[label_ft] = {k: round(sum(x[k] for x in scores_ft) / t_ft, 4) for k in scores_ft[0].keys()}
                         ndcg_vectors[label_ft] = ndcg_ft
+                        logger.info("✓ Đánh giá thành công bản Fine-tuned: %s (NDCG@10: %.4f)", label_ft, eval_results[label_ft].get("NDCG@10", 0.0))
                     except Exception as ex:
                         logger.warning("Lỗi đánh giá bản fine-tune [%s]: %s", label_ft, ex)
 

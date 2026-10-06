@@ -179,3 +179,23 @@ class LegalElasticsearchRetriever:
         except Exception as exc:
             logger.error("Lỗi truy vấn Elasticsearch: %s", exc)
             return []
+
+    def search(
+        self,
+        query: str,
+        top_k: int = 10,
+        must_be_effective: bool = True,
+        **kwargs,
+    ) -> List[Dict[str, Any]]:
+        """Giao diện chuẩn hóa tương thích cho các bộ evaluator và comparator."""
+        return self.search_sparse(query=query, top_k=top_k, must_be_effective=must_be_effective)
+
+    def search_bm25(
+        self,
+        query: str,
+        top_k: int = 10,
+        must_be_effective: bool = True,
+        **kwargs,
+    ) -> List[Dict[str, Any]]:
+        """Alias tương thích ngược trỏ về search_sparse."""
+        return self.search_sparse(query=query, top_k=top_k, must_be_effective=must_be_effective)
