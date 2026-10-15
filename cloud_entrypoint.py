@@ -1,22 +1,25 @@
 """
-cloud_entrypoint.py - Trục điều phối tự động hóa khép kín trên Cloud GPU (A100/RTX 4090).
-Tự động nạp cấu hình từ .env, chạy Train MRL 3 Epochs, Bulk Encode Chunks và đồng bộ Hugging Face Hub.
+cloud_entrypoint.py - Trục điều phối tự động hóa khép kín trên Cloud GPU (A100/RTX 3090/4090).
+Khắc phục triệt để lỗi đường dẫn Parquet cũ, tích hợp toàn diện:
+Pha 1: Khai phá HIN-Guided Triplets
+Pha 2: Huấn luyện VietLawBERT-MRL (3 Epochs, Validation Loop, lưu Best Checkpoint)
+Pha 3: Khởi tạo bộ kiểm chuẩn chuẩn mực VietLawBench
+Pha 4: Thực thi Master Benchmark & Đo lường RQ1 - RQ4
+Pha 5: Đóng gói toàn bộ Artifacts thành tệp .tar.gz để tải về máy local
 """
 
 from __future__ import annotations
 
 import os
 import sys
-import glob
 import time
+import tarfile
 import logging
 import argparse
 from pathlib import Path
 from dotenv import load_dotenv
 
 import torch
-import pyarrow as pa
-import pyarrow.parquet as pq
 
 # Nạp cấu hình môi trường
 load_dotenv(".env")
@@ -25,32 +28,48 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | [%(levelname)s] | 
 logger = logging.getLogger("VietLawBERT_CloudMaster")
 
 from configs.config import config
-from configs.paths import RAW_SHARDS_DIR, ARTIFACTS_DIR, MODELS_DIR, DATA_STORAGE_ROOT
+from configs.paths import ARTIFACTS_DIR, MODELS_DIR, ROOT_DIR, BENCHMARK_DIR
 
-HF_TOKEN = os.getenv("HF_TOKEN")
-HF_REPO_ID = os.getenv("HF_REPO_ID")
 TRIPLET_FILE = ARTIFACTS_DIR / "triplets" / "hin_triplets.parquet"
 OUTPUT_MODEL_DIR = Path(os.getenv("OUTPUT_MODEL_DIR", str(MODELS_DIR / "vietlawbert_mrl_final")))
-OUTPUT_VECTOR_DIR = DATA_STORAGE_ROOT / "bulk_vectors"
+RESULTS_DIR = ROOT_DIR / "benchmark" / "results"
+BENCH_DIR = ARTIFACTS_DIR / "benchmark"
+
+
+def run_phase_mine_triplets(limit: int = 50000, beta: float = 0.5):
+    """Pha 1: Khai phá mẫu khó HIN-Guided Triplets bằng RWR nếu chưa có."""
+    logger.info("=" * 70)
+    logger.info("PHA 1: KHAI PHÁ MẪU KHÓ ĐỐI LẬP HIN TRIPLETS (RWR GRAPH GUIDED)")
+    logger.info("=" * 70)
+    
+    if TRIPLET_FILE.exists():
+        logger.info("✓ Đã tìm thấy tệp Triplet có sẵn tại %s. Bỏ qua khai phá lại.", TRIPLET_FILE)
+        return
+
+    from training.generate_hin_triplets import mine_and_export_hin_triplets
+    TRIPLET_FILE.parent.mkdir(parents=True, exist_ok=True)
+    mine_and_export_hin_triplets(output_path=str(TRIPLET_FILE), limit=limit, beta=beta)
+    logger.info("✓ Hoàn tất Pha 1: Đã lưu tập Triplet tại %s", TRIPLET_FILE)
 
 
 def run_phase_train():
-    logger.info("=" * 65)
-    logger.info("GIAI ĐOẠN 1: HUẤN LUYỆN TOÀN DIỆN VIETLAWBERT-MRL (3 EPOCHS - FULL BACKBONE)")
-    logger.info("=" * 65)
+    """Pha 2: Huấn luyện MRL có Validation Loop và lưu Best Checkpoint."""
+    logger.info("=" * 70)
+    logger.info("PHA 2: HUẤN LUYỆN TOÀN DIỆN VIETLAWBERT-MRL (3 EPOCHS - FULL BACKBONE)")
+    logger.info("=" * 70)
 
     from training.train_mrl import train
 
     args = argparse.Namespace(
         train_parquet=str(TRIPLET_FILE),
-        model_name=config.BASE_MODEL_NAME,
+        model_name=os.getenv("BASE_MODEL_NAME", config.BASE_MODEL_NAME),
         output_dir=str(OUTPUT_MODEL_DIR),
         epochs=int(os.getenv("EPOCHS", 3)),
-        batch_size=int(os.getenv("EMBED_BATCH_SIZE", 32)),
-        gradient_accumulation_steps=1,
-        freeze_layers=0,  # Mở khóa toàn bộ 24 tầng khi chạy trên GPU A100
+        batch_size=int(os.getenv("EMBED_BATCH_SIZE", 16)),
+        gradient_accumulation_steps=2,
+        freeze_layers=0,  # Mở khóa toàn bộ các tầng khi chạy trên Cloud GPU
         lr=float(os.getenv("LEARNING_RATE", 2e-5)),
-        max_seq_length=int(getattr(config, "MAX_SEQ_LENGTH", 512)),
+        max_seq_length=int(getattr(config, "MAX_SEQ_LENGTH", 256)),
         matryoshka_dims=[64, 128, 256, 512, 768, 1024],
         tau=float(os.getenv("TEMPERATURE", 0.05)),
         hierarchy_weight=float(os.getenv("HIERARCHY_WEIGHT", 0.15)),
@@ -58,99 +77,123 @@ def run_phase_train():
         device="cuda" if torch.cuda.is_available() else "cpu",
         max_steps=None,
         max_samples=None,
-        logging_steps=50,
-        num_workers=4,
-        push_to_hub=bool(HF_TOKEN and HF_REPO_ID),
-        hub_model_id=HF_REPO_ID,
-        hf_token=HF_TOKEN,
+        logging_steps=25,
+        num_workers=2,
     )
     train(args)
-    logger.info("✓ Hoàn thành Giai đoạn 1: Trọng số mô hình đã được lưu tại %s", OUTPUT_MODEL_DIR)
+
+    # Đảm bảo trọng số best_model nằm ngay tại OUTPUT_MODEL_DIR
+    best_sub = OUTPUT_MODEL_DIR / "best_model"
+    if best_sub.exists() and (best_sub / "vietlawbert_mrl.pt").exists():
+        import shutil
+        for item in best_sub.iterdir():
+            target = OUTPUT_MODEL_DIR / item.name
+            if not target.exists():
+                shutil.copy2(item, target)
+        logger.info("✓ Đã đồng bộ trọng số Best Model ra gốc: %s", OUTPUT_MODEL_DIR)
+
+    logger.info("✓ Hoàn thành Pha 2: Mô hình tối ưu đã lưu tại %s", OUTPUT_MODEL_DIR)
 
 
-def run_phase_bulk_embedding():
-    logger.info("=" * 65)
-    logger.info("GIAI ĐOẠN 2: MÃ HÓA HÀNG LOẠT VECTOR BẰNG MODEL VỪA HUẤN LUYỆN")
-    logger.info("=" * 65)
+def run_phase_benchmark_generation():
+    """Pha 3: Khởi tạo tập kiểm chuẩn phân tầng VietLawBench."""
+    logger.info("=" * 70)
+    logger.info("PHA 3: TẠO LẬP BỘ KIỂM CHUẨN VIETLAWBENCH (ZERO LEXICAL LEAKAGE)")
+    logger.info("=" * 70)
 
-    from sentence_transformers import SentenceTransformer
-
-    OUTPUT_VECTOR_DIR.mkdir(parents=True, exist_ok=True)
-    parquet_files = sorted(glob.glob(str(DATA_STORAGE_ROOT / "processed" / "parquet" / "*.parquet")))
-
-    if not parquet_files:
-        logger.info("Không phát hiện Parquet thô, kiểm tra Shards nén tại %s...", RAW_SHARDS_DIR)
+    bench_file = BENCH_DIR / "vietlawbench_1000.jsonl"
+    if bench_file.exists():
+        logger.info("✓ Đã có sẵn tập kiểm chuẩn tại %s. Bỏ qua tạo lại.", BENCH_DIR)
         return
 
-    logger.info("Tìm thấy %d tệp Parquet để mã hóa vector.", len(parquet_files))
-    embedder = SentenceTransformer(str(OUTPUT_MODEL_DIR), device="cuda" if torch.cuda.is_available() else "cpu")
-    embedder.max_seq_length = 512
-
-    for idx, f_path in enumerate(parquet_files, 1):
-        out_f = OUTPUT_VECTOR_DIR / f"vec_{Path(f_path).name}"
-        if out_f.exists():
-            continue
-
-        table = pq.read_table(f_path, columns=["chunk_id", "content"])
-        chunk_ids = table["chunk_id"].to_pylist()
-        texts = [str(t) for t in table["content"].to_pylist()]
-
-        vectors = embedder.encode(
-            texts,
-            batch_size=128 if torch.cuda.is_available() else 32,
-            show_progress_bar=False,
-            normalize_embeddings=True,
-            precision="float32",
-        )
-
-        out_table = pa.Table.from_arrays(
-            [pa.array(chunk_ids), pa.array(vectors.tolist())],
-            names=["chunk_id", "vector_1024d"],
-        )
-        pq.write_table(out_table, out_f, compression="snappy")
-
-        if idx % 10 == 0 or idx == len(parquet_files):
-            logger.info("[%03d/%d] Đã mã hóa và xuất vector: %s", idx, len(parquet_files), out_f.name)
-
-    logger.info("✓ Hoàn thành Giai đoạn 2: Toàn bộ vector đã được xuất sang %s", OUTPUT_VECTOR_DIR)
+    from benchmark.build_vietlawbench import VietLawBenchBuilder
+    builder = VietLawBenchBuilder()
+    try:
+        builder.build_master_benchmark(total_target=1000)
+    finally:
+        builder.close()
+    logger.info("✓ Hoàn tất Pha 3: Đã xuất tập kiểm chuẩn tại %s", BENCH_DIR)
 
 
-def run_phase_sync():
-    logger.info("=" * 65)
-    logger.info("GIAI ĐOẠN 3: ĐỒNG BỘ ARTIFACTS LÊN HUGGING FACE HUB")
-    logger.info("=" * 65)
+def run_phase_evaluation():
+    """Pha 4: Thực thi Master Baseline Comparator và trọn bộ RQ1 - RQ4."""
+    logger.info("=" * 70)
+    logger.info("PHA 4: THỰC NGHIỆM ĐỐI CHUẨN MASTER & ĐO ĐẠC TOÀN DIỆN RQ1 - RQ4")
+    logger.info("=" * 70)
 
-    if HF_TOKEN and HF_REPO_ID:
-        try:
-            from huggingface_hub import HfApi
-            api = HfApi(token=HF_TOKEN)
-            vec_repo = f"{HF_REPO_ID}-vectors"
-            logger.info("Đang tải tập vector lên Hugging Face Dataset: %s...", vec_repo)
-            api.create_repo(repo_id=vec_repo, repo_type="dataset", private=True, exist_ok=True)
-            api.upload_folder(
-                folder_path=str(OUTPUT_VECTOR_DIR),
-                repo_id=vec_repo,
-                repo_type="dataset",
-            )
-            logger.info("✓ Đồng bộ vector lên Hugging Face Hub thành công 100%!")
-        except Exception as e:
-            logger.error("Lỗi đồng bộ Hugging Face: %s", e)
-    else:
-        logger.warning("Bỏ qua đồng bộ HF do chưa cấu hình HF_TOKEN trong .env.")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # 1. Master Baseline Comparison
+    from benchmark.baseline_comparator import MultiModelBaselineComparator
+    comparator = MultiModelBaselineComparator(
+        benchmark_dir=BENCH_DIR,
+        checkpoints_dir=MODELS_DIR,
+        device=device,
+    )
+    comparator.compare_all(output_dir=RESULTS_DIR)
+
+    # 2. Đo 4 câu hỏi nghiên cứu RQ1 - RQ4
+    from benchmark.evaluate_rqs import ScientificBenchmarkRunner
+    runner = ScientificBenchmarkRunner(
+        benchmark_dir=str(BENCH_DIR),
+        model_path=str(OUTPUT_MODEL_DIR),
+        device=device,
+    )
+    runner.run_all(output_dir=RESULTS_DIR)
+    logger.info("✓ Hoàn thành Pha 4: Toàn bộ bảng CSV đã lưu tại %s", RESULTS_DIR)
+
+
+def run_phase_package_artifacts():
+    """Pha 5: Đóng gói toàn bộ thành phẩm thành file .tar.gz để kéo về máy local."""
+    logger.info("=" * 70)
+    logger.info("PHA 5: ĐÓNG GÓI THÀNH PHẨM THỰC NGHIỆM ĐỂ TẢI VỀ MÁY LOCAL")
+    logger.info("=" * 70)
+
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    archive_name = f"vietlawbert_artifacts_{timestamp}.tar.gz"
+    archive_path = ROOT_DIR / archive_name
+
+    items_to_pack = [
+        (RESULTS_DIR, "benchmark/results"),
+        (OUTPUT_MODEL_DIR, "models/vietlawbert_mrl_final"),
+        (BENCH_DIR, "artifacts/benchmark"),
+    ]
+
+    with tarfile.open(archive_path, "w:gz") as tar:
+        for src_path, arc_name in items_to_pack:
+            if Path(src_path).exists():
+                tar.add(src_path, arcname=arc_name)
+                logger.info("  + Đã đóng gói: %s -> %s", src_path, arc_name)
+
+    logger.info("✓ HOÀN TẤT ĐÓNG GÓI: %s", archive_path.resolve())
+    logger.info("Bạn có thể tải gói này về máy Dell G7 bằng lệnh:")
+    logger.info("  scp -P <PORT> <USER>@<IP>:%s ~/Desktop/", archive_path.resolve())
 
 
 def main():
+    parser = argparse.ArgumentParser(description="VietLawBERT Cloud GPU Master Orchestrator")
+    parser.add_argument("--skip-train", action="store_true", help="Bỏ qua bước huấn luyện nếu đã có model")
+    parser.add_argument("--skip-mine", action="store_true", help="Bỏ qua bước khai phá Triplet")
+    parser.add_argument("--triplet-limit", type=int, default=50000)
+    parser.add_argument("--beta", type=float, default=0.5)
+    args = parser.parse_args()
+
     start_time = time.time()
     try:
-        run_phase_train()
-        run_phase_bulk_embedding()
-        run_phase_sync()
+        if not args.skip_mine:
+            run_phase_mine_triplets(limit=args.triplet_limit, beta=args.beta)
+        if not args.skip_train:
+            run_phase_train()
+        run_phase_benchmark_generation()
+        run_phase_evaluation()
+        run_phase_package_artifacts()
     finally:
         total_min = (time.time() - start_time) / 60
-        logger.info("=" * 65)
+        logger.info("=" * 70)
         logger.info("TOÀN BỘ TIẾN TRÌNH CLOUD HOÀN TẤT TRONG: %.1f PHÚT", total_min)
         logger.info("BẠN CÓ THỂ NGẮT / TẮT CLOUD GPU AN TOÀN!")
-        logger.info("=" * 65)
+        logger.info("=" * 70)
 
 
 if __name__ == "__main__":

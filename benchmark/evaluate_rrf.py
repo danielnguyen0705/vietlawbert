@@ -1,7 +1,7 @@
 """
-evaluate_rrf.py - Bộ công cụ đánh giá thực nghiệm động cơ truy xuất lai (Hybrid RRF).
-Khắc phục triệt để lỗi doc_number='N/A', chuẩn hóa NDCG@K <= 1.0 qua Target Deduplication,
-và triệt tiêu hoàn toàn lỗi rò rỉ chuỗi rỗng trong hàm đối soát pháp lý.
+benchmark/evaluate_rrf.py - Bộ công cụ đánh giá thực nghiệm động cơ truy xuất lai (Hybrid RRF).
+Khắc phục triệt để lỗi so khớp tiền tố, chuẩn hóa đối soát Khoản/Điểm và Target Deduplication.
+Đảm bảo NDCG@K, MRR@K và Evidence Coverage phản ánh 100% sự thật khoa học.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import math
 import argparse
 import logging
 from pathlib import Path
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple, Optional, Set
 
 from configs.paths import ROOT_DIR, BENCHMARK_DIR
 from configs.logging_config import get_subsystem_logger
@@ -31,7 +31,7 @@ def extract_doc_number_from_text(text: Optional[str]) -> str:
 
 
 def normalize_legal_identifier(text: Optional[str]) -> str:
-    """Chuẩn hóa số hiệu văn bản và số Điều để đối soát chính xác tuyệt đối."""
+    """Chuẩn hóa số hiệu văn bản và số Điều để đối soát chính xác."""
     if not text:
         return ""
     norm = text.strip().lower()
@@ -42,10 +42,10 @@ def normalize_legal_identifier(text: Optional[str]) -> str:
 
 
 def extract_article_number(article_str: Optional[str]) -> Optional[str]:
-    """Trích xuất số thứ tự Điều luật (VD: 'Điều 15' hoặc 'Điều 15 > Khoản 1' -> '15')."""
+    """Trích xuất chính xác số thứ tự Điều luật (e.g., 'Điều 15' -> '15', 'Điều 15a' -> '15a')."""
     if not article_str:
         return None
-    match = re.search(r"điều\s+(\d+[a-zA-Z]?)", article_str.lower())
+    match = re.search(r"\bđiều\s+(\d+[a-zA-Z]?)", article_str.lower())
     return match.group(1) if match else None
 
 
@@ -53,27 +53,42 @@ def is_ground_truth_match(
     candidate: Dict[str, Any], 
     gt_doc_num: str, 
     gt_article: str,
-    gt_chunk_id: Optional[str] = None
+    gt_chunk_id: Optional[str] = None,
+    match_level: str = "clause"
 ) -> bool:
     """
     Kiểm tra ứng viên truy xuất khớp chính xác số hiệu văn bản, điều luật hoặc chunk_id.
-    Khắc phục triệt để lỗi logic: Không cho phép chuỗi rỗng tự khớp thành công.
+    - match_level='clause': Bắt buộc khớp chính xác chunk ID (bao gồm cả Khoản).
+    - match_level='article': Khớp chính xác đến cấp Điều luật.
     """
-    cand_chunk = str(candidate.get("chunk_id", "")).strip()
+    cand_chunk = str(candidate.get("chunk_id", "") or candidate.get("id", "")).strip()
+    gt_chunk = str(gt_chunk_id or "").strip()
 
-    # 1. Đối soát trực tiếp theo chunk_id (Tiêu chuẩn vàng IR benchmark)
-    if gt_chunk_id and cand_chunk:
-        if cand_chunk == gt_chunk_id or cand_chunk.startswith(gt_chunk_id) or gt_chunk_id.startswith(cand_chunk):
-            return True
-        gt_prefix = gt_chunk_id.split("_cl_")[0]
-        cand_prefix = cand_chunk.split("_cl_")[0]
-        if gt_prefix and cand_prefix and gt_prefix == cand_prefix:
-            return True
+    # 1. Đối soát trực tiếp theo chunk_id
+    if gt_chunk and cand_chunk:
+        if match_level == "clause":
+            if cand_chunk.lower() == gt_chunk.lower():
+                return True
+        elif match_level == "article":
+            # Tách định danh cấp điều bằng regex biên để tránh doc_art_1 khớp doc_art_10
+            cand_art_match = re.search(r"(_art_\d+[a-zA-Z]?)", cand_chunk.lower())
+            gt_art_match = re.search(r"(_art_\d+[a-zA-Z]?)", gt_chunk.lower())
+            if cand_art_match and gt_art_match and cand_art_match.group(1) == gt_art_match.group(1):
+                # Kiểm tra thêm doc prefix
+                cand_doc_prefix = cand_chunk.lower().split("_art_")[0]
+                gt_doc_prefix = gt_chunk.lower().split("_art_")[0]
+                if cand_doc_prefix == gt_doc_prefix:
+                    return True
 
-    # 2. Khắc phục triệt để doc_number='N/A' bằng cách đọc thẻ [META]
+    # 2. Đối soát theo Metadata nếu không có chunk_id
     cand_doc_raw = candidate.get("doc_number")
     if not cand_doc_raw or str(cand_doc_raw).strip().lower() in ("n/a", "none", ""):
-        cand_doc_raw = extract_doc_number_from_text(candidate.get("content")) or candidate.get("source_doc") or candidate.get("doc_id") or ""
+        cand_doc_raw = (
+            extract_doc_number_from_text(candidate.get("content"))
+            or candidate.get("source_doc")
+            or candidate.get("doc_id")
+            or ""
+        )
 
     cand_doc = normalize_legal_identifier(str(cand_doc_raw))
     cand_art_str = candidate.get("hierarchy_path") or candidate.get("article") or candidate.get("content") or ""
@@ -82,27 +97,21 @@ def is_ground_truth_match(
     target_doc = normalize_legal_identifier(gt_doc_num)
     target_art = normalize_legal_identifier(gt_article)
 
-    # ĐỐI SOÁT VĂN BẢN (Loại bỏ lỗi rò rỉ chuỗi rỗng "")
-    doc_matched = False
-    if target_doc and target_doc != "n/a":
-        if cand_doc:
-            doc_matched = (target_doc in cand_doc) or (cand_doc in target_doc)
-        else:
-            doc_matched = False
+    # Khắc phục rò rỉ: nếu target rỗng hoặc n/a thì không được tính là khớp
+    if not target_doc or target_doc == "n/a" or not cand_doc:
+        doc_matched = False
     else:
-        doc_matched = True
+        doc_matched = (target_doc == cand_doc) or (target_doc in cand_doc) or (cand_doc in target_doc)
 
-    # ĐỐI SOÁT ĐIỀU KHOẢN
-    art_matched = False
-    if target_art and target_art != "điều khoản liên quan":
+    if not target_art or target_art == "điều khoản liên quan":
+        art_matched = False
+    else:
         target_num = extract_article_number(target_art)
         cand_num = extract_article_number(cand_art)
         if target_num and cand_num:
             art_matched = (target_num == cand_num)
         else:
-            art_matched = bool(cand_art and target_art in cand_art)
-    else:
-        art_matched = True
+            art_matched = False
 
     return doc_matched and art_matched
 
@@ -111,42 +120,70 @@ def evaluate_query(
     ranked_candidates: List[Dict[str, Any]],
     sample: Dict[str, Any],
     k_thresholds: List[int],
+    match_level: str = "clause"
 ) -> Dict[str, Any]:
     """
     Tính toán các chỉ số Information Retrieval cho một truy vấn đơn lẻ.
-    Áp dụng Target Deduplication: mỗi mục tiêu chỉ được tính điểm 1 lần duy nhất,
-    đảm bảo DCG <= IDCG và NDCG luôn nằm nghiêm ngặt trong đoạn [0.0, 1.0].
+    Áp dụng Target Deduplication chuẩn mực quốc tế:
+    Mỗi ground truth target chỉ được tính điểm 1 lần duy nhất để bảo đảm DCG <= IDCG.
     """
+    gt_chunk_id = sample.get("ground_truth_chunk", "")
     gt_doc_num = sample.get("ground_truth_doc_number", "")
     gt_article = sample.get("ground_truth_article", "")
-    gt_chunk_id = sample.get("ground_truth_chunk", "")
     gt_docs = sample.get("ground_truth_docs", [])
 
-    target_pairs: List[Tuple[str, str]] = []
+    # Xây dựng danh sách mục tiêu chuẩn (target list)
+    target_targets: List[Dict[str, str]] = []
     if gt_docs and isinstance(gt_docs, list):
         for doc in gt_docs:
-            target_pairs.append((doc.get("doc_number", ""), doc.get("article", "")))
-    else:
-        target_pairs.append((gt_doc_num, gt_article))
+            target_targets.append({
+                "doc_number": doc.get("doc_number", ""),
+                "article": doc.get("article", ""),
+                "chunk_id": doc.get("chunk_id", "")
+            })
+    elif gt_chunk_id or gt_doc_num:
+        target_targets.append({
+            "doc_number": gt_doc_num,
+            "article": gt_article,
+            "chunk_id": gt_chunk_id
+        })
+
+    # Nếu câu hỏi không có ground-truth hợp lệ, trả về 0 toàn bộ để không inflate điểm
+    if not target_targets:
+        return {
+            **{f"Hit@{k}": 0.0 for k in k_thresholds},
+            **{f"MRR@{k}": 0.0 for k in k_thresholds},
+            **{f"NDCG@{k}": 0.0 for k in k_thresholds},
+            **{f"MAP@{k}": 0.0 for k in k_thresholds},
+            "Evidence_Coverage": 0.0,
+            "is_valid_query": False
+        }
 
     num_candidates = len(ranked_candidates)
     relevance_vector = [0] * num_candidates
     first_hit_rank: Optional[int] = None
-    matched_targets = set()
+    matched_targets: Set[int] = set()
 
     for idx, cand in enumerate(ranked_candidates):
         rank = idx + 1
-        for t_idx, (t_doc, t_art) in enumerate(target_pairs):
+        for t_idx, target in enumerate(target_targets):
+            # Target Deduplication: nếu target này đã được chunk xếp trước thỏa mãn, không tính trùng
             if t_idx in matched_targets:
                 continue
-            if is_ground_truth_match(cand, t_doc, t_art, gt_chunk_id=gt_chunk_id):
+            if is_ground_truth_match(
+                candidate=cand,
+                gt_doc_num=target["doc_number"],
+                gt_article=target["article"],
+                gt_chunk_id=target["chunk_id"],
+                match_level=match_level
+            ):
                 matched_targets.add(t_idx)
                 relevance_vector[idx] = 1
                 if first_hit_rank is None:
                     first_hit_rank = rank
                 break
 
-    query_metrics = {}
+    query_metrics: Dict[str, Any] = {"is_valid_query": True}
     for k in k_thresholds:
         sub_rel = relevance_vector[:k]
         query_metrics[f"Hit@{k}"] = 1.0 if any(sub_rel) else 0.0
@@ -157,7 +194,7 @@ def evaluate_query(
             query_metrics[f"MRR@{k}"] = 0.0
 
         dcg = sum(rel / math.log2(idx + 2) for idx, rel in enumerate(sub_rel))
-        num_relevant = min(len(target_pairs), k)
+        num_relevant = min(len(target_targets), k)
         idcg = sum(1.0 / math.log2(idx + 2) for idx in range(num_relevant))
         query_metrics[f"NDCG@{k}"] = min(1.0, (dcg / idcg)) if idcg > 0 else 0.0
 
@@ -169,7 +206,8 @@ def evaluate_query(
                 precisions.append(running_hits / (idx + 1))
         query_metrics[f"MAP@{k}"] = (sum(precisions) / num_relevant) if num_relevant > 0 and precisions else 0.0
 
-    query_metrics["Evidence_Coverage"] = len(matched_targets) / len(target_pairs) if target_pairs else 0.0
+    # Evidence Coverage: Số căn cứ duy nhất tìm được / tổng số căn cứ cần tìm
+    query_metrics["Evidence_Coverage"] = len(matched_targets) / len(target_targets)
     return query_metrics
 
 
@@ -250,12 +288,15 @@ def run_benchmark_evaluation(
 
             retrieved_docs = retrieve_by_mode(retriever, query, top_k=max_k, mode=mode)
             metrics = evaluate_query(retrieved_docs, sample, k_thresholds)
-            dataset_query_scores.append(metrics)
+            if metrics.get("is_valid_query", True):
+                dataset_query_scores.append(metrics)
 
         total_samples = len(dataset_query_scores)
         aggregated_metrics = {"Total_Samples": total_samples, "Evaluation_Mode": mode}
         if total_samples > 0:
             for metric_key in dataset_query_scores[0].keys():
+                if metric_key == "is_valid_query":
+                    continue
                 mean_val = sum(score[metric_key] for score in dataset_query_scores) / total_samples
                 aggregated_metrics[f"Mean_{metric_key}"] = round(mean_val, 4)
 

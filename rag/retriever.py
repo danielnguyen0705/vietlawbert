@@ -73,23 +73,15 @@ class LegalHybridRetriever:
         self.reranker = reranker_model
         self.alpha = alpha_graph if alpha_graph is not None else getattr(config, "GRAPH_ALPHA", 0.2)
 
-        # 4. Tự động nạp cache vector đồ thị 128d phục vụ Compile-time Topo Scoring
+        # 4. Tự động nạp cache vector đồ thị 128d phục vụ Compile-time Topo Scoring (Tối ưu hóa Vectorized Lazy Loading)
+        self._graph_emb_file = Path(ARTIFACTS_DIR) / "graph_embeddings_128d.parquet"
+        self._graph_cache_loaded = False
+
         if graph_embeddings_cache is not None:
             self.graph_cache = graph_embeddings_cache
+            self._graph_cache_loaded = True
         else:
             self.graph_cache = {}
-            graph_emb_file = Path(ARTIFACTS_DIR) / "graph_embeddings_128d.parquet"
-            if graph_emb_file.exists():
-                try:
-                    logger.info("Đang nạp cache vector đồ thị 128d từ %s...", graph_emb_file.name)
-                    df_emb = pd.read_parquet(graph_emb_file, columns=["chunk_id", "graph_embedding"])
-                    for _, row in df_emb.iterrows():
-                        v = np.array(row["graph_embedding"], dtype=np.float32)
-                        norm = np.linalg.norm(v)
-                        self.graph_cache[str(row["chunk_id"])] = v / (norm + 1e-9)
-                    logger.info("✓ Nạp thành công %d vector đồ thị vào cache truy xuất.", len(self.graph_cache))
-                except Exception as exc:
-                    logger.warning("Không thể nạp file vector đồ thị: %s", exc)
 
         logger.info(
             "LegalHybridRetriever sẵn sàng: Alpha=%.2f | VectorDim=%d | Qdrant=[%s] | ES=[%s]",
@@ -98,6 +90,29 @@ class LegalHybridRetriever:
             config.QDRANT_COLLECTION_NAME,
             config.ES_INDEX_NAME,
         )
+
+    def _ensure_graph_cache(self) -> None:
+        """Nạp lười (Lazy Load) cache vector đồ thị 128d theo cơ chế vector hóa tốc độ cao khi thực sự cần dùng."""
+        if self._graph_cache_loaded:
+            return
+
+        if self._graph_emb_file.exists():
+            try:
+                logger.info("Đang nạp cache vector đồ thị 128d từ %s (Vectorized Fast Load)...", self._graph_emb_file.name)
+                df_emb = pd.read_parquet(self._graph_emb_file, columns=["chunk_id", "graph_embedding"])
+                chunk_ids = df_emb["chunk_id"].astype(str).values
+                # Chuyển đổi mảng một lần thay vì duyệt từng dòng bằng iterrows()
+                raw_mat = np.array(df_emb["graph_embedding"].tolist(), dtype=np.float32)
+                norms = np.linalg.norm(raw_mat, axis=1, keepdims=True) + 1e-9
+                norm_mat = raw_mat / norms
+                self.graph_cache = dict(zip(chunk_ids, norm_mat))
+                self._graph_cache_loaded = True
+                logger.info("✓ Nạp thành công %d vector đồ thị vào cache truy xuất.", len(self.graph_cache))
+            except Exception as exc:
+                logger.warning("Không thể nạp file vector đồ thị: %s", exc)
+                self._graph_cache_loaded = True
+        else:
+            self._graph_cache_loaded = True
 
     def _search_dense(self, query: str, top_k: int = 50, must_be_effective: bool = True) -> List[Dict[str, Any]]:
         """Mã hóa câu hỏi, cắt lát MRL d=256 và chuẩn hóa L2 trước khi truy vấn Qdrant."""
@@ -199,6 +214,10 @@ class LegalHybridRetriever:
             ce_scores = self.reranker.predict(pairs)
         else:
             ce_scores = [c.get("rrf_score", 0.0) for c in candidates]
+
+        # Kích hoạt nạp cache đồ thị nếu alpha > 0 và chưa nạp vào bộ nhớ
+        if self.alpha > 0 and not self._graph_cache_loaded:
+            self._ensure_graph_cache()
 
         top_cid = str(candidates[0].get("chunk_id") or candidates[0].get("id") or "")
         anchor_g_vec = self.graph_cache.get(top_cid)

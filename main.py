@@ -25,7 +25,7 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
-from configs.paths import ROOT_DIR, RAW_SHARDS_DIR, MODELS_DIR, BENCHMARK_DIR
+from configs.paths import ROOT_DIR, RAW_SHARDS_DIR, MODELS_DIR, BENCHMARK_DIR, ARTIFACTS_DIR
 from configs.config import config
 from configs.logging_config import setup_hierarchical_logging, get_subsystem_logger
 
@@ -81,7 +81,7 @@ def run_subcommand(command: list[str], description: str, extra_env: dict[str, st
 
 
 def cmd_check_infrastructure() -> bool:
-    """Khởi động Docker Compose và kiểm tra tính sẵn sàng của cụm 5 CSDL lai."""
+    """Khởi động Docker Compose và kiểm tra tính sẵn sàng của cụm CSDL lai."""
     logger.info("Khởi động cụm CSDL phân tán qua Docker Compose...")
     if not run_subcommand(["docker", "compose", "up", "-d"], "Khởi động Docker Compose"):
         return False
@@ -177,10 +177,8 @@ def cmd_train(
     device: str = config.EMBED_DEVICE,
     max_seq_length: int = getattr(config, "MAX_SEQ_LENGTH", 256),
     model_name: str = config.BASE_MODEL_NAME,
+    freeze_layers: int = 0,
     output_dir: str | None = None,
-    push_to_hub: bool = False,
-    hub_model_id: str | None = None,
-    hf_token: str | None = None,
 ) -> bool:
     cpu_env = {}
     if device == "cpu":
@@ -190,13 +188,15 @@ def cmd_train(
             "CUDA_VISIBLE_DEVICES": "",
         }
 
-    triplet_ok = run_subcommand(
-        [sys.executable, "-u", "-m", "training.generate_hin_triplets", "--limit", "50000", "--beta", "0.6"],
-        "Khai phá bộ ba mẫu khó đối lập (HIN-Guided Triplet Mining)",
-        extra_env=cpu_env,
-    )
-    if not triplet_ok:
-        return False
+    triplet_file = ARTIFACTS_DIR / "triplets" / "hin_triplets.parquet"
+    if not triplet_file.exists():
+        triplet_ok = run_subcommand(
+            [sys.executable, "-u", "-m", "training.generate_hin_triplets", "--limit", "50000", "--beta", "0.5"],
+            "Khai phá bộ ba mẫu khó đối lập (HIN-Guided Triplet Mining)",
+            extra_env=cpu_env,
+        )
+        if not triplet_ok:
+            return False
 
     out_ckpt = output_dir or str(MODELS_DIR / "vietlawbert_mrl_final")
     train_cmd = [
@@ -206,22 +206,21 @@ def cmd_train(
         "training.train_mrl",
         "--model-name",
         str(model_name),
+        "--train-parquet",
+        str(triplet_file),
         "--output-dir",
         str(out_ckpt),
         "--epochs",
         str(epochs),
         "--batch-size",
         str(batch_size),
+        "--freeze-layers",
+        str(freeze_layers),
         "--device",
         device,
         "--max-seq-length",
         str(max_seq_length),
     ]
-
-    if push_to_hub and hub_model_id:
-        train_cmd.extend(["--push-to-hub", "--hub-model-id", str(hub_model_id)])
-        if hf_token:
-            train_cmd.extend(["--hf-token", str(hf_token)])
 
     return run_subcommand(
         train_cmd,
@@ -230,25 +229,78 @@ def cmd_train(
     )
 
 
-def cmd_benchmark() -> bool:
-    bench_ok = run_subcommand(
-        [sys.executable, "-u", "-m", "benchmark.build_vietlawbench", "--total-size", "1000", "--mode", "master"],
-        "Sinh tập kiểm chuẩn Ground-Truth VietLawBench (1.000 mẫu chuẩn mực)",
-    )
-    if not bench_ok:
-        return False
+def cmd_benchmark(checkpoint_path: str | None = None, device: str = config.EMBED_DEVICE) -> bool:
+    bench_dir = ARTIFACTS_DIR / "benchmark"
+    bench_file = bench_dir / "vietlawbench_1000.jsonl"
+    
+    if not bench_file.exists():
+        bench_ok = run_subcommand(
+            [sys.executable, "-u", "-m", "benchmark.build_vietlawbench", "--total-size", "1000"],
+            "Sinh tập kiểm chuẩn Ground-Truth VietLawBench (1.000 mẫu chuẩn mực)",
+        )
+        if not bench_ok:
+            return False
 
-    rq_ok = run_subcommand(
-        [sys.executable, "-u", "-m", "benchmark.evaluate_rqs", "--rq", "all"],
-        "Đo lường toàn diện các chỉ số khoa học RQ1-RQ4",
+    model_ckpt = checkpoint_path or str(MODELS_DIR / "vietlawbert_mrl_final")
+    results_dir = ROOT_DIR / "benchmark" / "results"
+
+    comp_ok = run_subcommand(
+        [
+            sys.executable,
+            "-u",
+            "-m",
+            "benchmark.baseline_comparator",
+            "--benchmark-dir",
+            str(bench_dir),
+            "--output-dir",
+            str(results_dir),
+            "--device",
+            device,
+        ],
+        "Thực nghiệm đối chứng trực diện Baseline Matrix vs VietLawBERT",
     )
-    if not rq_ok:
+    if not comp_ok:
         return False
 
     return run_subcommand(
-        [sys.executable, "-u", "-m", "benchmark.baseline_comparator"],
-        "Thực nghiệm đối chứng trực diện 13 Mô hình Baseline vs VietLawBERT",
+        [
+            sys.executable,
+            "-u",
+            "-m",
+            "benchmark.evaluate_rqs",
+            "--benchmark-dir",
+            str(bench_dir),
+            "--checkpoint-path",
+            model_ckpt,
+            "--output-dir",
+            str(results_dir),
+            "--device",
+            device,
+            "--rq",
+            "all",
+        ],
+        "Đo lường toàn diện 4 câu hỏi nghiên cứu RQ1-RQ4",
     )
+
+
+def cmd_post_ingest_all(device: str = config.EMBED_DEVICE, epochs: int = 3) -> bool:
+    """Thực thi toàn bộ chu trình từ sau khi bóc tách AST & nạp vector tới hết đánh giá."""
+    logger.info("=== BẮT ĐẦU CHU TRÌNH TỰ ĐỘNG POST-INGESTION (PHA 3 -> PHA 5) ===")
+    
+    steps = [
+        ("Xây dựng Đồ thị HIN & Node2Vec (Pha 3)", lambda: cmd_graph()),
+        ("Huấn luyện VietLawBERT-MRL (Pha 4)", lambda: cmd_train(epochs=epochs, device=device)),
+        ("Đánh giá thực nghiệm khoa học toàn diện (Pha 5)", lambda: cmd_benchmark(device=device)),
+    ]
+
+    for name, func in steps:
+        logger.info(">>> THỰC THI GIAI ĐOẠN: %s", name)
+        if not func():
+            logger.error("✗ Dừng quy trình do giai đoạn '%s' gặp lỗi.", name)
+            return False
+
+    logger.info("✓ Toàn bộ chu trình từ sau bóc tách đến đánh giá đã hoàn tất mỹ mãn!")
+    return True
 
 
 def cmd_run_all(
@@ -257,20 +309,19 @@ def cmd_run_all(
     epochs: int = 3,
     max_seq_length: int = 256,
 ) -> bool:
-    logger.info("=== BẮT ĐẦU CHU TRÌNH TỰ ĐỘNG TOÀN TRÌNH VIETLAWBERT ===")
+    logger.info("=== BẮT ĐẦU CHU TRÌNH TỰ ĐỘNG TOÀN TRÌNH VIETLAWBERT (TỪ ĐẦU ĐẾN CUỐI) ===")
 
     steps = [
         ("Kiểm tra hạ tầng CSDL", lambda: cmd_check_infrastructure()),
         ("Nạp dữ liệu Ingestion (Pha 2)", lambda: cmd_ingest(batch_size=batch_size, device=device)),
         ("Xây dựng Đồ thị HIN (Pha 3)", lambda: cmd_graph()),
         ("Huấn luyện VietLawBERT-MRL (Pha 4)", lambda: cmd_train(epochs=epochs, batch_size=batch_size, device=device, max_seq_length=max_seq_length)),
-        ("Đánh giá thực nghiệm khoa học (Pha 5)", lambda: cmd_benchmark()),
+        ("Đánh giá thực nghiệm khoa học (Pha 5)", lambda: cmd_benchmark(device=device)),
     ]
 
     for name, func in steps:
         logger.info(">>> THỰC THI GIAI ĐOẠN: %s", name)
-        success = func()
-        if not success:
+        if not func():
             logger.error("✗ Dừng quy trình tự động do giai đoạn '%s' thất bại.", name)
             return False
 
@@ -288,9 +339,9 @@ def cmd_ask(query: str, top_k: int = 3) -> None:
     print(f"CÂU HỎI: {query}")
     print("=" * 60)
     print("TRẢ LỜI:")
-    print(result["answer"])
+    print(result.get("answer", "Không có câu trả lời."))
     print("-" * 60)
-    print(f"Model Used: {result.get('model_used')} | Attribution Score (RQ4): {result.get('attribution_score')}")
+    print(f"Model Used: {result.get('model_used')} | Attribution Score: {result.get('attribution_score')}")
     print("\nCĂN CỨ TRÍCH DẪN:")
     for i, ctx in enumerate(result.get("contexts", []), 1):
         print(f"[{i}] {ctx.get('hierarchy_path')} - Văn bản: {ctx.get('doc_number')}")
@@ -306,15 +357,16 @@ def interactive_menu():
         print(" 1. Kiểm tra hạ tầng & CSDL (Docker + Health Check)")
         print(" 2. Cào dữ liệu phân đoạn (Shard Runner - Pha 1)")
         print(" 3. Bóc tách AST & Nạp Vector/Sparse (Ingest - Pha 2)")
-        print(" 4. Xây dựng Đồ thị HIN & Cache Vector 128d (Pha 3)")
+        print(" 4. Xây dựng Đồ thị HIN & Node2Vec 128d (Pha 3)")
         print(" 5. Khai phá mẫu khó & Huấn luyện VietLawBERT-MRL (Pha 4)")
-        print(" 6. Đánh giá thực nghiệm khoa học (RQ1-RQ4 & Baseline)")
-        print(" 7. Chạy TỰ ĐỘNG TOÀN TRÌNH liên hoàn (Pha 1 -> Pha 5)")
-        print(" 8. Đặt câu hỏi thử nghiệm hệ thống RAG")
+        print(" 6. Đánh giá thực nghiệm khoa học (Master Benchmark & RQ1-RQ4)")
+        print(" 7. Chạy TỰ ĐỘNG TỪ SAU BÓC TÁCH AST ĐẾN HẾT (Pha 3 -> Pha 5)")
+        print(" 8. Chạy TOÀN TRÌNH từ đầu đến cuối (Pha 1 -> Pha 5)")
+        print(" 9. Đặt câu hỏi thử nghiệm hệ thống hỏi đáp RAG")
         print(" 0. Thoát")
         print("=" * 60)
 
-        choice = input("Chọn chức năng (0-8): ").strip()
+        choice = input("Chọn chức năng (0-9): ").strip()
         if choice == "1":
             cmd_check_infrastructure()
         elif choice == "2":
@@ -328,8 +380,10 @@ def interactive_menu():
         elif choice == "6":
             cmd_benchmark()
         elif choice == "7":
-            cmd_run_all()
+            cmd_post_ingest_all()
         elif choice == "8":
+            cmd_run_all()
+        elif choice == "9":
             q = input("Nhập câu hỏi pháp lý: ").strip()
             if q:
                 cmd_ask(q)
@@ -344,7 +398,7 @@ def main():
     parser = argparse.ArgumentParser(description="VietLawBERT Master Pipeline Gateway")
     parser.add_argument(
         "--phase",
-        choices=["check", "crawl", "ingest", "graph", "train", "benchmark", "all"],
+        choices=["check", "crawl", "ingest", "graph", "train", "benchmark", "post-ingest", "all"],
         help="Thực thi phân đoạn quy trình tương ứng",
     )
     parser.add_argument("--ask", type=str, help="Kiểm thử truy vấn hỏi đáp RAG trực tiếp")
@@ -352,12 +406,11 @@ def main():
     parser.add_argument("--device", default=config.EMBED_DEVICE, choices=["cpu", "cuda"], help="Thiết bị tính toán")
     parser.add_argument("--batch-size", type=int, default=config.EMBED_BATCH_SIZE, help="Kích thước lô tính toán")
     parser.add_argument("--epochs", type=int, default=3, help="Số epoch huấn luyện mô hình MRL")
+    parser.add_argument("--freeze-layers", type=int, default=0, help="Số tầng đóng băng (0 = mở toàn bộ)")
     parser.add_argument("--max-seq-length", type=int, default=getattr(config, "MAX_SEQ_LENGTH", 256), help="Chiều dài tối đa token")
     parser.add_argument("--model-name", type=str, default=config.BASE_MODEL_NAME, help="Backbone model name")
+    parser.add_argument("--checkpoint-path", type=str, default=None, help="Đường dẫn checkpoint để đánh giá")
     parser.add_argument("--total-docs", type=int, default=160660, help="Tổng số văn bản cào")
-    parser.add_argument("--push-to-hub", action="store_true", help="Tự động đồng bộ weights lên Hugging Face Hub")
-    parser.add_argument("--hub-model-id", type=str, default=os.getenv("HF_REPO_ID"), help="Tên repo trên HF")
-    parser.add_argument("--hf-token", type=str, default=os.getenv("HF_TOKEN"), help="Access token ghi của HF")
     args = parser.parse_args()
 
     if args.ask:
@@ -379,12 +432,12 @@ def main():
             device=args.device,
             max_seq_length=args.max_seq_length,
             model_name=args.model_name,
-            push_to_hub=args.push_to_hub,
-            hub_model_id=args.hub_model_id,
-            hf_token=args.hf_token,
+            freeze_layers=args.freeze_layers,
         )
     elif args.phase == "benchmark":
-        cmd_benchmark()
+        cmd_benchmark(checkpoint_path=args.checkpoint_path, device=args.device)
+    elif args.phase == "post-ingest":
+        cmd_post_ingest_all(device=args.device, epochs=args.epochs)
     elif args.phase == "all":
         cmd_run_all(
             batch_size=args.batch_size,

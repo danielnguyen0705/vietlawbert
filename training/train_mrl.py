@@ -1,10 +1,7 @@
 """
-train_mrl.py - Động cơ huấn luyện VietLawBERT với Hierarchy-Aware Matryoshka InfoNCE Loss.
-Hỗ trợ đầy đủ 13 backbones:
-- Pure Encoders (768d & 1024d): BERT, PhoBERT (base/large), XLM-RoBERTa, viELECTRA,
-  viDeBERTa, BGE-M3, Multilingual-E5 (base/large), BKAI Bi-Encoder, VNLawBERT.
-- Seq2Seq Encoders: BARTpho, ViT5 (tự động bóc tách tầng Encoder).
-Tối ưu hóa GPU tương thích PyTorch 2.x SDPA tự nhiên, loại bỏ xung đột Flash Attention 2.
+training/train_mrl.py - Động cơ huấn luyện VietLawBERT với Hierarchy-Aware Matryoshka InfoNCE Loss.
+Hỗ trợ đầy đủ các mô hình Encoders & Seq2Seq.
+Tích hợp Validation Loop định kỳ và lưu trữ Checkpoint tối ưu nhất (Best Checkpoint Selection).
 """
 
 from __future__ import annotations
@@ -23,7 +20,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, random_split
 from transformers import (
     AutoConfig,
     AutoModel,
@@ -31,11 +28,6 @@ from transformers import (
     AutoTokenizer,
     get_cosine_schedule_with_warmup
 )
-
-try:
-    torch.set_num_threads(2)
-except Exception:
-    pass
 
 from configs.config import config
 from configs.paths import MODELS_DIR, ARTIFACTS_DIR
@@ -81,24 +73,28 @@ class HierarchyAwareMatryoshkaLoss(nn.Module):
             logits = torch.matmul(sub_anchor, sub_candidates.T) / self.tau
             total_loss = total_loss + weight * F.cross_entropy(logits, labels)
 
+        # Tính Supervised Contrastive Loss chỉ khi có nhãn phân cấp hợp lệ (> -1)
         if hierarchy_labels is not None and self.gamma > 0 and anchor_rep.size(-1) >= 64:
-            sub_macro = F.normalize(anchor_rep[:, :64], p=2, dim=-1)
-            sim_macro = torch.matmul(sub_macro, sub_macro.T) / self.tau
+            valid_mask = hierarchy_labels >= 0
+            if valid_mask.sum() > 1:
+                sub_macro = F.normalize(anchor_rep[valid_mask, :64], p=2, dim=-1)
+                valid_lbls = hierarchy_labels[valid_mask]
+                sim_macro = torch.matmul(sub_macro, sub_macro.T) / self.tau
 
-            label_mask = torch.eq(hierarchy_labels.unsqueeze(1), hierarchy_labels.unsqueeze(0)).float()
-            diag_mask = torch.eye(B, device=anchor_rep.device)
-            pos_mask = label_mask * (1.0 - diag_mask)
+                label_mask = torch.eq(valid_lbls.unsqueeze(1), valid_lbls.unsqueeze(0)).float()
+                diag_mask = torch.eye(sub_macro.size(0), device=anchor_rep.device)
+                pos_mask = label_mask * (1.0 - diag_mask)
 
-            max_sim, _ = torch.max(sim_macro, dim=1, keepdim=True)
-            exp_sim = torch.exp(sim_macro - max_sim.detach()) * (1.0 - diag_mask)
-            denom = exp_sim.sum(dim=1, keepdim=True) + 1e-9
-            log_prob = (sim_macro - max_sim.detach()) - torch.log(denom)
+                max_sim, _ = torch.max(sim_macro, dim=1, keepdim=True)
+                exp_sim = torch.exp(sim_macro - max_sim.detach()) * (1.0 - diag_mask)
+                denom = exp_sim.sum(dim=1, keepdim=True) + 1e-9
+                log_prob = (sim_macro - max_sim.detach()) - torch.log(denom)
 
-            num_pos = pos_mask.sum(dim=1)
-            valid = num_pos > 0
-            if valid.any():
-                sup_con = -(pos_mask * log_prob).sum(dim=1)[valid] / num_pos[valid]
-                total_loss = total_loss + self.gamma * sup_con.mean()
+                num_pos = pos_mask.sum(dim=1)
+                valid_pos = num_pos > 0
+                if valid_pos.any():
+                    sup_con = -(pos_mask * log_prob).sum(dim=1)[valid_pos] / num_pos[valid_pos]
+                    total_loss = total_loss + self.gamma * sup_con.mean()
 
         return total_loss
 
@@ -113,8 +109,6 @@ class VietLawBERTMRL(nn.Module):
         is_cuda: bool = False,
     ):
         super().__init__()
-        logger.info("Khởi tạo backbone: %s (Device CUDA: %s, Precision: %s)", base_model_name, is_cuda, precision)
-        
         model_kwargs = {}
         if is_cuda:
             model_kwargs["torch_dtype"] = torch.bfloat16 if (precision == "bf16" and torch.cuda.is_bf16_supported()) else (torch.float16 if precision == "fp16" else torch.float32)
@@ -122,9 +116,7 @@ class VietLawBERTMRL(nn.Module):
         self.model_config = AutoConfig.from_pretrained(base_model_name, trust_remote_code=True)
         self.is_seq2seq = getattr(self.model_config, "is_encoder_decoder", False)
 
-        # Nạp mô hình có cơ chế fallback an toàn: thử SDPA trước, nếu không hỗ trợ thì lùi về mặc định
         if self.is_seq2seq:
-            logger.info("-> Bóc tách khối Encoder từ Seq2Seq LM (%s)...", base_model_name)
             try:
                 full_model = AutoModelForSeq2SeqLM.from_pretrained(base_model_name, config=self.model_config, attn_implementation="sdpa", **model_kwargs)
             except Exception:
@@ -144,11 +136,15 @@ class VietLawBERTMRL(nn.Module):
             except Exception:
                 pass
 
+        # Đóng băng an toàn có kiểm tra số tầng thực tế
         if freeze_bottom_layers > 0 and hasattr(self.encoder, "encoder") and hasattr(self.encoder.encoder, "layer"):
+            num_available_layers = len(self.encoder.encoder.layer)
+            freeze_n = min(freeze_bottom_layers, max(0, num_available_layers - 2))
+            logger.info("Đóng băng %d/%d tầng đầu của backbone...", freeze_n, num_available_layers)
             if hasattr(self.encoder, "embeddings"):
                 for p in self.encoder.embeddings.parameters():
                     p.requires_grad = False
-            for layer in self.encoder.encoder.layer[:freeze_bottom_layers]:
+            for layer in self.encoder.encoder.layer[:freeze_n]:
                 for p in layer.parameters():
                     p.requires_grad = False
 
@@ -177,12 +173,9 @@ class TripletParquetDataset(Dataset):
         if df.empty:
             raise ValueError(f"File Parquet rỗng: {path}")
 
-        col_a = "anchor" if "anchor" in df.columns else ("query" if "query" in df.columns else None)
-        col_p = "positive" if "positive" in df.columns else None
-        col_n = "negative" if "negative" in df.columns else ("hard_negative" if "hard_negative" in df.columns else None)
-
-        if not col_a or not col_p or not col_n:
-            raise KeyError(f"Cần các cột anchor, positive, negative. Tìm thấy: {list(df.columns)}")
+        col_a = "anchor" if "anchor" in df.columns else "query"
+        col_p = "positive"
+        col_n = "negative" if "negative" in df.columns else "hard_negative"
 
         if max_samples is not None:
             df = df.iloc[:max_samples]
@@ -190,7 +183,13 @@ class TripletParquetDataset(Dataset):
         self.anchors = df[col_a].astype(str).tolist()
         self.positives = df[col_p].astype(str).tolist()
         self.negatives = df[col_n].astype(str).tolist()
-        self.labels = df["hierarchy_label"].astype("category").cat.codes.tolist() if "hierarchy_label" in df.columns else [0] * len(self.anchors)
+
+        if "hierarchy_label" in df.columns:
+            categories = df["hierarchy_label"].astype("category")
+            self.labels = categories.cat.codes.tolist()
+        else:
+            self.labels = [-1] * len(self.anchors)
+
         self.max_length = max_length
 
     def __len__(self):
@@ -241,33 +240,36 @@ def train(args):
     is_cpu = device.type == "cpu"
     logger.info("Bắt đầu huấn luyện mô hình [%s] trên: %s", args.model_name, device)
 
-    max_len = min(args.max_seq_length, 256) if is_cpu else args.max_seq_length
-    micro_batch = min(args.batch_size, 2) if is_cpu else args.batch_size
+    max_len = args.max_seq_length
+    micro_batch = args.batch_size
     accum_steps = max(1, args.gradient_accumulation_steps)
-    freeze_layers = args.freeze_layers if args.freeze_layers is not None else (18 if is_cpu else 0)
+    freeze_layers = args.freeze_layers if args.freeze_layers is not None else 0
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name, trust_remote_code=True)
     model = VietLawBERTMRL(
         base_model_name=args.model_name,
         freeze_bottom_layers=freeze_layers,
-        enable_checkpointing=True if is_cpu else False,
+        enable_checkpointing=True if not is_cpu else False,
         precision=args.precision,
         is_cuda=not is_cpu,
     ).to(device)
 
-    if args.matryoshka_dims:
-        dims = [d for d in args.matryoshka_dims if d <= model.hidden_size]
-    else:
-        dims = [64, 128, 256, 512, 768] if model.hidden_size == 768 else [64, 128, 256, 512, 768, 1024]
+    dims = args.matryoshka_dims or ([64, 128, 256, 512, 768] if model.hidden_size == 768 else [64, 128, 256, 512, 768, 1024])
+    full_dataset = TripletParquetDataset(args.train_parquet, max_length=max_len, max_samples=args.max_samples)
 
-    dataset = TripletParquetDataset(args.train_parquet, max_length=max_len, max_samples=args.max_samples)
-    dataloader = DataLoader(
-        dataset,
-        batch_size=micro_batch,
-        shuffle=True,
-        drop_last=True,
+    # Chia Train (90%) và Validation (10%)
+    val_size = max(10, int(len(full_dataset) * 0.1))
+    train_size = len(full_dataset) - val_size
+    train_set, val_set = random_split(full_dataset, [train_size, val_size], generator=torch.Generator().manual_seed(42))
+
+    train_loader = DataLoader(
+        train_set, batch_size=micro_batch, shuffle=True, drop_last=True,
         num_workers=args.num_workers if not is_cpu else 0,
-        pin_memory=True if not is_cpu else False,
+        collate_fn=lambda b: collate_fn_triplets(b, tokenizer, max_len),
+    )
+    val_loader = DataLoader(
+        val_set, batch_size=micro_batch, shuffle=False, drop_last=False,
+        num_workers=0,
         collate_fn=lambda b: collate_fn_triplets(b, tokenizer, max_len),
     )
 
@@ -275,23 +277,24 @@ def train(args):
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=0.01)
 
-    steps_per_epoch = len(dataloader) // accum_steps
+    steps_per_epoch = len(train_loader) // accum_steps
     total_steps = args.max_steps if args.max_steps is not None else (steps_per_epoch * args.epochs)
     scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=max(10, int(total_steps * 0.1)), num_training_steps=total_steps)
 
     amp_dtype = torch.bfloat16 if (args.precision == "bf16" and torch.cuda.is_bf16_supported()) else (torch.float16 if args.precision == "fp16" else torch.float32)
     use_amp = (not is_cpu) and (args.precision in ["bf16", "fp16"])
 
-    model.train()
-    optimizer.zero_grad()
-    global_step = 0
     out_dir = Path(args.output_dir)
+    best_dir = out_dir / "best_model"
+    best_val_loss = float("inf")
 
+    global_step = 0
     for epoch in range(args.epochs):
+        model.train()
         epoch_loss = 0.0
-        step_in_epoch = 0
+        optimizer.zero_grad()
 
-        for step, (a_tok, p_tok, n_tok, labels) in enumerate(dataloader):
+        for step, (a_tok, p_tok, n_tok, labels) in enumerate(train_loader):
             a_tok = {k: v.to(device) for k, v in a_tok.items()}
             p_tok = {k: v.to(device) for k, v in p_tok.items()}
             n_tok = {k: v.to(device) for k, v in n_tok.items()}
@@ -307,38 +310,50 @@ def train(args):
             loss.backward()
             epoch_loss += loss.item() * accum_steps
 
-            if (step + 1) % accum_steps == 0 or (step + 1) == len(dataloader):
+            if (step + 1) % accum_steps == 0 or (step + 1) == len(train_loader):
                 torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
-
-                step_in_epoch += 1
                 global_step += 1
 
                 if global_step % args.logging_steps == 0:
-                    logger.info("Epoch [%d/%d] | Step [%d/%d] | Loss: %.4f", epoch + 1, args.epochs, global_step, total_steps, loss.item() * accum_steps)
+                    logger.info("Epoch [%d/%d] | Step [%d/%d] | Train Loss: %.4f", epoch + 1, args.epochs, global_step, total_steps, loss.item() * accum_steps)
 
-                if args.max_steps is not None and global_step >= args.max_steps:
-                    break
+        # Đánh giá Validation định kỳ sau mỗi epoch
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for a_tok, p_tok, n_tok, labels in val_loader:
+                a_tok = {k: v.to(device) for k, v in a_tok.items()}
+                p_tok = {k: v.to(device) for k, v in p_tok.items()}
+                n_tok = {k: v.to(device) for k, v in n_tok.items()}
+                labels = labels.to(device)
+                v_l = criterion(model(**a_tok), model(**p_tok), model(**n_tok), hierarchy_labels=labels)
+                val_loss += v_l.item()
 
-        logger.info("=== Epoch %d Hoàn thành | Avg Loss: %.4f ===", epoch + 1, epoch_loss / max(step_in_epoch * accum_steps, 1))
-        if args.max_steps is not None and global_step >= args.max_steps:
-            break
+        avg_val_loss = val_loss / max(1, len(val_loader))
+        logger.info("=== Epoch %d: Train Loss: %.4f | Val Loss: %.4f ===", epoch + 1, epoch_loss / len(train_loader), avg_val_loss)
 
-    save_checkpoint(model, tokenizer, out_dir)
-    logger.info("✓ Hoàn tất huấn luyện. Trọng số đã lưu tại: %s", out_dir.resolve())
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            logger.info("★ Tìm thấy Checkpoint tối ưu mới (Val Loss: %.4f). Đang lưu vào: %s", best_val_loss, best_dir)
+            save_checkpoint(model, tokenizer, best_dir)
+
+    # Lưu checkpoint cuối cùng
+    save_checkpoint(model, tokenizer, out_dir / "final_model")
+    logger.info("✓ Hoàn tất huấn luyện toàn diện!")
 
 
 def main():
     parser = argparse.ArgumentParser(description="VietLawBERT Multi-Backbone MRL Trainer")
-    parser.add_argument("--model-name", default=config.BASE_MODEL_NAME, help="Tên hoặc đường dẫn backbone HuggingFace")
+    parser.add_argument("--model-name", default=config.BASE_MODEL_NAME)
     parser.add_argument("--train-parquet", default=str(ARTIFACTS_DIR / "triplets" / "hin_triplets.parquet"))
-    parser.add_argument("--output-dir", default=str(MODELS_DIR / "vietlawbert_mrl_final"), help="Thư mục lưu checkpoint")
+    parser.add_argument("--output-dir", default=str(MODELS_DIR / "vietlawbert_mrl_run"))
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=2)
-    parser.add_argument("--freeze-layers", type=int, default=None)
+    parser.add_argument("--freeze-layers", type=int, default=0)
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--max-seq-length", type=int, default=256)
     parser.add_argument("--matryoshka-dims", nargs="+", type=int, default=None)
@@ -350,8 +365,8 @@ def main():
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--logging-steps", type=int, default=25)
     parser.add_argument("--num-workers", type=int, default=2)
-
     args = parser.parse_args()
+
     train(args)
 
 

@@ -12,6 +12,7 @@ import logging
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 
+import httpx
 from openai import OpenAI
 
 from configs.config import config
@@ -44,7 +45,7 @@ class LLMProviderNode:
     model_id: str
     api_base: str
     api_key: str
-    timeout: float = 30.0
+    timeout: float = 20.0
 
 
 class ResilientLLMDispatcher:
@@ -58,6 +59,7 @@ class ResilientLLMDispatcher:
         chain = []
 
         # Tầng 1: Primary Cloud SOTA (Claude 3.5 Sonnet qua OpenRouter / Cloud API)
+        # Thiết lập timeout 15.0s: nếu proxy mạng treo quá 15s lập tức failover sang tầng kế tiếp
         cloud_key = os.getenv("PRIMARY_LLM_API_KEY") or getattr(config, "PRIMARY_LLM_API_KEY", "")
         cloud_base = os.getenv("PRIMARY_LLM_API_BASE") or getattr(config, "PRIMARY_LLM_API_BASE", "https://openrouter.ai/api/v1")
         primary_model = os.getenv("PRIMARY_LLM_MODEL") or getattr(config, "PRIMARY_LLM_MODEL", "claude-3.5-sonnet")
@@ -68,10 +70,11 @@ class ResilientLLMDispatcher:
                 model_id=primary_model,
                 api_base=cloud_base,
                 api_key=cloud_key,
-                timeout=45.0,
+                timeout=15.0,
             ))
 
         # Tầng 2: Secondary Cloud Fast (Gemini Flash / Proxy)
+        # Tốc độ phản hồi cực nhanh (~5s - 8s), đóng vai trò cứu cánh tức thời khi SOTA nghẽn
         fallback_key = os.getenv("FALLBACK_LLM_API_KEY") or getattr(config, "FALLBACK_LLM_API_KEY", "")
         fallback_base = os.getenv("FALLBACK_LLM_API_BASE") or getattr(config, "FALLBACK_LLM_API_BASE", "https://generativelanguage.googleapis.com/v1beta/openai/")
         fallback_model = os.getenv("FALLBACK_LLM_MODEL") or getattr(config, "FALLBACK_LLM_MODEL", "gemini-3.8-flash")
@@ -82,7 +85,7 @@ class ResilientLLMDispatcher:
                 model_id=fallback_model,
                 api_base=fallback_base,
                 api_key=fallback_key,
-                timeout=25.0,
+                timeout=20.0,
             ))
 
         # Tầng 3: Local Safety Net (vLLM / Ollama trên máy trạm - Luôn sẵn sàng)
@@ -95,18 +98,20 @@ class ResilientLLMDispatcher:
             model_id=local_model,
             api_base=local_base,
             api_key=local_key,
-            timeout=60.0,
+            timeout=30.0,
         ))
 
         return chain
 
     def _get_client(self, node: LLMProviderNode) -> OpenAI:
         if node.name not in self._clients:
+            # Sử dụng httpx.Timeout chặt chẽ: connect tối đa 5s, total tối đa node.timeout
+            # Khóa max_retries=0 để lập tức chuyển tiếp (failover) sang node kế tiếp trong chuỗi Cascade khi lỗi
             self._clients[node.name] = OpenAI(
                 base_url=node.api_base,
                 api_key=node.api_key,
-                timeout=node.timeout,
-                max_retries=1,
+                timeout=httpx.Timeout(node.timeout, connect=5.0),
+                max_retries=0,
             )
         return self._clients[node.name]
 
@@ -151,9 +156,14 @@ class LegalGenerator:
         self.max_tokens = max_tokens
         logger.info("LegalGenerator khởi tạo thành công với chuỗi điều phối %d tầng.", len(self.dispatcher.cascade_chain))
 
-    def _format_context(self, contexts: List[Dict[str, Any]]) -> str:
+    def _format_context(self, contexts: List[Any]) -> str:
         context_blocks = []
         for i, c in enumerate(contexts, start=1):
+            if isinstance(c, str):
+                # Hỗ trợ trường hợp contexts đã được định dạng sẵn chuỗi từ provider
+                context_blocks.append(f"TÀI LIỆU [{i}]:\n{c}")
+                continue
+
             doc_num = c.get("doc_number") or c.get("doc_id") or "N/A"
             eff_date = c.get("effective_date", "Chưa xác định")
             h_path = c.get("hierarchy_path") or c.get("article") or "Điều khoản liên quan"
@@ -170,33 +180,47 @@ class LegalGenerator:
 
         return "\n\n".join(context_blocks)
 
-    def _compute_attribution_score(self, answer: str, contexts: List[Dict[str, Any]]) -> float:
+    def _compute_attribution_score(self, answer: str, contexts: List[Any]) -> float:
         """Đo lường định lượng tỷ lệ căn cứ xuất hiện trong câu trả lời phục vụ RQ4 (Faithfulness)."""
         if not contexts:
             return 0.0
         matched = 0
         ans_lower = answer.lower()
         for c in contexts:
-            doc_num = str(c.get("doc_number", "")).strip().lower()
-            h_path = str(c.get("hierarchy_path", "")).strip().lower()
+            if isinstance(c, str):
+                doc_matches = re.findall(r"\d+/\d+/[A-ZĐCPTtgHĐND-]+", c, re.IGNORECASE)
+                art_match = re.search(r"điều\s+(\d+[a-za-z]?)", c, re.IGNORECASE)
+                has_doc = any(dm.lower() in ans_lower for dm in doc_matches)
+                has_art = bool(art_match and art_match.group(0).lower() in ans_lower)
+            else:
+                doc_num = str(c.get("doc_number", "")).strip().lower()
+                h_path = str(c.get("hierarchy_path", "")).strip().lower()
 
-            art_match = re.search(r"điều\s+(\d+[a-za-z]?)", h_path)
-            art_str = art_match.group(0) if art_match else ""
+                art_match = re.search(r"điều\s+(\d+[a-za-z]?)", h_path)
+                art_str = art_match.group(0) if art_match else ""
 
-            has_doc = bool(doc_num and doc_num != "n/a" and doc_num in ans_lower)
-            has_art = bool(art_str and art_str in ans_lower)
+                has_doc = bool(doc_num and doc_num != "n/a" and doc_num in ans_lower)
+                has_art = bool(art_str and art_str in ans_lower)
 
             if has_doc or has_art:
                 matched += 1
 
         return round(matched / len(contexts), 4)
 
-    def ask(self, query: str, top_k: int = 3) -> Dict[str, Any]:
+    def ask(self, query: str, top_k: int = 3, contexts: Optional[List[Any]] = None) -> Dict[str, Any]:
+        """
+        Thực hiện sinh câu trả lời pháp lý dựa trên căn cứ.
+        Nếu contexts đã được truyền vào từ bên ngoài (ví dụ generation_provider), tái sử dụng trực tiếp để tránh truy xuất 2 lần.
+        """
         clean_query = query.strip()
         logger.info("Đang xử lý câu hỏi: '%s...'", clean_query[:80])
 
-        contexts = self.retriever.retrieve(clean_query, top_k=top_k)
-        if not contexts:
+        if contexts is None:
+            retrieved_contexts = self.retriever.retrieve(clean_query, top_k=top_k)
+        else:
+            retrieved_contexts = contexts
+
+        if not retrieved_contexts:
             fallback_msg = "Cơ sở dữ liệu hiện tại không đủ căn cứ pháp lý để giải đáp thắc mắc này."
             return {
                 "query": clean_query,
@@ -207,26 +231,26 @@ class LegalGenerator:
                 "model_used": "None",
             }
 
-        context_str = self._format_context(contexts)
+        context_str = self._format_context(retrieved_contexts)
         prompt = LEGAL_PROMPT_TEMPLATE.format(context_blocks=context_str, query=clean_query)
         answer, provider_used = self.dispatcher.generate(
             prompt=prompt,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
         )
-        attr_score = self._compute_attribution_score(answer, contexts)
+        attr_score = self._compute_attribution_score(answer, retrieved_contexts)
 
         return {
             "query": clean_query,
             "answer": answer,
-            "contexts": contexts,
+            "contexts": retrieved_contexts,
             "has_context": True,
             "attribution_score": attr_score,
             "model_used": provider_used,
         }
 
-    def generate_response(self, query: str, top_k: int = 3) -> Dict[str, Any]:
-        return self.ask(query=query, top_k=top_k)
+    def generate_response(self, query: str, top_k: int = 3, contexts: Optional[List[Any]] = None) -> Dict[str, Any]:
+        return self.ask(query=query, top_k=top_k, contexts=contexts)
 
     def close(self) -> None:
         if hasattr(self.retriever, "close"):
@@ -259,7 +283,10 @@ def main():
 
     print("\n--- CĂN CỨ TRUY XUẤT (TOP CONTEXTS) ---")
     for idx, ctx in enumerate(result["contexts"], start=1):
-        print(f"[{idx}] {ctx.get('hierarchy_path')} | {ctx.get('doc_number')} (Score: {ctx.get('final_rerank_score')})")
+        if isinstance(ctx, dict):
+            print(f"[{idx}] {ctx.get('hierarchy_path')} | {ctx.get('doc_number')} (Score: {ctx.get('final_rerank_score')})")
+        else:
+            print(f"[{idx}] {str(ctx)[:120]}...")
 
     generator.close()
 

@@ -41,7 +41,7 @@ class QdrantClientWrapper:
         self.default_collection = getattr(config, "QDRANT_COLLECTION_NAME", "vietlawbert_chunks")
         self.vector_dim = getattr(config, "QDRANT_VECTOR_DIM", 256)
 
-        client_kwargs = {"timeout": 120.0, "check_compatibility": False}
+        client_kwargs = {"timeout": 120.0}
         if url:
             self.client = QdrantClient(url=url, **client_kwargs)
         else:
