@@ -23,11 +23,16 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
     depends_on:
-      - db
-      - qdrant
-      - elasticsearch
-      - neo4j
-      - redis
+      db:
+        condition: service_started
+      qdrant:
+        condition: service_started
+      elasticsearch:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      redis:
+        condition: service_started
     networks:
       - vietlaw_net
 
@@ -83,6 +88,12 @@ services:
       - discovery.type=single-node
       - xpack.security.enabled=false
       - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
     ports:
       - "9200:9200"
     volumes:

@@ -4,7 +4,6 @@ vietlawbert.preprocess
 Phân hệ tiền xử lý văn bản quy phạm pháp luật Việt Nam (Kiến trúc v3):
 - Hybrid Legal AST Parser: Bóc tách cây cú pháp EBNF và tiêm Metadata/Hierarchy tất định.
 - Legal Text Cleaner: Khử nhiễu tiêu ngữ, chữ ký, trích xuất ngày hiệu lực ISO 8601.
-- Structure-Aware Legal Chunker: Cắt đoạn cấu trúc dự phòng theo Điều/Khoản/Điểm.
 - HTML to Markdown Converter: Chuyển đổi định dạng HTML sang Markdown giữ nguyên cấu trúc.
 """
 
@@ -16,15 +15,6 @@ from .text_cleaner import (
     extract_effective_date,
     extract_preamble,
     normalize_unicode,
-)
-from .legal_chunker import (
-    LegalLevel,
-    HierarchyPath,
-    LegalChunk,
-    chunk_legal_document,
-    chunk_by_dieu,
-    chunk_by_khoan,
-    extract_cross_references,
 )
 from .html_to_md import HTMLConverter
 
@@ -39,14 +29,6 @@ __all__ = [
     "extract_effective_date",
     "extract_preamble",
     "normalize_unicode",
-    # Baseline Chunker
-    "LegalLevel",
-    "HierarchyPath",
-    "LegalChunk",
-    "chunk_legal_document",
-    "chunk_by_dieu",
-    "chunk_by_khoan",
-    "extract_cross_references",
     # Chuyển đổi HTML
     "HTMLConverter",
 ]

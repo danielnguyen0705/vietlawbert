@@ -1,0 +1,140 @@
+# yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
+description: "VietLawBERT: Multi-Backbone Encoder Retrieval Benchmark (1000 cases)"
+
+prompts:
+  - "{{query}}"
+
+# Khống chế chạy tuần tự từng model để đảm bảo ổn định tài nguyên
+evaluateOptions:
+  maxConcurrency: 1
+  timeoutMs: 600000
+
+providers:
+  # =========================================================================
+  # 1. NHÓM MÔ HÌNH XLM-RoBERTa
+  # =========================================================================
+  - id: "file://../providers/provider.py"
+    label: "XLM-RoBERTa (Base Vanilla @ 768d)"
+    config:
+      model_path: "checkpoints/xlm-roberta-base"
+      checkpoint_pt: null
+      dimension: 768
+      top_k: 5
+
+  - id: "file://../providers/provider.py"
+    label: "XLM-RoBERTa (Ours-MRL @ 256d)"
+    config:
+      model_path: "checkpoints/xlm-roberta-base"
+      checkpoint_pt: "checkpoints/xlm-roberta-base/vietlawbert_mrl.pt"
+      dimension: 256
+      top_k: 5
+
+  # =========================================================================
+  # 2. NHÓM MÔ HÌNH BGE-M3
+  # =========================================================================
+  - id: "file://../providers/provider.py"
+    label: "BGE-M3 (Base Vanilla @ 1024d)"
+    config:
+      model_path: "checkpoints/BAAI_bge-m3"
+      checkpoint_pt: null
+      dimension: 1024
+      top_k: 5
+
+  - id: "file://../providers/provider.py"
+    label: "BGE-M3 (Ours-MRL @ 256d)"
+    config:
+      model_path: "checkpoints/BAAI_bge-m3"
+      checkpoint_pt: "checkpoints/BAAI_bge-m3/vietlawbert_mrl.pt"
+      dimension: 256
+      top_k: 5
+
+  # =========================================================================
+  # 3. NHÓM MÔ HÌNH PhoBERT v2
+  # =========================================================================
+  - id: "file://../providers/provider.py"
+    label: "PhoBERT-v2 (Base Vanilla @ 768d)"
+    config:
+      model_path: "checkpoints/vinai_phobert-base-v2"
+      checkpoint_pt: null
+      dimension: 768
+      top_k: 5
+
+  - id: "file://../providers/provider.py"
+    label: "PhoBERT-v2 (Ours-MRL @ 256d)"
+    config:
+      model_path: "checkpoints/vinai_phobert-base-v2"
+      checkpoint_pt: "checkpoints/vinai_phobert-base-v2/vietlawbert_mrl.pt"
+      dimension: 256
+      top_k: 5
+
+  # =========================================================================
+  # 4. NHÓM MÔ HÌNH Multilingual-E5 (Đã bổ sung Vanilla để đối chiếu)
+  # =========================================================================
+  - id: "file://../providers/provider.py"
+    label: "mE5-Base (Base Vanilla @ 768d)"
+    config:
+      model_path: "checkpoints/intfloat_multilingual-e5-base"
+      checkpoint_pt: null
+      dimension: 768
+      top_k: 5
+
+  - id: "file://../providers/provider.py"
+    label: "mE5-Base (Ours-MRL @ 256d)"
+    config:
+      model_path: "checkpoints/intfloat_multilingual-e5-base"
+      checkpoint_pt: "checkpoints/intfloat_multilingual-e5-base/vietlawbert_mrl.pt"
+      dimension: 256
+      top_k: 5
+
+# =============================================================================
+# ĐIỀU KIỆN CHẤM ĐIỂM CHUNG
+# =============================================================================
+defaultTest:
+  options:
+    provider:
+      id: openai:chat:gpt-6-sol
+      config:
+        apiBaseUrl: https://hhtechapi.com/v1
+        temperature: 0.1
+
+  assert:
+    # 1. Đánh giá Chunk-Level Hit@5
+    - type: javascript
+      metric: chunk_hit@5
+      value: |
+        const res = JSON.parse(output);
+        return res.retrieved_chunks.includes(context.vars.ground_truth_chunk);
+
+    # 2. Đánh giá Document-Level Hit@5
+    - type: javascript
+      metric: doc_hit@5
+      value: |
+        const res = JSON.parse(output);
+        return res.retrieved_docs.includes(context.vars.ground_truth_doc_number);
+    
+    # 3. Thẩm định ngữ nghĩa bằng LLM Judge trên Top Contexts
+    - type: llm-rubric
+      metric: legal_relevance_judge
+      # Dùng transform để chỉ trích xuất phần văn bản pháp lý cho LLM đánh giá, tránh đưa cả JSON blob
+      transform: |
+        try {
+          return JSON.parse(output).top_contexts;
+        } catch(e) {
+          return output;
+        }
+      value: |
+        Bạn là một chuyên gia thẩm định pháp lý độc lập.
+        Hãy đánh giá xem đoạn trích dẫn pháp luật được mô hình tìm kiếm về có thẩm quyền, 
+        cơ sở pháp lý hoặc trực tiếp trả lời được cho câu hỏi dưới đây hay không.
+
+        [CÂU HỎI NGƯỜI DÙNG]:
+        {{query}}
+
+        [ĐOẠN TRÍCH PHÁP LÝ TÌM ĐƯỢC]:
+        {{output}}
+
+        [TIÊU CHÍ CHẤM ĐẠT]:
+        - ĐẠT (Pass): Đoạn trích dẫn chứa thẩm quyền, thủ tục hoặc quy định trực tiếp liên quan đến vấn đề được hỏi.
+        - KHÔNG ĐẠT (Fail): Đoạn trích hoàn toàn lệch chủ đề, không chứa cơ sở pháp lý để giải quyết câu hỏi.
+
+tests: file://../datasets/demo.json

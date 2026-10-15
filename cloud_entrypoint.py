@@ -125,7 +125,7 @@ def run_phase_evaluation():
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     # 1. Master Baseline Comparison
-    from benchmark.baseline_comparator import MultiModelBaselineComparator
+    from benchmark.evaluate_rqs import MultiModelBaselineComparator
     comparator = MultiModelBaselineComparator(
         benchmark_dir=BENCH_DIR,
         checkpoints_dir=MODELS_DIR,

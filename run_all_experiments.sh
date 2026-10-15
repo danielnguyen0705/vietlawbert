@@ -176,7 +176,7 @@ fi
 echo "=================================================================="
 echo "BƯỚC 3: CHẠY BẢNG ĐỐI ĐẦU MASTER BENCHMARK TRÊN TOÀN BỘ MA TRẬN"
 echo "=================================================================="
-python3 -u -m benchmark.baseline_comparator \
+python3 -u -m benchmark.evaluate_rqs --rq baselines \
   --benchmark-dir "$BENCHMARK_DIR" \
   --checkpoints-dir "$CHECKPOINTS_DIR" \
   --output-dir "$RESULTS_DIR" \

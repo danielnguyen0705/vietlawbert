@@ -1,0 +1,92 @@
+[
+  {
+    "description": "Test case vlb_0001",
+    "vars": {
+      "query": "Theo quy định hiện hành, trường hợp Chánh Văn phòng Ủy ban nhân dân tỉnh; Thủ trưởng các Sở, Ban, ngành của tỉnh; Chủ tịch Ủy ban nhân dân các xã, phường và thì thẩm quyền thuộc cơ quan nào?",
+      "ground_truth_chunk": "187710_art_5_cl_5",
+      "ground_truth_doc_number": "17/2026/QĐ-UBND",
+      "ground_truth_article": "Điều 5"
+    }
+  },
+  {
+    "description": "Test case vlb_0002",
+    "vars": {
+      "query": "Căn cứ pháp lý đối với nội dung Không được giúp sức, che giấu, ép buộc người bị tạm giữ, người bị tạm giam và người khác vi phạm Nội quy cơ sở giam giữ  được hướng dẫn ra sao?",
+      "ground_truth_chunk": "7d0ba5d0-5a68-11f1-8bec-951764fcacfb_art_6_cl_5",
+      "ground_truth_doc_number": "58/2026/TT-BCA",
+      "ground_truth_article": "Điều 6"
+    }
+  },
+  {
+    "description": "Test case vlb_0003",
+    "vars": {
+      "query": "Quy định pháp luật về Căn cứ Thông tư số 36/2006/TT-BVHTT ngày 20 tháng 3 năm 2006 của Bộ Văn hóa – Thông tin về việc hướng dẫn thực hiện một  được giải quyết như thế nào?",
+      "ground_truth_chunk": "05817360-9135-11f1-9898-3114ffbdc16c_preamble_4",
+      "ground_truth_doc_number": "22/2026/NQ-HĐND",
+      "ground_truth_article": "Điều khoản liên quan"
+    }
+  },
+  {
+    "description": "Test case vlb_0004",
+    "vars": {
+      "query": "Theo quy định hiện hành, trường hợp Quyền hạn của Trưởng thôn, Tổ trưởng tổ dân phố\na) Đại diện cho thôn, tổ dân phố trong các quan hệ liên quan đến hoạt độ thì thẩm quyền thuộc cơ quan nào?",
+      "ground_truth_chunk": "100d9740-9f8c-11f1-a23d-b142cce154b0_art_6_cl_2",
+      "ground_truth_doc_number": "126/2026/QĐ-UBND",
+      "ground_truth_article": "Điều 6"
+    }
+  },
+  {
+    "description": "Test case vlb_0005",
+    "vars": {
+      "query": "Căn cứ pháp lý đối với nội dung SỬA ĐỔI, BỔ SUNG MỘT SỐ ĐIỀU CỦA THÔNG TƯ SỐ 111/2021/TT-BQP NGÀY 24 THÁNG 8 NĂM 2021 CỦA BỘ TRƯỞNG BỘ QUỐC PHÒNG QUY ĐỊ được hướng dẫn ra sao?",
+      "ground_truth_chunk": "9a8edfd0-956b-11f1-93d5-9373b32da59a_preamble_0",
+      "ground_truth_doc_number": "104/2026/TT-BQP",
+      "ground_truth_article": "Điều khoản liên quan"
+    }
+  },
+  {
+    "description": "Test case vlb_0006",
+    "vars": {
+      "query": "Quy định pháp luật về Sửa đổi, bổ sung điểm a khoản 7 như sau:\n“a) Hướng dẫn, tổ chức thực hiện công tác chuyên môn, nghiệp vụ; công tác đánh  được giải quyết như thế nào?",
+      "ground_truth_chunk": "c9f60430-64a9-11f1-b2be-0f8f3567932b_art_1_cl_6",
+      "ground_truth_doc_number": "45/2026/TT-BGDĐT",
+      "ground_truth_article": "Điều 1"
+    }
+  },
+  {
+    "description": "Test case vlb_0007",
+    "vars": {
+      "query": "Theo quy định hiện hành, trường hợp Khu phố Bình Nguyên:\n- Một phần Khu phố Chánh cũ thì thẩm quyền thuộc cơ quan nào?",
+      "ground_truth_chunk": "e1acb9f0-896d-11f1-a58c-ed53399b999f_art_8_cl_5",
+      "ground_truth_doc_number": "54/2026/NQ-HĐND",
+      "ground_truth_article": "Điều 8"
+    }
+  },
+  {
+    "description": "Test case vlb_0008",
+    "vars": {
+      "query": "Căn cứ pháp lý đối với nội dung Công việc chuyên môn liên quan đến chất lượng an toàn kỹ thuật và bảo vệ môi trường của xe cơ giới, xe máy chuyên dùng,  được hướng dẫn ra sao?",
+      "ground_truth_chunk": "dce8f440-67d7-11f1-b409-03736c4d1aab_art_4_cl_2",
+      "ground_truth_doc_number": "22/2026/TT-BXD",
+      "ground_truth_article": "Điều 4"
+    }
+  },
+  {
+    "description": "Test case vlb_0009",
+    "vars": {
+      "query": "Quy định pháp luật về Trong thời gian 03 ngày làm việc kể từ ngày có biên bản họp Hội đồng xét tài trợ, đặt hàng, Sở Khoa học và Công nghệ thô được giải quyết như thế nào?",
+      "ground_truth_chunk": "186877_art_16_cl_6",
+      "ground_truth_doc_number": "22/2026/QĐ-UBND",
+      "ground_truth_article": "Điều 16"
+    }
+  },
+  {
+    "description": "Test case vlb_0010",
+    "vars": {
+      "query": "Theo quy định hiện hành, trường hợp Việc chuẩn bị kỳ họp thường lệ được tiến hành như sau:\na) Trước khi tổ chức Hội nghị liên tịch để chuẩn bị nội dung kỳ h thì thẩm quyền thuộc cơ quan nào?",
+      "ground_truth_chunk": "8422d4e0-49cb-11f1-886a-ff8436e0b799_art_8_cl_3",
+      "ground_truth_doc_number": "07/2026/NQ-HĐND",
+      "ground_truth_article": "Điều 8"
+    }
+  }
+]

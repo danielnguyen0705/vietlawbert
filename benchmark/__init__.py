@@ -15,8 +15,12 @@ from .evaluate_rrf import (
     retrieve_by_mode,
 )
 from .build_vietlawbench import VietLawBenchBuilder
-from .baseline_comparator import BaselineComparator, MultiModelBaselineComparator
-from .evaluate_rqs import ScientificBenchmarkRunner
+from .evaluate_rqs import (
+    ScientificBenchmarkRunner,
+    MultiModelBaselineComparator,
+    BaselineComparator,
+    UniversalEncoderWrapper,
+)
 from .llm_judge import LegalLLMJudge
 
 __all__ = [
