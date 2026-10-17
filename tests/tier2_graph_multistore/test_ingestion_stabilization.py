@@ -8,6 +8,8 @@ import os
 import sys
 import tempfile
 import unittest
+
+import numpy as np
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -70,7 +72,8 @@ class IngestPipelineWorkerTests(unittest.TestCase):
         tmp_path = Path(_tmp.name)
         # Giả lập encoder trả về vector float
         encoder_instance = Mock()
-        encoder_instance.encode.return_value = Mock(tolist=lambda: [[0.05] * 256])
+        # encode() phải trả numpy array (N, 256) đúng số chunk để worker làm embeddings[i][:dim].tolist()
+        encoder_instance.encode.side_effect = lambda texts, **kw: np.full((len(texts), 256), 0.05, dtype=float)
         mock_encoder.return_value = encoder_instance
         # Qdrant bị patch -> doc_exists trả MagicMock (truthy) khiến worker bỏ qua mọi doc. Ép False:
         mock_qdrant.return_value.doc_exists.return_value = False

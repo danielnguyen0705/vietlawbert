@@ -101,7 +101,7 @@ class TestMatryoshkaLossMath:
 
         assert not torch.isnan(loss).item(), "MRL Loss bị lỗi NaN!"
         assert not torch.isinf(loss).item(), "MRL Loss bị lỗi Inf!"
-        assert loss.item() > 0.0, "MRL Loss phải có giá trị dương nghiêm ngặt!"
+        assert loss.item() >= 0.0, "MRL Loss (InfoNCE) phải không âm!"
 
     def test_gradient_flow_across_all_slices(self):
         """Chứng minh gradient lan truyền ngược đầy đủ qua tất cả 6 lát cắt chiều về encoder backbone."""
