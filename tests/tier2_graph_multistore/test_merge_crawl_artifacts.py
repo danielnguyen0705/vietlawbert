@@ -21,7 +21,7 @@ from artifacts.canonical import (
 )
 from quality.crawl_audit import audit_crawl
 from crawler.shard_runner import build_shards, write_content_quarantine
-from crawler.ocr_runner import base_artifact_for, pending_ids, rescued_artifact_for
+from crawler.ocr_runner import base_artifact_for, rescued_artifact_for
 
 
 def test_overlay_replaces_in_place_and_appends_new_ids(tmp_path):
