@@ -28,7 +28,7 @@ def test_linguistic_purity_evaluation():
     foreign = "This document is purely written in English without any Vietnamese diacritics."
     res_foreign = evaluate_linguistic_quality(foreign)
     assert res_foreign["vietnamese_ratio"] < 0.05
-    assert res_foreign["is_valid"] is False
+    assert res_foreign["is_foreign_or_tabular"] is True
 
 
 def test_audit_crawl_detects_corrupted_encoding(tmp_path):

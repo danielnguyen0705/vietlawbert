@@ -10,6 +10,7 @@ import json
 import gzip
 import logging
 import argparse
+import collections
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Set
 
@@ -47,7 +48,24 @@ class HINGraphBuilder:
     def __init__(self, neo4j_client: Optional[Neo4jClient] = None):
         self.client = neo4j_client or Neo4jClient()
         self.parser = HybridASTParser()
+        self._edge_ontology = self._load_edge_ontology()
+        self._rel_type_counter = collections.Counter()
         # Neo4jClient đã tự động khởi tạo constraints trong hàm khởi tạo của nó
+
+    @staticmethod
+    def _load_edge_ontology() -> Dict[tuple, str]:
+        """Nạp bản đồ (group, key) -> edge_type từ crawler/system_ontology_map.json (nguồn sự thật duy nhất)."""
+        mapping: Dict[tuple, str] = {}
+        onto_path = Path(__file__).resolve().parent.parent / "crawler" / "system_ontology_map.json"
+        try:
+            with open(onto_path, "r", encoding="utf-8") as fo:
+                data = json.load(fo)
+            for group_name in ["documentNamesByType", "documentNamesBySource"]:
+                for raw_key, edge_type in (data.get(group_name) or {}).items():
+                    mapping[(group_name, str(raw_key))] = str(edge_type)
+        except Exception as exc:
+            logger.warning("Không nạp được system_ontology_map.json: %s", exc)
+        return mapping
 
     def ingest_documents_batch(self, docs: List[Dict[str, Any]], batch_size: int = 500) -> int:
         """Nạp các nút Văn bản pháp luật."""
@@ -169,6 +187,7 @@ class HINGraphBuilder:
                                 "target_id": dst_id,
                                 "relation_type": rel_type,
                             })
+                            self._rel_type_counter[rel_type] += 1
                 else:
                     diagram = item.get("diagram_json") or item.get("diagram_data") or {}
                     if isinstance(diagram, dict):
@@ -177,7 +196,7 @@ class HINGraphBuilder:
                             is_incoming = (group_name == "documentNamesBySource")
                             if isinstance(group_data, dict):
                                 for rel_k, doc_list in group_data.items():
-                                    rel_type_clean = f"REL_{rel_k}"
+                                    rel_type_clean = self._edge_ontology.get((group_name, str(rel_k))) or f"REL_{rel_k}"
                                     if isinstance(doc_list, list):
                                         for d_entry in doc_list:
                                             tgt = str(d_entry.get("id") or "").strip()
@@ -187,6 +206,7 @@ class HINGraphBuilder:
                                                     "target_id": doc_id if is_incoming else tgt,
                                                     "relation_type": rel_type_clean,
                                                 })
+                                                self._rel_type_counter[rel_type_clean] += 1
 
                 # Bóc tách AST phân rã cây phân cấp
                 if parse_chunks:
@@ -227,7 +247,11 @@ class HINGraphBuilder:
         if chunks_buffer:
             self.ingest_ast_hierarchy_batch(chunks_buffer)
 
-        logger.info("✓ Hoàn tất nạp đồ thị Shard %s.", file_path.name)
+        logger.info("✓ Hoàn tất nạp đồ thị Shard %s. Phân bố edge_type tích luỹ: %s",
+                    file_path.name, self._rel_type_counter.most_common(25))
+        if len(self._rel_type_counter) <= 1:
+            logger.warning("CẢNH BÁO: đồ thị chỉ có %d loại quan hệ - kiểm tra lại ánh xạ ontology/nguồn shard!",
+                           len(self._rel_type_counter))
 
 
 def run_build_hin(

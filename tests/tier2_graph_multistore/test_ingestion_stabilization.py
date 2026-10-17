@@ -6,6 +6,7 @@ import json
 import gzip
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -63,7 +64,10 @@ class IngestPipelineWorkerTests(unittest.TestCase):
     @patch("pipeline.ingest_pipeline.SentenceTransformer")
     @patch("pipeline.ingest_pipeline.QdrantClientWrapper")
     @patch("pipeline.ingest_pipeline.LegalElasticsearchRetriever")
-    def test_worker_processes_shard_with_html_fallback(self, mock_es, mock_qdrant, mock_encoder, tmp_path):
+    def test_worker_processes_shard_with_html_fallback(self, mock_es, mock_qdrant, mock_encoder):
+        _tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(_tmp.cleanup)
+        tmp_path = Path(_tmp.name)
         # Giả lập encoder trả về vector float
         encoder_instance = Mock()
         encoder_instance.encode.return_value = Mock(tolist=lambda: [[0.05] * 256])

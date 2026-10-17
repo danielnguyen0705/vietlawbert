@@ -1,9 +1,11 @@
-"""_common/paths.py - Bộ phân giải đường dẫn portable cho toàn bộ test suite VietLawBERT.
+"""_common/paths.py - Phân giải đường dẫn cho test suite.
 
-Ưu tiên biến môi trường; nếu không có thì tự dò gốc repo (thư mục chứa 'rag/' và 'preprocess/').
-Nhờ vậy test chạy được trên máy trạm Windows/Ubuntu lẫn Cloud GPU mà không phải sửa hard-code.
+NGUỒN SỰ THẬT là configs/paths.py của repo (đọc DATA_STORAGE_ROOT từ .env,
+tự nhận /mnt/data/vietlawbert_data trên Ubuntu). Nhờ vậy test tìm đúng dữ liệu lớn
+nằm ngoài repo, không bị SKIP oan. Có fallback nếu chưa import được configs.
 """
 import os
+import sys
 from pathlib import Path
 
 
@@ -15,13 +17,29 @@ def _autodetect_root() -> Path:
 
 
 REPO_ROOT = Path(os.environ.get("VIETLAWBERT_ROOT") or _autodetect_root())
-DATA_ROOT = Path(os.environ.get("VIETLAWBERT_DATA") or (REPO_ROOT / "data"))
 CHECKPOINTS_DIR = Path(os.environ.get("VIETLAWBERT_CKPT") or (REPO_ROOT / "checkpoints"))
+
+# Dùng chính configs.paths của repo làm nguồn sự thật cho gốc dữ liệu lớn
+try:
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from configs import paths as _P  # noqa: E402
+    DATA_ROOT = Path(_P.DATA_STORAGE_ROOT)
+    RAW_SHARDS = Path(_P.RAW_SHARDS_DIR)
+except Exception:
+    _cand = os.environ.get("VIETLAWBERT_DATA")
+    if _cand:
+        DATA_ROOT = Path(_cand)
+    elif Path("/mnt/data/vietlawbert_data").exists():
+        DATA_ROOT = Path("/mnt/data/vietlawbert_data")
+    else:
+        DATA_ROOT = REPO_ROOT / "data"
+    RAW_SHARDS = DATA_ROOT / "raw_shards"
+
+# Thư mục con dùng trong test (tên khớp cây dữ liệu thực tế)
+PROCESSED_PARQUET = DATA_ROOT / "processed_parquet"
+BULK_VECTORS = DATA_ROOT / "bulk_vectors"
 
 TESTS_DIR = REPO_ROOT / "tests"
 HARNESS_DIR = TESTS_DIR / "rq_experiments_promptfoo"
 DATASETS_DIR = HARNESS_DIR / "datasets"
-
-RAW_SHARDS = DATA_ROOT / "raw_shards"
-PROCESSED_PARQUET = DATA_ROOT / "processed_parquet"
-BULK_VECTORS = DATA_ROOT / "bulk_vectors"

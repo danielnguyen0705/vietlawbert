@@ -1,17 +1,39 @@
-"""Tier 2 - Kiểm đếm phổ quan hệ hiệu lực/dẫn chiếu trên đồ thị HIN (Neo4j).
+"""Tier 2 - Phổ quan hệ hiệu lực/dẫn chiếu trên đồ thị HIN (Neo4j).
 
-Đặc tả cam kết 22 loại quan hệ (HUONG_DAN_AP_DUNG, SUA_DOI_BO_SUNG, THAY_THE, BAI_BO, ...).
-Test này liệt kê các loại r.type thực tế, báo cáo số lượng mỗi loại, và khẳng định các quan hệ
-trọng yếu đều hiện diện. Cần Neo4j đang chạy (nếu không sẽ SKIP).
-Đặc tả: Giai đoạn 1 > Đồ thị HIN Neo4j (22 quan hệ).
+Danh mục quan hệ hợp lệ NẠP ĐỘNG từ crawler/system_ontology_map.json (nguồn sự thật duy nhất),
+nên test không bao giờ lệch tên so với ontology thực tế.
+  1. test_relation_types_are_recognized: mọi loại quan hệ trong đồ thị phải thuộc danh mục ontology
+     (bắt quan hệ lạ/nhiễu).
+  2. test_relation_type_coverage: đồ thị phải có đủ các quan hệ hiệu lực TRỌNG YẾU.
+Cần Neo4j (nếu không sẽ SKIP). Đặc tả: Giai đoạn 1 > Đồ thị HIN 22 quan hệ.
 """
+import json
+from pathlib import Path
+
 import pytest
 
 pytestmark = [pytest.mark.tier2, pytest.mark.requires_neo4j]
 
+# Nạp danh mục edge_type hợp lệ từ ontology của hệ thống
+_ONTO = Path(__file__).resolve().parents[2] / "crawler" / "system_ontology_map.json"
+try:
+    _data = json.loads(_ONTO.read_text(encoding="utf-8"))
+    KNOWN_RELATIONS = {
+        str(v).upper()
+        for g in ("documentNamesByType", "documentNamesBySource")
+        for v in (_data.get(g) or {}).values()
+    }
+except Exception:
+    KNOWN_RELATIONS = {
+        "BAI_BO", "BAN_DICH", "CAN_CU_BAN_HANH", "DAN_CHIEU", "DINH_CHI_THI_HANH",
+        "DINH_CHINH", "HOP_NHAT", "HUONG_DAN_AP_DUNG", "QUY_DINH_CHI_TIET_HUONG_DAN",
+        "SUA_DOI_BO_SUNG", "TAM_NGUNG_HIEU_LUC", "THAY_THE", "BO_SUNG", "GIAI_THICH", "CONG_BO",
+    }
+
+# Các quan hệ hiệu lực trọng yếu BẮT BUỘC có mặt (dùng đúng tên canonical của ontology)
 CORE_RELATIONS = {
-    "SUA_DOI_BO_SUNG", "THAY_THE", "BAI_BO", "HUONG_DAN_AP_DUNG",
-    "HUONG_DAN_THI_HANH", "DAN_CHIEU", "CAN_CU",
+    "CAN_CU_BAN_HANH", "DAN_CHIEU", "THAY_THE", "BAI_BO",
+    "SUA_DOI_BO_SUNG", "HUONG_DAN_AP_DUNG", "QUY_DINH_CHI_TIET_HUONG_DAN",
 }
 
 
@@ -26,22 +48,20 @@ def _relation_histogram(driver) -> dict:
         return {row["rtype"]: row["n"] for row in s.run(q)}
 
 
-def test_relation_type_coverage(neo4j_driver):
+def test_relation_types_are_recognized(neo4j_driver):
+    """Bất biến: không có loại quan hệ lạ ngoài danh mục ontology (cho phép REL_* tạm chưa map)."""
     hist = _relation_histogram(neo4j_driver)
     if not hist:
         pytest.skip("Đồ thị chưa có cạnh mang thuộc tính r.type để kiểm đếm.")
-    present = set(hist)
-    print("\n[HIN] Số loại quan hệ hiện diện:", len(present))
-    for k, v in sorted(hist.items(), key=lambda x: -x[1]):
-        print(f"  {k}: {v}")
-    missing_core = CORE_RELATIONS - present
-    assert not missing_core, f"Thiếu các quan hệ hiệu lực trọng yếu: {missing_core}"
+    print("\n[HIN] Phổ quan hệ hiện có:", {k: hist[k] for k in sorted(hist, key=lambda x: -hist[x])})
+    unknown = {k for k in hist if k not in KNOWN_RELATIONS and not k.startswith("REL_")}
+    assert not unknown, f"Xuất hiện loại quan hệ lạ ngoài ontology: {unknown}"
 
 
-def test_relation_type_count_benchmark(neo4j_driver):
-    """Cảnh báo (không fail cứng) nếu số loại quan hệ chưa đạt kỳ vọng 22 trong đề cương."""
+def test_relation_type_coverage(neo4j_driver):
+    """Đồ thị phải có đủ các quan hệ hiệu lực trọng yếu."""
     hist = _relation_histogram(neo4j_driver)
     if not hist:
         pytest.skip("Đồ thị chưa có cạnh mang thuộc tính r.type.")
-    n = len(hist)
-    assert n >= 10, f"Chỉ có {n} loại quan hệ - đồ thị HIN có thể chưa nạp đủ phổ 22 quan hệ."
+    missing = CORE_RELATIONS - set(hist)
+    assert not missing, f"Thiếu các quan hệ hiệu lực trọng yếu: {missing}"

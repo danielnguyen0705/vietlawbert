@@ -95,7 +95,7 @@ def merge_records_streaming(
     stats = {
         "base_records": base_count,
         "overwritten_records": overwritten_count,
-        "appended_records": total_written - (base_count - overwritten_count),
+        "appended_records": total_written - base_count,
         "total_final_records": total_written,
     }
     logger.info("Hoàn tất hợp nhất: %s", stats)
