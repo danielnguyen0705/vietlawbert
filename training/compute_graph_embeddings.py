@@ -183,7 +183,7 @@ def train_pytorch_node2vec(
     logger.info("Khởi động huấn luyện PyTorch SGNS (%d steps/epoch | Batch: %d)...", steps_per_epoch, batch_size)
 
     model = PyTorchSparseSGNS(vocab_size=vocab_size, embed_dim=dimensions)
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.05)
+    optimizer = torch.optim.SparseAdam(model.parameters(), lr=0.01)  # SparseAdam: đúng optimizer cho nn.Embedding(sparse=True)
 
     model.train()
     start_time = time.time()

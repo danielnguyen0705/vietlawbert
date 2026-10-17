@@ -72,6 +72,8 @@ class IngestPipelineWorkerTests(unittest.TestCase):
         encoder_instance = Mock()
         encoder_instance.encode.return_value = Mock(tolist=lambda: [[0.05] * 256])
         mock_encoder.return_value = encoder_instance
+        # Qdrant bị patch -> doc_exists trả MagicMock (truthy) khiến worker bỏ qua mọi doc. Ép False:
+        mock_qdrant.return_value.doc_exists.return_value = False
 
         worker = IngestPipelineWorker(
             qdrant_host="localhost",
