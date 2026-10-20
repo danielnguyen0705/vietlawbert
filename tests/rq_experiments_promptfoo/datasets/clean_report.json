@@ -1,0 +1,26 @@
+{
+  "input_total": 1000,
+  "kept_clean": 729,
+  "dropped": 271,
+  "dropped_pct": 27.1,
+  "drop_reason_counts": {
+    "evidence_thi_hanh_or_sign": 14,
+    "preamble_chunk": 257,
+    "hierarchy_CAN_CU": 257,
+    "article_not_Dieu": 257,
+    "evidence_can_cu": 111
+  },
+  "clean_by_query_type": {
+    "single_hop": 364,
+    "multi_hop_candidate": 365
+  },
+  "clean_by_retrieval_level": {
+    "clause": 560,
+    "article": 169
+  },
+  "clean_doc_id_format": {
+    "uuid": 582,
+    "numeric": 147
+  },
+  "sample_written": 100
+}

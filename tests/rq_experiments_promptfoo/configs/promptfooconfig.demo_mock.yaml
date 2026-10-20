@@ -1,0 +1,46 @@
+# DEMO promptfoo với MOCK provider — chạy được ngay, KHÔNG cần backend thật.
+# Chạy:  cd configs && VLB_LIMIT=30 npx promptfoo@latest eval -c promptfooconfig.demo_mock.yaml -o ../out/eval-demo.json
+#        npx promptfoo@latest view
+# Mục đích: thấy metric tất định + latency_report + fail_category + ablation 4 chế độ hoạt động.
+# KHÔNG dùng số liệu này để báo cáo.
+
+description: "DEMO — mock provider (metric & latency harness)"
+
+prompts:
+  - "{{query}}"
+
+providers:
+  - id: file://../providers/mock_provider.py
+    label: "Dense-Only (mock)"
+    config: { mode: dense }
+  - id: file://../providers/mock_provider.py
+    label: "Sparse-Only (mock)"
+    config: { mode: sparse }
+  - id: file://../providers/mock_provider.py
+    label: "Hybrid-RRF (mock)"
+    config: { mode: hybrid }
+  - id: file://../providers/mock_provider.py
+    label: "Ours-Full (mock)"
+    config: { mode: full }
+
+defaultTest:
+  assert:
+    - type: javascript
+      value: file://../assertions/retrieval_metrics.js:docHitAtK
+      metric: doc_hit@k
+    - type: javascript
+      value: file://../assertions/retrieval_metrics.js:articleHitAtK
+      metric: article_hit@k
+    - type: javascript
+      value: file://../assertions/retrieval_metrics.js:clauseHitAtK
+      metric: clause_hit@k
+    - type: javascript
+      value: file://../assertions/retrieval_metrics.js:latencyReport
+      metric: latency_report
+      weight: 0
+    - type: javascript
+      value: file://../assertions/fail_category.js:classify
+      metric: fail_category
+      weight: 0
+
+tests: file://../datasets/load_tests.js
