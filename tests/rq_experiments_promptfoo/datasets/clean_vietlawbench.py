@@ -79,6 +79,33 @@ def build_global_id(doc_norm, chapter_id, article_id, clause_id):
     if clause_id:  parts.append(clause_id)
     return "#".join(parts)
 
+# --- Phát hiện câu hỏi template máy / cắt giữa từ (lỗi chất lượng câu hỏi) ---
+_PRE = ["Theo quy định hiện hành, trường hợp ", "Theo quy định hiện hành, ",
+        "Căn cứ pháp lý đối với nội dung ", "Quy định pháp luật về Căn cứ ",
+        "Quy định pháp luật về "]
+_SUF = [" được giải quyết như thế nào?", " thì thẩm quyền thuộc cơ quan nào?",
+        " được hướng dẫn ra sao?", " được quy định như thế nào?",
+        " được quy định ra sao?", " được áp dụng như thế nào?"]
+
+def _ws(s):
+    return re.sub(r"\s+", " ", (s or "").strip())
+
+def flag_query(query, evidence):
+    """Trả 'ok?' | 'template' | 'template+cắt-giữa-từ'."""
+    q = _ws(query); evb = re.sub(r"^\s*\d+\.\s*", "", _ws(evidence))
+    pre = next((p for p in _PRE if q.startswith(p)), None)
+    suf = next((s for s in _SUF if q.endswith(s)), None)
+    if not pre and not suf:
+        return "ok?"
+    core = q[len(pre):] if pre else q
+    if suf: core = core[:-len(suf)]
+    core = core.strip()
+    if core and evb.startswith(core):
+        nxt = evb[len(core):len(core)+1]
+        if nxt and nxt.isalpha() and core[-1:].isalpha():
+            return "template+cắt-giữa-từ"
+    return "template"
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--in", dest="inp", required=True)
@@ -144,15 +171,15 @@ def main():
     sample_path = os.path.join(args.outdir, f"vietlawbench_sample{args.sample}.csv")
     with open(sample_path, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["benchmark_id","query_type","retrieval_level","doc_norm",
+        w.writerow(["benchmark_id","query_type","query_issue","retrieval_level","doc_norm",
                     "article_id","clause_id","global_id","query","evidence_text",
                     "manual_ok(Y/N)","manual_note"])
         for r in sample:
-            w.writerow([r["benchmark_id"], r["query_type"], r["retrieval_level"],
-                        r["doc_norm"], r.get("article_id"), r.get("clause_id"),
-                        r["global_id"], r["query"],
-                        (r.get("evidence_text","") or "")[:300].replace("\n"," "),
-                        "", ""])
+            w.writerow([r["benchmark_id"], r["query_type"],
+                        flag_query(r["query"], r.get("evidence_text","")),
+                        r["retrieval_level"], r["doc_norm"], r.get("article_id"),
+                        r.get("clause_id"), r["global_id"], _ws(r["query"]),
+                        _ws(r.get("evidence_text",""))[:300], "", ""])
 
     report = {
         "input_total": len(recs),
@@ -162,6 +189,7 @@ def main():
         "drop_reason_counts": dict(reason_counter),
         "clean_by_query_type": dict(collections.Counter(r["query_type"] for r in clean)),
         "clean_by_retrieval_level": dict(collections.Counter(r["retrieval_level"] for r in clean)),
+        "clean_query_issue": dict(collections.Counter(flag_query(r["query"], r.get("evidence_text","")) for r in clean)),
         "clean_doc_id_format": dict(collections.Counter(
             ("numeric" if re.fullmatch(r"\d+", r["ground_truth_chunk"].split("_")[0]) else "uuid")
             for r in clean)),

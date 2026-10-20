@@ -18,6 +18,10 @@
     "clause": 560,
     "article": 169
   },
+  "clean_query_issue": {
+    "template": 497,
+    "template+cắt-giữa-từ": 232
+  },
   "clean_doc_id_format": {
     "uuid": 582,
     "numeric": 147
