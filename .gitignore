@@ -18,10 +18,8 @@ env/
 data/
 law_dataset/
 raw_shards/
-*.jsonl
 *.jsonl.gz
 *.parquet
-*.csv
 *.pdf
 *.doc
 *.docx
