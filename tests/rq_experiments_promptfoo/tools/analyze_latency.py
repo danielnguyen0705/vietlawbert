@@ -36,7 +36,24 @@ def main():
     args = ap.parse_args()
 
     o = json.load(open(args.eval, encoding="utf-8"))
-    head, body = o["head"], o["body"]
+
+    def locate(obj):
+        # 1) định dạng share/table ở top-level (file G18 cũ)
+        if isinstance(obj.get("head"), dict) and "body" in obj:
+            return obj["head"], obj["body"]
+        # 2) output của `promptfoo eval -o`: head/body nằm trong results.table
+        res = obj.get("results", {})
+        if isinstance(res, dict) and isinstance(res.get("table"), dict) \
+           and "head" in res["table"] and "body" in res["table"]:
+            return res["table"]["head"], res["table"]["body"]
+        # 3) table ở top-level
+        if isinstance(obj.get("table"), dict) and "head" in obj["table"]:
+            return obj["table"]["head"], obj["table"]["body"]
+        return None, None
+
+    head, body = locate(o)
+    if head is None:
+        raise SystemExit("Không nhận ra định dạng eval. Top-level keys: " + ", ".join(o.keys()))
     provs = [p.get("provider") if isinstance(p, dict) else str(p) for p in head["prompts"]]
 
     print(f"=== LATENCY REPORT: {args.eval} ===")
