@@ -24,7 +24,7 @@ defaultTest:
     provider:
       id: openai:chat:gpt-6-sol
       config:
-        apiBaseUrl: https://hhtechapi.com/v1
+        apiBaseUrl: https://hhtechapi.net/v1
         temperature: 0.0
 
   assert:
