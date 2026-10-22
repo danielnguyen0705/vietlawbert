@@ -1,22 +1,17 @@
 # VietLawBERT — Testing Pack (v1, 21/10/2026)
 
-Bộ công cụ testing dựng theo **3 đề xuất của nhóm**: (1) metric đơn giản `equal`/`contain-any`
-tập trung dẫn chiếu số hiệu + điều/khoản, (2) **tách latency** thành số đo báo cáo (gỡ nghịch
-lý "latency cao PASS / thấp FAIL"), (3) **red-team** injection cho tầng searching. Kèm bước
-**làm sạch testcase/dẫn chiếu** và **phân loại nguyên nhân FAIL**.
+Bộ công cụ testing dựng theo **các đề xuất kiểm thử khác**: 
+(1) metric đơn giản bằng cách chỉ sử dụng `equal`/`contain-any` tập trung dẫn chiếu số hiệu + điều/khoản
+(2) **tách latency** thành số đo báo cáo (gỡ nghịch lý "latency cao PASS / thấp FAIL")
+(3) **red-team** injection cho tầng searching. Kèm bước **làm sạch testcase/dẫn chiếu** và **phân loại nguyên nhân FAIL**.
 
 > Mọi FAIL đều phải GIẢI THÍCH ĐƯỢC: mỗi assertion trả về `reason`, và `fail_category` gắn nhãn
 > F1 (GT nghi ngờ) / F2 (retrieval miss) / F3 (lệch cấp khoản) / F4 (hạ tầng).
 
-## Cài vào repo
-Chép thư mục này vào `vietlawbert/tests/rq_experiments_promptfoo/` (giữ nguyên cây con), rồi
-sửa đường dẫn provider trong 2 file config trỏ về **Python provider truy xuất hiện có** của nhóm.
-Provider phải trả JSON: `{retrieved_chunks:[...], retrieved_docs:[...], latency_ms:<num>, answer:"..."}`.
-
 ## Cây thư mục
 ```
 datasets/
-  clean_vietlawbench.py     # làm sạch + gán Global Hierarchical ID + xuất 100 mẫu
+  clean_vietlawbench.py      # làm sạch + gán Global Hierarchical ID + xuất 100 mẫu
   vietlawbench_clean.jsonl   # (đã tạo) 729 câu sạch, có doc_norm/article_id/clause_id/global_id
   vietlawbench_dropped.jsonl # (đã tạo) 271 câu loại, kèm _drop_reasons
   vietlawbench_sample100.csv # (đã tạo) 100 mẫu để KIỂM TAY (cột manual_ok / manual_note)
@@ -39,18 +34,13 @@ tools/
 
 ## Kết quả làm sạch (chạy thật trên `vietlawbench_1000.jsonl`)
 - Giữ **729/1000** câu sạch; loại **271 (27,1%)**.
-- Lý do loại: `preamble_chunk` 257 · `article_not_Dieu` ("Điều khoản liên quan") 257 ·
-  `hierarchy_CAN_CU` 257 · `evidence_can_cu` 111 · `evidence_thi_hanh_or_sign` 14.
-- Bộ sạch: cấp **clause** 560, cấp **article** 169; định danh doc vẫn lẫn uuid 582 / numeric 147
-  → đã chuẩn hoá qua `doc_norm` + `global_id`.
-
-> **Việc thầy giao:** mở `vietlawbench_sample100.csv`, kiểm tay 100 mẫu (điền cột `manual_ok`),
-> gửi kết quả cho thầy Sơn & anh Khánh trước khi mở rộng.
+- Lý do loại: `preamble_chunk` 257 · `article_not_Dieu` ("Điều khoản liên quan") 257 · `hierarchy_CAN_CU` 257 · `evidence_can_cu` 111 · `evidence_thi_hanh_or_sign` 14.
+- Bộ sạch: cấp **clause** 560, cấp **article** 169; định danh doc vẫn lẫn uuid 582 / numeric 147 → đã chuẩn hoá qua `doc_norm` + `global_id`.
 
 ## Chạy
 ```bash
 cd configs
-# RQ3 (vòng CPU, giới hạn 150 câu cho nhanh):
+# vòng CPU, giới hạn 150 câu cho nhanh:
 VLB_LIMIT=150 npx promptfoo@latest eval -c promptfooconfig.rq3_retrieval.yaml -o ../out/eval-rq3.json
 npx promptfoo@latest view
 
@@ -70,9 +60,6 @@ npx promptfoo@latest redteam run      -c promptfooconfig.redteam.yaml -o ../out/
 | `chunk_hit@5` exact trên GT sai + ID loạn | `doc_hit@k` contain-any + `article_hit@k`/`clause_hit@k` equal theo global-ID |
 | `doc_hit@5` includes **2 chiều** (dương tính giả) | contain-any **một chiều** đã chuẩn hoá |
 | `latency_sla_500ms` = `<60000ms` (luôn PASS, che tính đúng) | `latency_report` non-gating + `analyze_latency.py` (P50/P95/P99) |
-| `legal_relevance_judge` LLM (không tất định) | bỏ khỏi retrieval; đánh giá câu trả lời để riêng cho RQ4/RAGAS |
+| `legal_relevance_judge` LLM (không tất định) | bỏ khỏi retrieval; đánh giá câu trả lời để riêng cho RAGAS |
 | FAIL không rõ nguyên nhân | `fail_category` F1/F2/F3/F4/OK + `reason` từng dòng |
 
-## Lưu ý phiên bản
-Tên plugin/strategy của `promptfoo redteam` thay đổi theo bản cài — đối chiếu
-`npx promptfoo@latest redteam plugins` và `... strategies` trước khi chạy.

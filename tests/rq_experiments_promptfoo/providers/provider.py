@@ -56,6 +56,10 @@ def resolve_existing_path(path_str: str | None) -> str | None:
 
 
 CORPUS_FILE_CANDIDATES = [
+    # Ưu tiên bộ SẠCH đã có trong datasets/ (729 câu) — candidate pool nhất quán với tập test
+    Path(__file__).resolve().parent.parent / "datasets" / "vietlawbench_clean.jsonl",
+    Path(__file__).resolve().parent.parent / "datasets" / "vietlawbench_1000.jsonl",
+    # Dự phòng: file gốc ở benchmark/
     PROJECT_ROOT / "benchmark" / "vietlawbench_1000.jsonl",
     Path("/home/dell/Desktop/vietlawbert/benchmark/vietlawbench_1000.jsonl"),
     Path(__file__).resolve().parent / "vietlawbench_1000.jsonl",
