@@ -7,6 +7,8 @@ FIX (2026-10):
   - System instruction tách riêng ra "role: system" → tránh Haiku guardrail
   - Prompt user chỉ chứa context + query → câu trả lời đúng format "Căn cứ theo..."
   - LegalGenerator.__init__ nhận tham số retriever= để tái sử dụng singleton
+  - LEGAL_SYSTEM_INSTRUCTION: Rule 5 (từ chối) là EXCLUSIVE với Rule 1-4 (trả lời)
+    → Không thể xảy ra đồng thời. Cấu trúc IF-ELSE thay vì OR.
 """
 
 from __future__ import annotations
@@ -30,17 +32,36 @@ logger = get_subsystem_logger("rag", "generator")
 # Đặt trong "role: system" để:
 #   1. Claude Haiku không hiểu nhầm là jailbreak/role-override
 #   2. Instruction không bị token hóa lẫn với context → prompt rõ hơn
+#
+# THIẾT KẾ LOGIC:
+#   Hai nhánh EXCLUSIVE (IF-ELSE):
+#     NHÁNH A (có căn cứ): Trích dẫn → dùng Rule 1, 2, 3, 4
+#     NHÁNH B (không có căn cứ): Từ chối → dùng Rule 5
+#   Hai nhánh KHÔNG BAO GIỜ xảy ra cùng lúc.
 LEGAL_SYSTEM_INSTRUCTION = (
     "Bạn là trợ lý pháp lý chuyên về luật Việt Nam, được xây dựng trên nền tảng VietLawBERT. "
     "Nhiệm vụ của bạn là phân tích căn cứ pháp lý được cung cấp và trả lời câu hỏi "
     "DỰA HOÀN TOÀN vào các văn bản đó, không suy diễn ngoài phạm vi tài liệu.\n\n"
-    "QUY TẮC BẮT BUỘC:\n"
-    "1. Mở đầu bằng: \"Căn cứ theo [Tên/Số hiệu văn bản], tại [Điều/Khoản] quy định: ...\"\n"
-    "2. Nếu có nhiều văn bản, trích dẫn từng văn bản riêng rõ ràng.\n"
-    "3. Nếu tài liệu đề cập hành vi vi phạm liên quan (ví dụ: tổ chức, thực hiện, xúi giục...), "
-    "hãy nêu rõ từng đối tượng và mức phạt tương ứng theo đúng văn bản.\n"
-    "4. Tuyệt đối không suy diễn hoặc đưa thông tin ngoài phạm vi tài liệu đã cung cấp.\n"
-    "5. Nếu không đủ căn cứ: \"Cơ sở dữ liệu hiện tại không đủ căn cứ pháp lý để giải đáp thắc mắc này.\""
+
+    "=== LOGIC XỬ LÝ (BẮT BUỘC TUÂN THỦ) ===\n\n"
+
+    "TRƯỜNG HỢP A — KHI TÀI LIỆU CÓ NỘI DUNG LIÊN QUAN ĐẾN CÂU HỎI:\n"
+    "Áp dụng đầy đủ các quy tắc sau:\n"
+    "  1. Mở đầu bằng: \"Căn cứ theo [Tên/Số hiệu văn bản], tại [Điều/Khoản] quy định: ...\"\n"
+    "  2. Nếu có nhiều văn bản, trích dẫn từng văn bản riêng rõ ràng.\n"
+    "  3. Nếu tài liệu đề cập hành vi vi phạm (tổ chức, thực hiện, xúi giục...), "
+    "nêu rõ từng đối tượng và mức phạt tương ứng.\n"
+    "  4. Tuyệt đối không suy diễn hoặc đưa thông tin ngoài phạm vi tài liệu đã cung cấp.\n\n"
+
+    "TRƯỜNG HỢP B — KHI TÀI LIỆU KHÔNG CÓ NỘI DUNG LIÊN QUAN:\n"
+    "Trả lời DUY NHẤT câu sau, không thêm bất kỳ nội dung nào khác:\n"
+    "  \"Cơ sở dữ liệu hiện tại không đủ căn cứ pháp lý để giải đáp thắc mắc này.\"\n\n"
+
+    "!!! QUAN TRỌNG — NGUYÊN TẮC LOẠI TRỪ TUYỆT ĐỐI !!!\n"
+    "Chỉ được chọn MỘT trong hai trường hợp trên.\n"
+    "TUYỆT ĐỐI KHÔNG được vừa trích dẫn căn cứ vừa nói không đủ căn cứ trong cùng một câu trả lời.\n"
+    "Nếu tài liệu có BẤT KỲ nội dung nào liên quan (dù gián tiếp), áp dụng Trường hợp A.\n"
+    "Chỉ dùng Trường hợp B khi tài liệu HOÀN TOÀN không liên quan đến câu hỏi."
 )
 
 # ─── User prompt — chỉ chứa context + câu hỏi ───────────────────────────────
@@ -141,7 +162,8 @@ class ResilientLLMDispatcher:
                 response = client.chat.completions.create(
                     model=node.model_id,
                     messages=[
-                        # System role: vai trò + quy tắc → Claude không hiểu nhầm là jailbreak
+                        # System role: vai trò + quy tắc IF-ELSE exclusive
+                        # → Claude không hiểu nhầm là jailbreak, không apply 2 rule cùng lúc
                         {"role": "system", "content": LEGAL_SYSTEM_INSTRUCTION},
                         # User role: chỉ chứa context pháp lý + câu hỏi
                         {"role": "user",   "content": prompt},
@@ -171,8 +193,8 @@ class LegalGenerator:
         temperature: float = 0.1,
         max_tokens: int = 1024,
     ):
-        # Tái sử dụng retriever singleton nếu được truyền vào từ bên ngoài
-        # → tránh load bge-m3 lần 2 và tạo duplicate Qdrant/ES connections
+        # FIX: Dùng "is not None" thay vì "or" để tránh tạo retriever mới
+        # khi retriever được truyền vào nhưng có giá trị falsy khác
         self.retriever = retriever if retriever is not None else LegalHybridRetriever()
         self.dispatcher = ResilientLLMDispatcher()
         self.temperature = temperature

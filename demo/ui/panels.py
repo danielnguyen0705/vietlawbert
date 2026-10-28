@@ -4,10 +4,12 @@ demo/ui/panels.py — HTML Renderer cho Evidence Inspector & Scientific Metrics
 Hai hàm render HTML thuần, không phụ thuộc Gradio state.
 Được gọi từ handlers.py sau mỗi lượt chat.
 
-FIX (2026-10): Evidence cards có thể expand/collapse để xem nội dung đầy đủ.
-- Mỗi card có nút "▼ Xem đầy đủ" → toggle hiện toàn bộ nội dung
-- Container card không bị overflow-hidden để nội dung có thể hiện ra
-- Dùng <details>/<summary> thuần HTML5 — không cần JS phức tạp
+FIX (2026-10):
+  - Evidence cards có thể expand/collapse bằng <details>/<summary> HTML5 native
+  - Outer wrapper dùng height cứng 480px (KHÔNG dùng max-height:100% vì trong
+    Gradio 6.x, gr.HTML không có explicit pixel height làm cha → 100% = 0px)
+  - Card overflow:visible để <details> expand không bị clip
+  - overflow-y trên từng div nội dung mở rộng để scroll nội dung bên trong card
 """
 
 from __future__ import annotations
@@ -21,8 +23,10 @@ def render_evidence(docs: List[Dict[str, Any]]) -> str:
     """Render danh sách chunks truy xuất thành HTML card có thể expand."""
     if not docs:
         return (
+            "<div style='height:480px;overflow-y:auto;padding:8px 4px'>"
             "<p style='color:#888;padding:12px;font-style:italic'>"
             "Chưa có truy vấn nào. Nhập câu hỏi và nhấn Gửi.</p>"
+            "</div>"
         )
 
     cards = []
@@ -49,14 +53,15 @@ def render_evidence(docs: List[Dict[str, Any]]) -> str:
         has_more = len(content) > 250
 
         if has_more:
-            # Wrap bằng <details> để có thể expand xem toàn bộ nội dung
-            # open_tag không có JS — chỉ cần click <summary>
+            # IMPORTANT: <details> mở rộng tự do (overflow:visible trên card parent)
+            # Nội dung đầy đủ bên trong có max-height:300px + overflow-y:auto riêng
+            # → card cần scroll bên trong, KHÔNG đẩy card tràn ra panel
             content_html = f"""
 <details style="margin-bottom:4px">
   <summary style="cursor:pointer;font-size:12px;color:#5c6bc0;
                   user-select:none;list-style:none;outline:none;
                   padding:2px 0">
-    <span class="ev-preview" style="font-size:12.5px;color:#333;line-height:1.5">
+    <span style="font-size:12.5px;color:#333;line-height:1.5">
       {preview}
     </span>
     <br/>
@@ -68,7 +73,7 @@ def render_evidence(docs: List[Dict[str, Any]]) -> str:
               margin-top:6px;padding:8px;background:#f0f4ff;
               border-radius:6px;border-left:3px solid #5c6bc0;
               white-space:pre-wrap;word-break:break-word;
-              max-height:400px;overflow-y:auto">
+              max-height:300px;overflow-y:auto">
     {content}
   </div>
 </details>"""
@@ -102,9 +107,12 @@ def render_evidence(docs: List[Dict[str, Any]]) -> str:
 </div>"""
         cards.append(card)
 
-    # Wrapper với scroll — toàn bộ panel cuộn, không cắt nội dung của từng card
+    # FIX: Outer wrapper dùng height:480px cứng (KHÔNG dùng max-height:100%)
+    # Lý do: Gradio 6.x không set explicit pixel height lên gr.HTML wrapper div
+    # → "100%" resolve thành 0px → không có scroll, nội dung tràn ra ngoài
     return (
-        "<div style='overflow-y:auto;max-height:100%;padding-right:4px'>"
+        "<div style='height:480px;overflow-y:auto;overflow-x:hidden;"
+        "padding-right:4px;box-sizing:border-box'>"
         + "".join(cards)
         + "</div>"
     )

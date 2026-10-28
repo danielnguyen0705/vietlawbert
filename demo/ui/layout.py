@@ -17,6 +17,8 @@ Gradio 6.x notes:
   - css= đã chuyển ra khỏi gr.Blocks() → truyền vào .launch() bên app.py
   - show_copy_button, bubble_full_width đã bị xóa khỏi gr.Chatbot()
   - avatar_images vẫn được hỗ trợ
+  - gr.HTML wrapper không forward overflow CSS → phải đặt height/scroll
+    trực tiếp trong HTML string (xem panels.py)
 """
 
 from __future__ import annotations
@@ -35,13 +37,21 @@ from demo.ui.panels import render_evidence, render_metrics
 # ─── CSS ────────────────────────────────────────────────────────────────────
 # NOTE: CSS này được truyền vào demo.launch(css=CSS) trong app.py
 #       KHÔNG truyền vào gr.Blocks() — Gradio 6.x đã chuyển param này sang launch()
+#
+# FIX: Không dùng overflow/height ở đây cho evidence-panel vì Gradio 6.x
+#      không forward các thuộc tính này vào wrapper của gr.HTML.
+#      Thay vào đó, height + scroll được đặt trực tiếp trong HTML string
+#      bên trong panels.render_evidence() — xem panels.py.
 CSS = """
-#vietlawbert-chatbot   { flex-grow:1; min-height:440px; }
-#evidence-panel        { min-height:320px; max-height:520px; overflow-y:auto; }
-#metrics-panel         { min-height:130px; }
-.gradio-container      { font-family:'Segoe UI', 'Helvetica Neue', sans-serif; }
-footer                 { display:none !important; }
-#send-btn              { min-width:90px; }
+#vietlawbert-chatbot { flex-grow:1; min-height:440px; }
+#evidence-panel      { min-height:200px; }
+#metrics-panel       { min-height:130px; }
+.gradio-container    { font-family:'Segoe UI', 'Helvetica Neue', sans-serif; }
+footer               { display:none !important; }
+#send-btn            { min-width:90px; }
+
+/* Giữ cột phải không tràn sang cột trái khi evidence card expand */
+.right-col           { overflow: hidden; min-width: 0; }
 """
 
 
@@ -63,14 +73,14 @@ def build_demo() -> gr.Blocks:
         )
 
         # ── States ──────────────────────────────────────────────────────
-        history_state = gr.State([])     # ChatHistory: [[user, bot], ...]
+        history_state = gr.State([])     # ChatHistory: list of {role, content}
         meta_state    = gr.State([])     # SessionMeta: [{query, mode, ...}, ...]
 
         # ── Layout ──────────────────────────────────────────────────────
         with gr.Row(equal_height=False):
 
             # ── Cột trái: Chat ──────────────────────────────────────────
-            with gr.Column(scale=3):
+            with gr.Column(scale=3, min_width=400):
                 chatbot = gr.Chatbot(
                     elem_id="vietlawbert-chatbot",
                     label="Hội thoại pháp lý",
@@ -123,7 +133,8 @@ def build_demo() -> gr.Blocks:
                     )
 
             # ── Cột phải: Evidence + Metrics ────────────────────────────
-            with gr.Column(scale=2):
+            # elem_classes="right-col" → CSS ngăn column tràn ra
+            with gr.Column(scale=2, min_width=300, elem_classes="right-col"):
                 gr.Markdown("### 🔍 Evidence Inspector")
                 evidence_html = gr.HTML(
                     value=render_evidence([]),
