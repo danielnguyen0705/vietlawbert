@@ -5,6 +5,11 @@ Singleton wrapper cho LegalGenerator.
 Nhận pre-retrieved docs từ retrieval_service để tránh truy xuất 2 lần
 (LegalGenerator.ask() hỗ trợ tham số contexts= cho phép điều này).
 
+FIX (2026-10): _get_generator() nhận tham số `retriever` tùy chọn.
+Nếu truyền vào (từ warmup trong app.py), LegalGenerator sẽ tái sử dụng
+retriever singleton đã khởi tạo thay vì tạo instance mới → tránh load
+bge-m3 lần 2 và tránh duplicate Qdrant/ES connection.
+
 Khi use_mock=True: trả về câu trả lời giả để dev/test UI.
 """
 
@@ -20,13 +25,23 @@ logger = logging.getLogger("demo.generation_service")
 _generator = None
 
 
-def _get_generator():
-    """Khởi tạo LegalGenerator một lần duy nhất (Singleton)."""
+def _get_generator(retriever=None):
+    """
+    Khởi tạo LegalGenerator một lần duy nhất (Singleton).
+
+    Parameters
+    ----------
+    retriever : LegalHybridRetriever | None
+        Nếu truyền vào, LegalGenerator sẽ tái sử dụng retriever đã warm-up
+        thay vì tạo instance mới. Chỉ có tác dụng ở lần gọi đầu tiên.
+    """
     global _generator
     if _generator is None:
         logger.info("Đang khởi tạo LegalGenerator (ResilientLLMDispatcher)...")
         from rag.generator import LegalGenerator
-        _generator = LegalGenerator()
+        # Truyền retriever singleton nếu có → tránh LegalGenerator.__init__
+        # tự khởi tạo thêm LegalHybridRetriever (load bge-m3 lần 2).
+        _generator = LegalGenerator(retriever=retriever) if retriever is not None else LegalGenerator()
         logger.info("LegalGenerator sẵn sàng.")
     return _generator
 

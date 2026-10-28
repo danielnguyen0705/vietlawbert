@@ -3,6 +3,11 @@ demo/ui/panels.py — HTML Renderer cho Evidence Inspector & Scientific Metrics
 ==============================================================================
 Hai hàm render HTML thuần, không phụ thuộc Gradio state.
 Được gọi từ handlers.py sau mỗi lượt chat.
+
+FIX (2026-10): Evidence cards có thể expand/collapse để xem nội dung đầy đủ.
+- Mỗi card có nút "▼ Xem đầy đủ" → toggle hiện toàn bộ nội dung
+- Container card không bị overflow-hidden để nội dung có thể hiện ra
+- Dùng <details>/<summary> thuần HTML5 — không cần JS phức tạp
 """
 
 from __future__ import annotations
@@ -13,7 +18,7 @@ from typing import List, Dict, Any
 # ─── Evidence Inspector ─────────────────────────────────────────────────────
 
 def render_evidence(docs: List[Dict[str, Any]]) -> str:
-    """Render danh sách chunks truy xuất thành HTML card."""
+    """Render danh sách chunks truy xuất thành HTML card có thể expand."""
     if not docs:
         return (
             "<p style='color:#888;padding:12px;font-style:italic'>"
@@ -37,21 +42,55 @@ def render_evidence(docs: List[Dict[str, Any]]) -> str:
             f"<span style='font-size:10px;color:#888;margin-left:6px'>• {eff_date}</span>"
             if eff_date else ""
         )
-        preview = content[:250] + ("…" if len(content) > 250 else "")
+
+        # Nội dung preview (250 ký tự) và nội dung đầy đủ
+        # Dùng <details>/<summary> — HTML5 native expand/collapse, không cần JS
+        preview  = content[:250] + ("…" if len(content) > 250 else "")
+        has_more = len(content) > 250
+
+        if has_more:
+            # Wrap bằng <details> để có thể expand xem toàn bộ nội dung
+            # open_tag không có JS — chỉ cần click <summary>
+            content_html = f"""
+<details style="margin-bottom:4px">
+  <summary style="cursor:pointer;font-size:12px;color:#5c6bc0;
+                  user-select:none;list-style:none;outline:none;
+                  padding:2px 0">
+    <span class="ev-preview" style="font-size:12.5px;color:#333;line-height:1.5">
+      {preview}
+    </span>
+    <br/>
+    <span style="font-size:11px;color:#1565c0;text-decoration:underline">
+      ▼ Xem đầy đủ ({len(content)} ký tự)
+    </span>
+  </summary>
+  <div style="font-size:12.5px;color:#333;line-height:1.6;
+              margin-top:6px;padding:8px;background:#f0f4ff;
+              border-radius:6px;border-left:3px solid #5c6bc0;
+              white-space:pre-wrap;word-break:break-word;
+              max-height:400px;overflow-y:auto">
+    {content}
+  </div>
+</details>"""
+        else:
+            content_html = (
+                f"<div style='font-size:12.5px;color:#333;line-height:1.5;margin-bottom:8px'>"
+                f"{content}</div>"
+            )
 
         card = f"""
 <div style="border:1px solid #dde;border-radius:8px;padding:10px 12px;
             margin-bottom:10px;background:#fafcff;
-            box-shadow:0 1px 3px rgba(0,0,0,.06)">
+            box-shadow:0 1px 3px rgba(0,0,0,.06);
+            overflow:visible">
   <div style="font-size:13px;font-weight:600;color:#1a237e;margin-bottom:2px">
     #{i}&nbsp; {doc_num}
     {date_badge}
   </div>
   <div style="font-size:11px;color:#5c6bc0;margin-bottom:6px">{h_path}</div>
-  <div style="font-size:12.5px;color:#333;line-height:1.5;margin-bottom:8px">
-    {preview}
-  </div>
-  <div style="display:flex;gap:14px;font-size:11px;color:#555;margin-bottom:4px">
+  {content_html}
+  <div style="display:flex;gap:14px;font-size:11px;color:#555;
+              margin-top:6px;margin-bottom:4px;flex-wrap:wrap">
     <span>Rerank: <b style="color:#1565c0">{rerank:.3f}</b></span>
     <span>Graph+: <b style="color:#2e7d32">+{graph_b:.3f}</b></span>
     <span>RRF: <b style="color:#6a1b9a">{rrf:.4f}</b></span>
@@ -63,7 +102,12 @@ def render_evidence(docs: List[Dict[str, Any]]) -> str:
 </div>"""
         cards.append(card)
 
-    return "".join(cards)
+    # Wrapper với scroll — toàn bộ panel cuộn, không cắt nội dung của từng card
+    return (
+        "<div style='overflow-y:auto;max-height:100%;padding-right:4px'>"
+        + "".join(cards)
+        + "</div>"
+    )
 
 
 # ─── Scientific Metrics ─────────────────────────────────────────────────────

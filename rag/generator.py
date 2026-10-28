@@ -1,7 +1,12 @@
 """
 generator.py - Động cơ sinh câu trả lời pháp lý với cơ chế Cascading Fallback (Kiến trúc v3).
-Tự động luân chuyển mô hình theo độ ưu tiên: Cloud SOTA (Claude/OpenRouter) -> Cloud Fast (Gemini) -> Local vLLM/Ollama.
+Tự động luân chuyển mô hình theo độ ưu tiên: Cloud SOTA (Claude/OpenRouter) -> Cloud Fast -> Local vLLM/Ollama.
 Tích hợp tính toán Attribution Score phục vụ đánh giá RQ4 (Grounded Legal Reasoning).
+
+FIX (2026-10):
+  - System instruction tách riêng ra "role: system" → tránh Haiku guardrail
+  - Prompt user chỉ chứa context + query → câu trả lời đúng format "Căn cứ theo..."
+  - LegalGenerator.__init__ nhận tham số retriever= để tái sử dụng singleton
 """
 
 from __future__ import annotations
@@ -21,15 +26,26 @@ from rag.retriever import LegalHybridRetriever
 
 logger = get_subsystem_logger("rag", "generator")
 
-LEGAL_PROMPT_TEMPLATE = """Bạn là trợ lý ảo pháp lý chuyên gia dựa trên hệ thống VietLawBERT.
-Nhiệm vụ của bạn là trả lời câu hỏi của người dùng DỰA HOÀN TOÀN vào các căn cứ pháp lý được cung cấp dưới đây.
+# ─── System instruction — vai trò trợ lý, quy tắc bắt buộc ─────────────────
+# Đặt trong "role: system" để:
+#   1. Claude Haiku không hiểu nhầm là jailbreak/role-override
+#   2. Instruction không bị token hóa lẫn với context → prompt rõ hơn
+LEGAL_SYSTEM_INSTRUCTION = (
+    "Bạn là trợ lý pháp lý chuyên về luật Việt Nam, được xây dựng trên nền tảng VietLawBERT. "
+    "Nhiệm vụ của bạn là phân tích căn cứ pháp lý được cung cấp và trả lời câu hỏi "
+    "DỰA HOÀN TOÀN vào các văn bản đó, không suy diễn ngoài phạm vi tài liệu.\n\n"
+    "QUY TẮC BẮT BUỘC:\n"
+    "1. Mở đầu bằng: \"Căn cứ theo [Tên/Số hiệu văn bản], tại [Điều/Khoản] quy định: ...\"\n"
+    "2. Nếu có nhiều văn bản, trích dẫn từng văn bản riêng rõ ràng.\n"
+    "3. Nếu tài liệu đề cập hành vi vi phạm liên quan (ví dụ: tổ chức, thực hiện, xúi giục...), "
+    "hãy nêu rõ từng đối tượng và mức phạt tương ứng theo đúng văn bản.\n"
+    "4. Tuyệt đối không suy diễn hoặc đưa thông tin ngoài phạm vi tài liệu đã cung cấp.\n"
+    "5. Nếu không đủ căn cứ: \"Cơ sở dữ liệu hiện tại không đủ căn cứ pháp lý để giải đáp thắc mắc này.\""
+)
 
-QUY TẮC BẮT BUỘC:
-1. Mở đầu bằng cấu trúc: "Căn cứ theo [Tên/Số hiệu văn bản], tại [Điều/Khoản] quy định: ..." sau đó mới trình bày nội dung giải thích chi tiết.
-2. Tuyệt đối không suy diễn hoặc đưa thông tin ngoài phạm vi tài liệu đã cho.
-3. Nếu các tài liệu không chứa đầy đủ thông tin để trả lời, thông báo rõ: "Cơ sở dữ liệu hiện tại không đủ căn cứ pháp lý để giải đáp thắc mắc này."
-
-=== CĂN CỨ PHÁP LÝ TRUY XUẤT ===
+# ─── User prompt — chỉ chứa context + câu hỏi ───────────────────────────────
+# Instruction đã nằm trong system message → user turn chỉ cần dữ liệu
+LEGAL_PROMPT_TEMPLATE = """=== CĂN CỨ PHÁP LÝ TRUY XUẤT ===
 {context_blocks}
 
 === CÂU HỎI CỦA NGƯỜI DÙNG ===
@@ -58,11 +74,10 @@ class ResilientLLMDispatcher:
     def _build_cascade_chain(self) -> List[LLMProviderNode]:
         chain = []
 
-        # Tầng 1: Primary Cloud SOTA (Claude 3.5 Sonnet qua OpenRouter / Cloud API)
-        # Thiết lập timeout 15.0s: nếu proxy mạng treo quá 15s lập tức failover sang tầng kế tiếp
+        # Tầng 1: Primary Cloud SOTA (Claude Haiku 4.5 qua hhtechapi.net)
         cloud_key = os.getenv("PRIMARY_LLM_API_KEY") or getattr(config, "PRIMARY_LLM_API_KEY", "")
-        cloud_base = os.getenv("PRIMARY_LLM_API_BASE") or getattr(config, "PRIMARY_LLM_API_BASE", "https://openrouter.ai/api/v1")
-        primary_model = os.getenv("PRIMARY_LLM_MODEL") or getattr(config, "PRIMARY_LLM_MODEL", "claude-3.5-sonnet")
+        cloud_base = os.getenv("PRIMARY_LLM_API_BASE") or getattr(config, "PRIMARY_LLM_API_BASE", "https://hhtechapi.net/v1/")
+        primary_model = os.getenv("PRIMARY_LLM_MODEL") or getattr(config, "PRIMARY_LLM_MODEL", "claude-haiku-4.5")
 
         if cloud_key and cloud_key.strip() and cloud_key.lower() != "ollama":
             chain.append(LLMProviderNode(
@@ -73,11 +88,10 @@ class ResilientLLMDispatcher:
                 timeout=15.0,
             ))
 
-        # Tầng 2: Secondary Cloud Fast (Gemini Flash / Proxy)
-        # Tốc độ phản hồi cực nhanh (~5s - 8s), đóng vai trò cứu cánh tức thời khi SOTA nghẽn
+        # Tầng 2: Secondary Cloud Fast (claude-sonnet-5-5 qua hhtechapi.net)
         fallback_key = os.getenv("FALLBACK_LLM_API_KEY") or getattr(config, "FALLBACK_LLM_API_KEY", "")
-        fallback_base = os.getenv("FALLBACK_LLM_API_BASE") or getattr(config, "FALLBACK_LLM_API_BASE", "https://generativelanguage.googleapis.com/v1beta/openai/")
-        fallback_model = os.getenv("FALLBACK_LLM_MODEL") or getattr(config, "FALLBACK_LLM_MODEL", "gemini-3.8-flash")
+        fallback_base = os.getenv("FALLBACK_LLM_API_BASE") or getattr(config, "FALLBACK_LLM_API_BASE", "https://hhtechapi.net/v1/")
+        fallback_model = os.getenv("FALLBACK_LLM_MODEL") or getattr(config, "FALLBACK_LLM_MODEL", "claude-sonnet-5-5")
 
         if fallback_key and fallback_key.strip():
             chain.append(LLMProviderNode(
@@ -88,9 +102,9 @@ class ResilientLLMDispatcher:
                 timeout=20.0,
             ))
 
-        # Tầng 3: Local Safety Net (vLLM / Ollama trên máy trạm - Luôn sẵn sàng)
+        # Tầng 3: Local Safety Net (Ollama trên máy trạm — Luôn sẵn sàng)
         local_base = os.getenv("LLM_API_BASE") or getattr(config, "LLM_API_BASE", "http://localhost:11434/v1")
-        local_model = os.getenv("GENERATOR_MODEL") or getattr(config, "GENERATOR_MODEL", "Qwen/Qwen2.5-7B-Instruct")
+        local_model = os.getenv("GENERATOR_MODEL") or getattr(config, "GENERATOR_MODEL", "qwen2.5:1.5b")
         local_key = os.getenv("LLM_API_KEY") or getattr(config, "LLM_API_KEY", "ollama")
 
         chain.append(LLMProviderNode(
@@ -105,8 +119,6 @@ class ResilientLLMDispatcher:
 
     def _get_client(self, node: LLMProviderNode) -> OpenAI:
         if node.name not in self._clients:
-            # Sử dụng httpx.Timeout chặt chẽ: connect tối đa 5s, total tối đa node.timeout
-            # Khóa max_retries=0 để lập tức chuyển tiếp (failover) sang node kế tiếp trong chuỗi Cascade khi lỗi
             self._clients[node.name] = OpenAI(
                 base_url=node.api_base,
                 api_key=node.api_key,
@@ -116,6 +128,10 @@ class ResilientLLMDispatcher:
         return self._clients[node.name]
 
     def generate(self, prompt: str, temperature: float = 0.1, max_tokens: int = 1024) -> Tuple[str, str]:
+        """
+        Sinh câu trả lời với cascade fallback.
+        Gửi system instruction trong "role: system" để Claude không kích hoạt guardrail.
+        """
         last_exception = None
 
         for node in self.cascade_chain:
@@ -124,7 +140,12 @@ class ResilientLLMDispatcher:
                 client = self._get_client(node)
                 response = client.chat.completions.create(
                     model=node.model_id,
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=[
+                        # System role: vai trò + quy tắc → Claude không hiểu nhầm là jailbreak
+                        {"role": "system", "content": LEGAL_SYSTEM_INSTRUCTION},
+                        # User role: chỉ chứa context pháp lý + câu hỏi
+                        {"role": "user",   "content": prompt},
+                    ],
                     temperature=temperature,
                     max_tokens=max_tokens,
                 )
@@ -150,7 +171,9 @@ class LegalGenerator:
         temperature: float = 0.1,
         max_tokens: int = 1024,
     ):
-        self.retriever = retriever or LegalHybridRetriever()
+        # Tái sử dụng retriever singleton nếu được truyền vào từ bên ngoài
+        # → tránh load bge-m3 lần 2 và tạo duplicate Qdrant/ES connections
+        self.retriever = retriever if retriever is not None else LegalHybridRetriever()
         self.dispatcher = ResilientLLMDispatcher()
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -160,14 +183,13 @@ class LegalGenerator:
         context_blocks = []
         for i, c in enumerate(contexts, start=1):
             if isinstance(c, str):
-                # Hỗ trợ trường hợp contexts đã được định dạng sẵn chuỗi từ provider
                 context_blocks.append(f"TÀI LIỆU [{i}]:\n{c}")
                 continue
 
-            doc_num = c.get("doc_number") or c.get("doc_id") or "N/A"
+            doc_num  = c.get("doc_number") or c.get("doc_id") or "N/A"
             eff_date = c.get("effective_date", "Chưa xác định")
-            h_path = c.get("hierarchy_path") or c.get("article") or "Điều khoản liên quan"
-            content = (c.get("content") or c.get("text") or "").strip()
+            h_path   = c.get("hierarchy_path") or c.get("article") or "Điều khoản liên quan"
+            content  = (c.get("content") or c.get("text") or "").strip()
 
             block = (
                 f"TÀI LIỆU [{i}]:\n"
@@ -194,7 +216,7 @@ class LegalGenerator:
                 has_art = bool(art_match and art_match.group(0).lower() in ans_lower)
             else:
                 doc_num = str(c.get("doc_number", "")).strip().lower()
-                h_path = str(c.get("hierarchy_path", "")).strip().lower()
+                h_path  = str(c.get("hierarchy_path", "")).strip().lower()
 
                 art_match = re.search(r"điều\s+(\d+[a-za-z]?)", h_path)
                 art_str = art_match.group(0) if art_match else ""
@@ -210,7 +232,7 @@ class LegalGenerator:
     def ask(self, query: str, top_k: int = 3, contexts: Optional[List[Any]] = None) -> Dict[str, Any]:
         """
         Thực hiện sinh câu trả lời pháp lý dựa trên căn cứ.
-        Nếu contexts đã được truyền vào từ bên ngoài (ví dụ generation_provider), tái sử dụng trực tiếp để tránh truy xuất 2 lần.
+        Nếu contexts đã được truyền vào từ bên ngoài (generation_service), tái sử dụng trực tiếp.
         """
         clean_query = query.strip()
         logger.info("Đang xử lý câu hỏi: '%s...'", clean_query[:80])

@@ -75,6 +75,44 @@ def main() -> None:
     # Tạo thư mục flagging/ nếu chưa có
     FEEDBACK_FILE.parent.mkdir(parents=True, exist_ok=True)
 
+    # ── Eager warm-up: khởi tạo TOÀN BỘ stack TRƯỚC demo.launch()
+    # Mục tiêu: khi nhận query đầu tiên, tất cả đã sẵn sàng — không có cold-start.
+    if not USE_MOCK_BACKEND:
+        # Bước 1: Khởi tạo retriever (Qdrant + ES + bge-m3)
+        logger.info("🔥 [1/3] Warm-up: Khởi tạo LegalHybridRetriever (BAAI/bge-m3 + Qdrant + ES)...")
+        try:
+            from demo.server.retrieval_service import _get_retriever
+            retriever = _get_retriever()
+            logger.info("✅ [1/3] LegalHybridRetriever sẵn sàng.")
+        except Exception as e:
+            logger.error("❌ [1/3] Warm-up retriever thất bại: %s", e)
+            retriever = None
+
+        # Bước 2: Nạp graph vector cache (1.29M vectors) bằng dummy query
+        # Graph cache được load lazy bên trong retrieve() — phải trigger ở đây
+        # để tránh 12s delay khi nhận query thật đầu tiên.
+        if retriever is not None:
+            logger.info("🔥 [2/3] Warm-up: Nạp graph vector cache (1.29M vectors từ graph_embeddings_128d.parquet)...")
+            try:
+                retriever.retrieve("khởi động hệ thống pháp lý", top_k=1)
+                logger.info("✅ [2/3] Graph vector cache đã nạp vào RAM — sẵn sàng phục vụ query.")
+            except Exception as e:
+                logger.error("❌ [2/3] Warm-up graph cache thất bại: %s", e)
+
+        # Bước 3: Khởi tạo generator (LLM dispatcher) — truyền retriever singleton vào
+        # để tránh LegalGenerator tự tạo thêm LegalHybridRetriever thứ 2.
+        logger.info("🔥 [3/3] Warm-up: Khởi tạo LegalGenerator (ResilientLLMDispatcher)...")
+        try:
+            from demo.server.generation_service import _get_generator
+            _get_generator(retriever=retriever)
+            logger.info("✅ [3/3] LegalGenerator sẵn sàng.")
+        except Exception as e:
+            logger.error("❌ [3/3] Warm-up generator thất bại: %s", e)
+
+        logger.info("=" * 60)
+        logger.info("✅ Warm-up hoàn tất — toàn bộ pipeline sẵn sàng nhận query ngay.")
+        logger.info("=" * 60)
+
     # Xây dựng giao diện
     demo = build_demo()
 
