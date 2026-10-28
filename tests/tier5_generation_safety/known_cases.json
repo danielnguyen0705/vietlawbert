@@ -1,0 +1,17 @@
+[
+  {
+    "query_contains": "kết hôn với người dưới 18",
+    "expect_doc": "109/2026/NĐ-CP",
+    "max_rank": 3
+  },
+  {
+    "query_contains": "trí tuệ nhân tạo",
+    "expect_doc": "134/2026/NĐ-CP",
+    "max_rank": 5
+  },
+  {
+    "query_contains": "sử dụng trái phép chất ma túy",
+    "expect_doc": "163/2026/NĐ-CP",
+    "max_rank": 5
+  }
+]

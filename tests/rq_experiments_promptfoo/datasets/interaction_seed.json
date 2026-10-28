@@ -1,0 +1,26 @@
+[
+  {
+    "description": "seed_marriage_underage — xử phạt tổ chức/duy trì hôn nhân với người chưa đủ tuổi",
+    "vars": {
+      "query": "Kết hôn với người dưới 18 tuổi thì bị xử phạt như thế nào?",
+      "ground_truth_doc_number": "109/2026/NĐ-CP",
+      "ground_truth_article": "Điều 61"
+    }
+  },
+  {
+    "description": "seed_ip_ai_authorship — quyền tác giả với tác phẩm có dùng AI",
+    "vars": {
+      "query": "Quyền tác giả đối với tác phẩm có sử dụng hệ thống trí tuệ nhân tạo phát sinh khi nào?",
+      "ground_truth_doc_number": "134/2026/NĐ-CP",
+      "ground_truth_article": "Điều 4"
+    }
+  },
+  {
+    "description": "seed_drug_use_management — biện pháp quản lý người sử dụng trái phép chất ma túy",
+    "vars": {
+      "query": "Biện pháp quản lý đối với người sử dụng trái phép chất ma túy được quy định ra sao?",
+      "ground_truth_doc_number": "163/2026/NĐ-CP",
+      "ground_truth_article": "Điều 59"
+    }
+  }
+]

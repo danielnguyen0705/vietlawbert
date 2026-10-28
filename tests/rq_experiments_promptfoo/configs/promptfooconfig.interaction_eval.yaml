@@ -1,0 +1,68 @@
+# yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
+description: "VietLawBERT: Golden-case eval gắn với interaction log — Citation Matching (starter, tự mở rộng)"
+
+# Starter config: chạy pipeline RAG đầy đủ trên các câu hỏi golden (datasets/interaction_seed.json),
+# assert TẤT ĐỊNH rằng câu trả lời / evidence có viện dẫn đúng doc_number đích.
+# Không cần LLM-judge để chạy vòng này → nhẹ, chạy được ngay trên máy trạm CPU.
+# Khi cần đo Faithfulness sâu hơn, bật khối llm-rubric (đã comment ở cuối) với key hhtechapi.
+
+prompts:
+  - "{{query}}"
+
+evaluateOptions:
+  maxConcurrency: 1
+  # 10 phút/case: pipeline CPU (bge-m3) + cascade LLM có thể chậm
+  timeoutMs: 600000
+
+providers:
+  - id: "file://../providers/generation_provider.py"
+    label: "VietLawBERT-Full-RAG-Pipeline"
+    config:
+      top_k: 5
+      timeoutMs: 600000
+
+defaultTest:
+  assert:
+    # 1. Câu trả lời đủ dài (không rỗng / không lỗi hệ thống)
+    - type: javascript
+      metric: valid_answer
+      value: "JSON.parse(output).answer.length > 20"
+
+    # 2. Citation Matching (TẤT ĐỊNH): câu trả lời HOẶC evidence phải chứa doc_number đích.
+    #    Chuẩn hoá bỏ khoảng trắng + hạ chữ thường trước khi so khớp.
+    - type: javascript
+      metric: citation_presence
+      value: |
+        const data = JSON.parse(output);
+        const norm = s => String(s == null ? '' : s).toLowerCase().replace(/\s+/g, '');
+        const target = norm(context.vars.ground_truth_doc_number);
+        const inAnswer = norm(data.answer).includes(target);
+        const inDocs = (data.retrieved_docs || []).some(d => norm(d).includes(target));
+        return (inAnswer || inDocs)
+          ? { pass: true, score: 1, reason: `OK: tìm thấy ${target}` }
+          : { pass: false, score: 0, reason: `MISS ${target} — answer & retrieved_docs không chứa doc đích` };
+
+tests: file://../datasets/interaction_seed.json
+
+# =============================================================================
+# (TÙY CHỌN) Bật LLM-as-a-judge đo Faithfulness — cần key hhtechapi trong .env
+# Dán khối dưới vào `defaultTest:` (ngang hàng với `assert:`) để kích hoạt:
+#
+#   options:
+#     provider:
+#       id: openai:chat:gpt-6-sol
+#       config:
+#         apiBaseUrl: https://hhtechapi.net/v1
+#         temperature: 0.0
+#
+# rồi thêm assertion:
+#   - type: llm-rubric
+#     metric: ragas_faithfulness
+#     transform: |
+#       try { const d = JSON.parse(output);
+#         return "TRẢ LỜI: " + d.answer + "\n\nCĂN CỨ: " + (d.contexts||[]).join("\n"); }
+#       catch(e) { return output; }
+#     value: |
+#       [ĐẠT] nếu mọi khẳng định (thẩm quyền, số tiền, chế tài) có bằng chứng trực tiếp từ CĂN CỨ.
+#       [KHÔNG ĐẠT] nếu có suy diễn, tự bịa số liệu, hoặc trích sai văn bản.
+# =============================================================================

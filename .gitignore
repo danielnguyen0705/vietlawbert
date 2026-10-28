@@ -53,3 +53,6 @@ htmlcov/
 Thumbs.db
 
 CLAUDE.md
+
+# Interaction & feedback runtime logs (du lieu sinh khi chay demo, khong commit)
+flagging/*.jsonl

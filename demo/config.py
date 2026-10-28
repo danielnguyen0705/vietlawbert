@@ -37,6 +37,11 @@ DEFAULT_MODE = "Full (+ Graph Rerank)"
 FLAGGING_DIR  = REPO_ROOT / "flagging"
 FEEDBACK_FILE = FLAGGING_DIR / "feedback.jsonl"
 
+# ── Interaction logging (reproducible evidence) ──────────────────────────────
+# Ghi TOÀN BỘ mỗi lượt hỏi-đáp (query, answer, top-k evidence, metrics) vào JSONL
+# phục vụ phân tích định lượng và viết test hồi quy. File là dữ liệu runtime → gitignored.
+INTERACTIONS_FILE = FLAGGING_DIR / "interactions.jsonl"
+
 # ── Backend switch ────────────────────────────────────────────────────────────
 # USE_MOCK_BACKEND=true (mặc định): chạy UI không cần Qdrant/ES
 # USE_MOCK_BACKEND=false: kết nối backend RAG thật

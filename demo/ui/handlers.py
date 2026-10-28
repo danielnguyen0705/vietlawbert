@@ -22,7 +22,7 @@ from typing import List, Dict, Any, Tuple
 import gradio as gr
 
 from demo.config import USE_MOCK_BACKEND, DEFAULT_TOP_K, DEFAULT_MODE
-from demo.server import retrieval_service, generation_service, feedback_service
+from demo.server import retrieval_service, generation_service, feedback_service, interaction_service
 from demo.ui.panels import render_evidence, render_metrics
 
 logger = logging.getLogger("demo.handlers")
@@ -127,6 +127,22 @@ def handle_submit(
         attribution_score     = attribution_score,
         model_used            = model_used,
         is_mock               = is_mock,
+    )
+
+    # Ghi log đầy đủ lượt này (query + answer + top-k evidence + metrics)
+    # phục vụ phân tích định lượng và viết test hồi quy. An toàn, không làm hỏng UI.
+    interaction_service.log_interaction(
+        query                 = query,
+        answer                = answer,
+        docs                  = docs,
+        mode                  = mode,
+        top_k                 = int(top_k),
+        model_used            = model_used,
+        attribution_score     = attribution_score,
+        retrieval_latency_ms  = retr_lat,
+        generation_latency_ms = gen_lat,
+        is_mock               = is_mock,
+        turn_index            = turn_index,
     )
 
     return new_history, new_history, new_meta, "", evidence, metrics
