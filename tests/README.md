@@ -2,85 +2,140 @@
 
 ## 1. Kiến trúc hệ thống
 
+Nguyên tắc tổ chức: **một thư mục cha – nhiều thư mục con**, mỗi nhánh cùng một khuôn `configs/` + `test/`.
+- `system/` – kiểm thử **hệ thống RAG** (dữ liệu → đồ thị → truy xuất → tạo sinh → chatbox).
+- `model/` – kiểm thử **mô hình nhúng** (hàm mất mát MRL, khai phá mẫu âm, baseline đa backbone).
+- `_common/` – hạ tầng **dùng chung cho cả hai nhánh** (đường dẫn, dataset, assertion, provider, công cụ). Thư mục này **không chứa test**.
+
 ```
 tests/
-├── conftest.py                           nối sys.path portable + fixture neo4j/qdrant/es (tự động bỏ qua khi service tắt)
-├── pytest.ini                            markers tier1..5 + requires_* + testpaths
-├── run_audit.py                          chạy tuần tự cả 5 tầng kiểm thử và in báo cáo tổng
-├── _common/
-│   ├── __init__.py          
-│   └── paths.py                          dò gốc repo + đọc env VIETLAWBERT_ROOT/DATA/CKPT 
+├── README.md
+├── pytest.ini                         markers tier1..5 + requires_* (chạy theo tầng: pytest -m tier3)
+├── conftest.py                        nối sys.path portable + fixture neo4j/qdrant/es (tự bỏ qua khi service tắt)
+├── run_audit.py                       chạy tuần tự toàn bộ test và in báo cáo tổng
 │
-├── tier1_data_curation/                  Tầng kiểm tra dữ liệu & AST
-│   ├── test_tier1_data_curation.py       12 ca: gate ngôn ngữ, metadata regex, AST đa cấp, corpus parquet/gzip
-│   ├── test_ast_parser.py                AST hierarchy tracker + văn bản có cấu trúc
-│   ├── test_legal_chunker.py             cắt chunk theo đơn vị pháp lý
-│   ├── test_text_cleaner.py              khử boilerplate + trích số hiệu/ngày
-│   ├── test_crawl_audit.py               kiểm toán crawl
-│   └── test_quality_text_gate.py         định lượng ngưỡng nguyên âm 0.05 (loại rác, không loại nhầm)
+├── _common/                           DÙNG CHUNG (không chứa test)
+│   ├── paths.py                       dò gốc repo + đọc env VIETLAWBERT_ROOT/DATA/CKPT; khai báo COMMON_DIR/SYSTEM_DIR/MODEL_DIR
+│   ├── datasets/                      vietlawbench_clean.jsonl · demo.json · load_tests.js · clean_vietlawbench.py ...
+│   ├── assertions/                    retrieval_metrics.js · fail_category.js
+│   ├── providers/                     provider.py (encoder đa backbone) · retrieval_provider.py · generation_provider.py · gradio_chat_provider.py · mock_provider.py
+│   ├── tools/                         analyze_latency.py · analyze_interactions.py
+│   └── README_testing_pack.md         mô tả bộ công cụ testing (metric tất định, fail_category, red-team)
 │
-├── tier2_graph_multistore/               Tầng kiểm tra đồ thị HIN 
-│   ├── test_tier2_graph_multistore.py    ràng buộc Neo4j, chunk mồ côi, self-loop, Qdrant status
-│   ├── test_hin_22_relations.py          đếm phổ quan hệ, khẳng định đủ quan hệ hiệu lực trọng yếu
-│   ├── test_metadata_injection.py        [META]/[HIERARCHY]/[CONTENT] nhúng đúng + số hiệu văn bản
-│   ├── test_ingestion_stabilization.py   integration ổn định nạp dữ liệu
-│   └── test_merge_crawl_artifacts.py     integration gộp artifact crawl
+├── system/                            HỆ THỐNG RAG
+│   ├── configs/                       promptfoo: rq3_retrieval · generation · interaction_eval · chatbox_e2e · redteam · redteam_cases · demo_mock
+│   ├── test/                          pytest
+│   │   ├── data_curation/             (tier1) gate ngôn ngữ, AST parser, text cleaner, crawl audit, ngưỡng nguyên âm
+│   │   ├── graph_multistore/          (tier2) Neo4j HIN, 22 quan hệ, metadata injection, ingest, merge artifact
+│   │   ├── retrieval_ir/              (tier4) Sparse/Dense/RRF + end-to-end + độ trễ
+│   │   ├── generation_safety/         (tier5) RAG toàn trình, citation grounding, guardrail
+│   │   └── chatbox/                   (tier5) Gradio chatbox: handlers, nhật ký tương tác, feedback, golden case
+│   ├── redteam/                       injection_cases.jsonl · legal_injection_assert.js · load_injection.js
+│   └── out/                           kết quả eval-*.json của các config hệ thống
 │
-├── tier3_representation_mrl/             Tần kiểm tra biểu diễn MRL
-│   ├── test_tier3_representation_mrl.py  InfoNCE 6 lát cắt, L2 sau cắt, gradient, Spearman
-│   ├── test_mrl_loss.py                  forward/backward MRL loss
-│   ├── test_hierarchy_loss.py            cô lập gamma*L_Hierarchy (SupCon d=64) có tham gia loss
-│   └── test_hin_triplet_miner.py         khẳng định entrypoint khai phá mẫu âm (training.generate_hin_triplets, beta=0.5)
-│
-├── tier4_retrieval_ir/                   Tầng kiểm tra giai đoạn Truy xuất
-│   └── test_tier4_ir_benchmark.py        Sparse/Dense/RRF + end-to-end + đo độ trễ
-│
-├── tier5_generation_safety/              Tầng kiểm tra giai đoạn Tạo sinh
-│   └── test_tier5_generation_safety.py   RAG toàn trình, citation grounding, guardrail
-│
-└── rq_experiments_promptfoo/             Thực nghiệm với promptfoo
-    ├── providers/  provider.py | retrieval_provider.py | generation_provider.py
-    ├── configs/    promptfooconfig.{baselines,retrieval,generation}.yaml
-    ├── datasets/   demo.json (10 ca) | vietlawbench_promptfoo_tests.json | jsonl_to_json.py
-    └── README.md
+└── model/                             MÔ HÌNH NHÚNG
+    ├── configs/                       promptfoo: baselines (zero-shot vs Ours-MRL@256 trên 4 backbone)
+    ├── test/                          pytest
+    │   ├── mrl_loss/                  (tier3) InfoNCE 6 lát cắt, L2 sau cắt, gradient, Spearman, gamma*L_Hierarchy
+    │   └── hin_triplet_mining/        (tier3) entrypoint khai phá mẫu âm training.generate_hin_triplets (beta=0.5)
+    └── out/                           kết quả eval-baselines.json
 ```
+
+Quy ước: `file://` trong yaml tính từ thư mục chứa file yaml, nên hạ tầng dùng chung được gọi là
+`file://../../_common/providers/...`; `../out/` và `../redteam/` là thư mục anh em của `configs/` trong cùng nhánh.
+Số tầng `tier1..5` vẫn giữ làm **marker pytest** (không còn nằm trong tên thư mục) để chạy chéo nhánh: `pytest -m tier3`.
 
 ## 2. Ánh xạ file ↔ hạng mục đặc tả
 
-| Tầng | File | Hạng mục đặc tả |
+| Nhánh / thư mục | Tầng | File | Hạng mục đặc tả |
 | --- | --- | --- | --- |
-| 1 | test_tier1_data_curation, test_ast_parser, test_legal_chunker, test_text_cleaner | AST Parser, chunk theo đơn vị pháp lý |
-| 1 | test_quality_text_gate, test_crawl_audit | Bộ lọc chất lượng (nguyên âm ≥0.05) |
-| 2 | test_tier2_graph_multistore, test_hin_22_relations | Đồ thị HIN Neo4j 22 quan hệ, Qdrant |
-| 2 | test_metadata_injection | Metadata Text Injection 11 trường |
-| 2 | test_ingestion_stabilization, test_merge_crawl_artifacts | Pipeline nạp & đa kho |
-| 3 | test_tier3_representation_mrl, test_mrl_loss, test_hierarchy_loss | Hierarchy-Aware Matryoshka InfoNCE |
-| 3 | test_hin_triplet_miner | HIN-Guided Hard Negatives (metapath/RWR) |
-| 4 | test_tier4_ir_benchmark | Truy xuất lai Dense/Sparse/RRF/Graph |
-| 5 | test_tier5_generation_safety | Tạo sinh có căn cứ + guardrail |
-| 4* | rq_experiments_promptfoo/* | Thực nghiệm số liệu sử dụng Promptfoo |
+| system/test/data_curation | 1 | test_tier1_data_curation, test_ast_parser, test_text_cleaner | AST Parser, chunk theo đơn vị pháp lý |
+| system/test/data_curation | 1 | test_quality_text_gate, test_crawl_audit | Bộ lọc chất lượng (nguyên âm ≥0.05) |
+| system/test/graph_multistore | 2 | test_tier2_graph_multistore, test_hin_22_relations | Đồ thị HIN Neo4j 22 quan hệ, Qdrant |
+| system/test/graph_multistore | 2 | test_metadata_injection | Metadata Text Injection 11 trường |
+| system/test/graph_multistore | 2 | test_ingestion_stabilization, test_merge_crawl_artifacts | Pipeline nạp & đa kho |
+| model/test/mrl_loss | 3 | test_tier3_representation_mrl, test_mrl_loss, test_hierarchy_loss | Hierarchy-Aware Matryoshka InfoNCE |
+| model/test/hin_triplet_mining | 3 | test_hin_triplet_miner | HIN-Guided Hard Negatives (metapath/RWR) |
+| system/test/retrieval_ir | 4 | test_tier4_ir_benchmark | Truy xuất lai Dense/Sparse/RRF/Graph |
+| system/test/generation_safety | 5 | test_tier5_generation_safety | Tạo sinh có căn cứ + guardrail |
+| system/test/chatbox | 5 | test_chatbox_handlers, test_interaction_log | WP11/WP12 — trạng thái hội thoại, log, feedback (xem mục 3.4) |
+| system/configs (+ redteam) | 4–5 | rq3_retrieval · generation · interaction_eval · redteam* | Thực nghiệm số liệu bằng Promptfoo cho hệ thống |
+| model/configs | 3–4 | baselines | Thực nghiệm so sánh đa backbone (RQ1/RQ2) bằng Promptfoo |
 
-## 3. Cách chạy thực nghiệm với Promptfoo
+## 3. Cách chạy
 
 ### 3.1. Chuẩn bị
 - Bật service: Qdrant (6333), Elasticsearch (9200), Neo4j (7687) — `docker compose up -d`.
 - Đặt khóa LLM judge/generator trong `.env`.
 - `npm i -g promptfoo` (hoặc `npx promptfoo`).
 
-### 3.2. Lệnh chạy
+### 3.2. pytest
 ```bash
-cd tests/rq_experiments_promptfoo
+python -m pytest tests -v                 # toàn bộ
+python -m pytest tests/system -v       # chỉ nhánh hệ thống
+python -m pytest tests/model -v           # chỉ nhánh mô hình
+python -m pytest tests -m tier3 -v        # theo tầng (marker)
+python tests/run_audit.py                 # chạy tuần tự + báo cáo tổng
+```
 
-# so sánh baseline đa backbone (zero-shot vs Ours-MRL@256), 1000 câu
-promptfoo eval -c configs/promptfooconfig.baselines.yaml
+### 3.3. promptfoo (mỗi nhánh chạy từ thư mục configs/ của nhánh đó)
+```bash
+# --- MÔ HÌNH: baseline đa backbone (zero-shot vs Ours-MRL@256) ---
+cd tests/model/configs
+VLB_LIMIT=30 npx promptfoo@latest eval -c promptfooconfig.baselines.yaml -o ../out/eval-baselines.json
 
-# ablation truy xuất Dense/Sparse/RRF/Full
-promptfoo eval -c configs/promptfooconfig.retrieval.yaml --table
+# --- CHỨC NĂNG: ablation truy xuất Dense/Sparse/RRF/Full ---
+cd tests/system/configs
+VLB_LIMIT=30 npx promptfoo@latest eval -c promptfooconfig.rq3_retrieval.yaml -o ../out/eval-rq3_retrieval.json
+python ../../_common/tools/analyze_latency.py --eval ../out/eval-rq3_retrieval.json
 
-# tạo sinh & độ trung thực (Faithfulness/Citation/Guardrail)
-promptfoo eval -c configs/promptfooconfig.generation.yaml --table
+# --- CHỨC NĂNG: tạo sinh & độ trung thực; red-team tất định ---
+npx promptfoo@latest eval -c promptfooconfig.generation.yaml -o ../out/eval-generation.json
+npx promptfoo@latest eval -c promptfooconfig.redteam_cases.yaml -o ../out/eval-redteam_cases.json
 
-promptfoo view   # xem kết quả
+npx promptfoo@latest view      # xem kết quả
+```
+
+### 3.4. Kiểm thử chatbox Gradio (`system/test/chatbox`)
+
+Chatbox (`demo/`) gồm 3 lớp: **xử lý sự kiện** (`demo/ui/handlers.py`) → **dịch vụ** (`demo/server/*`) → **RAG thật**. Mỗi tiêu chí dưới đây kiểm đúng một lớp bằng công cụ rẻ nhất đủ dùng.
+
+| # | Tiêu chí | Công cụ | File / config | Cần backend thật? |
+| --- | --- | --- | --- | --- |
+| 1 | Logic hội thoại: đầu vào rỗng, định dạng history Gradio 6, `top_k`/mode, Clear, Retry thay lượt cuối, Like/Dislike ánh xạ đúng lượt | pytest | `test_chatbox_handlers.py` | Không (backend mock) |
+| 2 | Toàn vẹn nhật ký hỏi–đáp: schema, `attribution ∈ [0,1]`, rank liên tục, `total = retr + gen`, golden case | pytest | `test_interaction_log.py` + `known_cases.json` | Cần có `flagging/interactions.jsonl` (tự SKIP nếu chưa có) |
+| 3 | Trích dẫn đúng căn cứ (tất định): câu trả lời hoặc evidence chứa đúng số hiệu văn bản đích | promptfoo | `interaction_eval.yaml` + `interaction_seed.json` | Có (Qdrant, ES, Neo4j, LLM) |
+| 4 | Từ chối đúng: câu ngoài miền, đòi lộ prompt, bịa số hiệu, injection mã hoá | promptfoo | `redteam_cases.yaml` | Có |
+| 5 | Độ trễ và attribution theo mode, tách lượt khởi động nguội/ấm (chỉ báo cáo, không gate pass/fail) | script | `_common/tools/analyze_interactions.py` | Cần log thật |
+| 6 | **E2E qua giao diện**: gọi endpoint `/chat` của Gradio, so sánh 4 chế độ dropdown; câu trả lời hiển thị, Evidence khớp Metrics, trích dẫn đúng, độ trễ đầu-cuối | promptfoo + `gradio_client` | `chatbox_e2e.yaml` + `_common/providers/gradio_chat_provider.py` | Chatbox phải đang chạy; backend thật thì mới có ý nghĩa với trích dẫn |
+
+Mỗi ca E2E cũng được chatbox ghi vào `flagging/interactions.jsonl` như một lượt hỏi thật. Với `USE_MOCK_BACKEND=true`, các kiểm tra giao diện (câu trả lời, Evidence khớp Metrics) đạt, còn `citation_presence` FAIL là đúng vì dữ liệu giả.
+
+Chưa cần ở giai đoạn này: Faithfulness/RAGAS (LLM-judge, không tất định, cần GPU/khóa — WP8.4), đối thoại đa lượt (hiện `_run_pipeline` chỉ nhận câu hỏi cuối, không nhận lịch sử), Playwright DOM (WP12.11), streaming/TTFT (WP11.3), multi-hop theo thời gian (WP11.8).
+
+Hai phát hiện khi viết test (đang là `xfail`, không làm đỏ suite):
+- Handler không kẹp `top_k` vào `[1, MAX_TOP_K]`; endpoint `/chat` có thể nhận `0`, âm hoặc `10000` (chỉ slider trên UI mới chặn).
+- Đối thoại đa lượt chưa được hỗ trợ ở tầng backend nên chưa thể viết `chat_multiturn.yaml` có ý nghĩa.
+
+```bash
+# (1) Không cần service nào — chạy được ngay
+pip install gradio pytest
+python -m pytest tests/system/test/chatbox/test_chatbox_handlers.py -v
+
+# (2)+(5) Tạo log thật rồi kiểm tra / phân tích
+USE_MOCK_BACKEND=false python -m demo.app            # mở http://localhost:7860, hỏi vài câu (có thể dùng 3 câu trong interaction_seed.json)
+python -m pytest tests/system/test/chatbox/test_interaction_log.py -v
+python tests/_common/tools/analyze_interactions.py
+
+# (3)+(4) promptfoo — cần docker compose up -d và khóa LLM trong .env
+cd tests/system/configs
+npx promptfoo@latest eval -c promptfooconfig.interaction_eval.yaml -o ../out/eval-interaction_eval.json
+npx promptfoo@latest eval -c promptfooconfig.redteam_cases.yaml    -o ../out/eval-redteam_cases.json
+
+# (6) E2E qua giao diện — mở chatbox ở cửa sổ khác rồi chạy (cần: pip install gradio gradio_client)
+#     bash: USE_MOCK_BACKEND=false python -m demo.app     PowerShell: $env:USE_MOCK_BACKEND="false"; python -m demo.app
+npx promptfoo@latest eval -c promptfooconfig.chatbox_e2e.yaml -o ../out/eval-chatbox_e2e.json
+npx promptfoo@latest view
 ```
 ---
 
@@ -121,7 +176,7 @@ liệu sạch dẫn chiếu) và kết luận vẫn là graph-rerank hiện **k�
 
 #### Kết quả kiểm thử Baselines đa backbone: MRL@256 ngang vanilla full-dim
 
-Sau khi trỏ `provider.py` dùng candidate pool `datasets/vietlawbench_clean.jsonl` (729 chunk sạch), baselines chạy được: **92/120 pass (76,7%)** với `VLB_LIMIT=15`.
+Sau khi trỏ `provider.py` dùng candidate pool `_common/datasets/vietlawbench_clean.jsonl` (729 chunk sạch), baselines chạy được: **92/120 pass (76,7%)** với `VLB_LIMIT=15`.
 
 | Backbone | Base Vanilla | Ours-MRL @256d | Timeout 300s |
 | --- | --- | --- | --- |
@@ -173,8 +228,8 @@ Chỉ số thành phần (8/10 cell có chấm; 2 cell lỗi hạ tầng): `vali
 ## Các cập nhật bổ sung
 
 - Metric truy xuất **tất định**: `doc_hit@k` (contain-any số hiệu) + `article_hit@k`/`clause_hit@k` (equal theo Global Hierarchical ID doc→chương→điều→khoản). **Bỏ `legal_relevance_judge` (LLM)** khỏi truy xuất.
-- **Latency tách khỏi pass/fail** (`latency_report` non-gating + `tools/analyze_latency.py` cho P50/P95/P99) — khắc phục nghịch lý cũ "latency cao vẫn PASS / thấp vẫn FAIL".
+- **Latency tách khỏi pass/fail** (`latency_report` non-gating + `_common/tools/analyze_latency.py` cho P50/P95/P99) — khắc phục nghịch lý cũ "latency cao vẫn PASS / thấp vẫn FAIL".
 - Nhãn **`fail_category`** (F1 GT-lỗi / F2 retrieval-miss / F3 lệch-khoản / F4 hạ-tầng / OK) — mọi FAIL đều giải trình được.
-- Dữ liệu nạp qua `datasets/load_tests.js` (bộ **sạch 729 câu**, đã lọc 271 câu dẫn chiếu lỗi: preamble / điều
+- Dữ liệu nạp qua `_common/datasets/load_tests.js` (bộ **sạch 729 câu**, đã lọc 271 câu dẫn chiếu lỗi: preamble / điều
   khoản thi hành / "Điều khoản liên quan").
 - Config mới: `rq3_retrieval.yaml`, `demo_mock.yaml` (chạy không cần backend), `redteam_cases.yaml`, `redteam.yaml`. Đã **gỡ `retrieval.yaml`** (bản cũ, metric lỗi — thay bằng `rq3_retrieval.yaml`).

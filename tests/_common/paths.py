@@ -40,6 +40,13 @@ except Exception:
 PROCESSED_PARQUET = DATA_ROOT / "processed_parquet"
 BULK_VECTORS = DATA_ROOT / "bulk_vectors"
 
+# Bố cục thư mục test: tests/{_common, system, model}
+#   _common/    = hạ tầng DÙNG CHUNG (datasets, assertions, providers, tools) - không chứa test
+#   system/     = {configs, test, redteam, out} cho hệ thống RAG (dữ liệu → đồ thị → truy xuất → sinh → chatbox)
+#   model/      = {configs, test, out} cho mô hình nhúng (MRL, baselines)
 TESTS_DIR = REPO_ROOT / "tests"
-HARNESS_DIR = TESTS_DIR / "rq_experiments_promptfoo"
-DATASETS_DIR = HARNESS_DIR / "datasets"
+COMMON_DIR = TESTS_DIR / "_common"
+SYSTEM_DIR = TESTS_DIR / "system"
+MODEL_DIR = TESTS_DIR / "model"
+HARNESS_DIR = COMMON_DIR              # giữ tên cũ để code cũ không vỡ (providers/ nằm trong _common)
+DATASETS_DIR = COMMON_DIR / "datasets"

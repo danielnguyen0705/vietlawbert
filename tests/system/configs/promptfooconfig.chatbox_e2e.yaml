@@ -1,0 +1,73 @@
+# yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
+description: "VietLawBERT: Chatbox Gradio E2E — gọi qua endpoint /chat, so sánh 4 chế độ của dropdown (WP12.1, WP11.4)"
+
+# Khác interaction_eval (gọi thẳng pipeline Python), config này đi qua Gradio:
+#   promptfoo -> gradio_client -> /chat -> handle_submit -> RAG -> bảng Chat / Evidence / Metrics.
+# YÊU CẦU: chatbox đang chạy ở một cửa sổ khác:
+#     USE_MOCK_BACKEND=false python -m demo.app          (PowerShell: $env:USE_MOCK_BACKEND="false"; python -m demo.app)
+# Địa chỉ mặc định http://127.0.0.1:7860; đổi bằng biến CHATBOX_URL (hoặc config.url bên dưới).
+# Với USE_MOCK_BACKEND=true (dữ liệu giả) chỉ các kiểm tra giao diện đạt; citation_presence sẽ FAIL là đúng.
+#
+# Chạy:   cd tests/system/configs
+#         npx promptfoo@latest eval -c promptfooconfig.chatbox_e2e.yaml -o ../out/eval-chatbox_e2e.json
+#         python ../../_common/tools/analyze_latency.py --eval ../out/eval-chatbox_e2e.json
+# Lưu ý: mỗi ca test cũng được chatbox ghi vào flagging/interactions.jsonl như một lượt hỏi thật.
+
+prompts:
+  - "{{query}}"
+
+evaluateOptions:
+  maxConcurrency: 1          # chatbox xử lý tuần tự; tăng sẽ làm sai số đo độ trễ
+  timeoutMs: 600000
+
+providers:
+  - id: "file://../../_common/providers/gradio_chat_provider.py"
+    label: "Chatbox · Dense"
+    config: { mode: "Dense", top_k: 5, timeout_s: 600 }
+  - id: "file://../../_common/providers/gradio_chat_provider.py"
+    label: "Chatbox · Sparse (BM25)"
+    config: { mode: "Sparse (BM25)", top_k: 5, timeout_s: 600 }
+  - id: "file://../../_common/providers/gradio_chat_provider.py"
+    label: "Chatbox · Hybrid-RRF"
+    config: { mode: "Hybrid-RRF", top_k: 5, timeout_s: 600 }
+  - id: "file://../../_common/providers/gradio_chat_provider.py"
+    label: "Chatbox · Full (+ Graph Rerank)"
+    config: { mode: "Full (+ Graph Rerank)", top_k: 5, timeout_s: 600 }
+
+defaultTest:
+  assert:
+    # 1. Câu trả lời hiển thị trong khung chat, không rỗng / không phải thông báo lỗi ngắn
+    - type: javascript
+      metric: valid_answer
+      value: "JSON.parse(output).answer.length > 20"
+
+    # 2. Bảng Evidence hiển thị 1..top_k thẻ và khớp số liệu ở bảng Metrics (hai panel không mâu thuẫn)
+    - type: javascript
+      metric: ui_evidence_consistent
+      value: |
+        const d = JSON.parse(output);
+        const n = d.n_evidence, m = d.metrics || {};
+        if (n < 1 || n > d.top_k) return { pass: false, score: 0, reason: `Evidence hiển thị ${n} thẻ, ngoài [1, ${d.top_k}]` };
+        if (m.n_docs != null && m.n_docs !== n) return { pass: false, score: 0, reason: `Panel Metrics báo ${m.n_docs} doc nhưng Evidence hiển thị ${n}` };
+        return { pass: true, score: 1, reason: `OK: ${n} thẻ evidence, khớp Metrics` };
+
+    # 3. Citation Matching (tất định): câu trả lời HOẶC evidence chứa đúng số hiệu văn bản đích
+    - type: javascript
+      metric: citation_presence
+      value: |
+        const data = JSON.parse(output);
+        const norm = s => String(s == null ? '' : s).toLowerCase().replace(/\s+/g, '');
+        const target = norm(context.vars.ground_truth_doc_number);
+        const inAnswer = norm(data.answer).includes(target);
+        const inDocs = (data.retrieved_docs || []).some(d => norm(d).includes(target));
+        return (inAnswer || inDocs)
+          ? { pass: true, score: 1, reason: `OK: tìm thấy ${target}` }
+          : { pass: false, score: 0, reason: `MISS ${target} — answer & evidence không chứa doc đích` };
+
+    # 4. Độ trễ đầu-cuối (đo ở client, gồm cả mạng + UI) — CHỈ BÁO CÁO, không quyết định pass/fail
+    - type: javascript
+      value: file://../../_common/assertions/retrieval_metrics.js:latencyReport
+      metric: latency_report
+      weight: 0
+
+tests: file://../../_common/datasets/interaction_seed.json

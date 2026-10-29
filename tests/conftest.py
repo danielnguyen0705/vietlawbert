@@ -1,7 +1,7 @@
-"""conftest.py - Cấu hình & fixture dùng chung cho toàn bộ test suite 5 tầng.
+"""conftest.py - Cấu hình & fixture dùng chung cho toàn bộ test suite (tests/system + tests/model).
 
 - Nối sys.path portable: gốc repo (cho preprocess/rag/training/...), thư mục tests
-  (cho _common.*) và harness RQ (cho `import providers.*` của Tier 4/5).
+  (cho `_common.*`) và tests/_common (cho `import providers.*` của nhóm retrieval/generation).
 - Khóa CPU + HuggingFace offline để ổn định trên máy trạm (GTX 1050 Ti không hỗ trợ kernel mới).
 - Fixture dịch vụ (neo4j/qdrant/es) tự SKIP khi dịch vụ chưa bật, thay vì làm đỏ cả suite.
 """
@@ -13,9 +13,9 @@ import pytest
 
 TESTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TESTS_DIR.parent
-HARNESS_DIR = TESTS_DIR / "rq_experiments_promptfoo"
+COMMON_DIR = TESTS_DIR / "_common"   # chứa package `providers` dùng chung
 
-for _p in (REPO_ROOT, TESTS_DIR, HARNESS_DIR):
+for _p in (REPO_ROOT, TESTS_DIR, COMMON_DIR):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 

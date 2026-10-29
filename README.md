@@ -92,18 +92,21 @@ Chạy toàn bộ thực nghiệm (có thuê GPU): `bash run_all_experiments.sh`
 
 ## 5. Kiểm thử
 
-Hai framework: **pytest** (toàn vẹn 5 tầng) + **promptfoo** (thực nghiệm RQ). Chi tiết: `tests/README.md`.
+Hai framework: **pytest** (toàn vẹn 5 tầng) + **promptfoo** (thực nghiệm RQ), tổ chức thành `tests/system`, `tests/model` và `tests/_common` (dùng chung). Chi tiết: `tests/README.md`.
 
 ```bash
 docker compose up -d qdrant elasticsearch neo4j     # bật service cho test requires_*
 python -m pytest tests -v                           # toàn bộ (test thiếu service sẽ tự SKIP)
-python tests/run_audit.py                           # chạy tuần tự 5 tầng + báo cáo
+python -m pytest tests/system -v                    # chỉ nhánh hệ thống RAG (dữ liệu → đồ thị → truy xuất → sinh → chatbox)
+python -m pytest tests/model -v                     # chỉ nhánh mô hình (MRL loss, khai phá mẫu âm)
+python tests/run_audit.py                           # chạy tuần tự + báo cáo
 
-# Thực nghiệm RQ (promptfoo):
-cd tests/rq_experiments_promptfoo
-promptfoo eval -c configs/promptfooconfig.baselines.yaml    # bảng baseline đa backbone
-promptfoo eval -c configs/promptfooconfig.retrieval.yaml    # RQ1–RQ3 (ablation truy xuất)
-promptfoo eval -c configs/promptfooconfig.generation.yaml   # RQ4 (faithfulness)
+# Thực nghiệm RQ (promptfoo) — mỗi nhánh chạy từ configs/ của nhánh đó:
+cd tests/model/configs
+promptfoo eval -c promptfooconfig.baselines.yaml -o ../out/eval-baselines.json      # baseline đa backbone
+cd ../../system/configs
+promptfoo eval -c promptfooconfig.rq3_retrieval.yaml -o ../out/eval-rq3_retrieval.json  # RQ3 (ablation truy xuất)
+promptfoo eval -c promptfooconfig.generation.yaml -o ../out/eval-generation.json        # RQ4 (faithfulness)
 ```
 
 ---
@@ -123,7 +126,7 @@ vietlawbert/
 ├── training/               # HIN triplets, train MRL, graph embeddings
 ├── rag/                    # hybrid retriever, es retriever, generator (cascade)
 ├── benchmark/              # build VietLawBench, evaluate_rrf, evaluate_rqs, llm_judge
-├── tests/                  # pytest 5 tầng + harness promptfoo (xem tests/README.md)
+├── tests/                  # system/ · model/ · _common/ (pytest + promptfoo; xem tests/README.md)
 ├── docker-compose.yml      # Qdrant, Elasticsearch, Neo4j+APOC, MongoDB, Redis
 └── requirements.txt
 ```

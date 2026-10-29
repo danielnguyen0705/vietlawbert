@@ -1,0 +1,72 @@
+# yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
+# RQ1/RQ2 — Multi-Backbone Encoder Retrieval (metric TẤT ĐỊNH, không LLM-judge)
+# Chạy:  cd configs && VLB_LIMIT=30 npx promptfoo@latest eval -c promptfooconfig.baselines.yaml -o ../out/eval-baselines.json
+#        python ../../_common/tools/analyze_latency.py --eval ../out/eval-baselines.json
+#
+# Đã nâng cấp từ bản cũ:
+#   - BỎ legal_relevance_judge (LLM) -> baseline TẤT ĐỊNH, KHÔNG cần API key / domain.
+#   - chunk_hit exact + doc_hit exact -> doc_hit@5 (contain-any) + article_hit@5/clause_hit@5 (equal theo global-ID).
+#   - Nạp dữ liệu SẠCH qua load_tests.js (thay demo.json) để có trường doc_norm/article_id/clause_id.
+# LƯU Ý khoa học: candidate pool của provider.py là ~1000 gold chunk (vietlawbench_1000.jsonl),
+#   KHÔNG phải toàn corpus -> đây là so sánh năng lực ENCODER trên tập đóng, không phải retrieval toàn hệ.
+
+description: "RQ1/RQ2 Multi-Backbone Encoder Benchmark — deterministic metrics"
+
+prompts:
+  - "{{query}}"
+
+evaluateOptions:
+  maxConcurrency: 1
+  timeoutMs: 600000
+
+providers:
+  # 1. XLM-RoBERTa
+  - id: "file://../../_common/providers/provider.py"
+    label: "XLM-RoBERTa (Base Vanilla @ 768d)"
+    config: { model_path: "checkpoints/xlm-roberta-base", checkpoint_pt: null, dimension: 768, top_k: 5 }
+  - id: "file://../../_common/providers/provider.py"
+    label: "XLM-RoBERTa (Ours-MRL @ 256d)"
+    config: { model_path: "checkpoints/xlm-roberta-base", checkpoint_pt: "checkpoints/xlm-roberta-base/vietlawbert_mrl.pt", dimension: 256, top_k: 5 }
+  # 2. BGE-M3
+  - id: "file://../../_common/providers/provider.py"
+    label: "BGE-M3 (Base Vanilla @ 1024d)"
+    config: { model_path: "checkpoints/BAAI_bge-m3", checkpoint_pt: null, dimension: 1024, top_k: 5 }
+  - id: "file://../../_common/providers/provider.py"
+    label: "BGE-M3 (Ours-MRL @ 256d)"
+    config: { model_path: "checkpoints/BAAI_bge-m3", checkpoint_pt: "checkpoints/BAAI_bge-m3/vietlawbert_mrl.pt", dimension: 256, top_k: 5 }
+  # 3. PhoBERT v2
+  - id: "file://../../_common/providers/provider.py"
+    label: "PhoBERT-v2 (Base Vanilla @ 768d)"
+    config: { model_path: "checkpoints/vinai_phobert-base-v2", checkpoint_pt: null, dimension: 768, top_k: 5 }
+  - id: "file://../../_common/providers/provider.py"
+    label: "PhoBERT-v2 (Ours-MRL @ 256d)"
+    config: { model_path: "checkpoints/vinai_phobert-base-v2", checkpoint_pt: "checkpoints/vinai_phobert-base-v2/vietlawbert_mrl.pt", dimension: 256, top_k: 5 }
+  # 4. Multilingual-E5
+  - id: "file://../../_common/providers/provider.py"
+    label: "mE5-Base (Base Vanilla @ 768d)"
+    config: { model_path: "checkpoints/intfloat_multilingual-e5-base", checkpoint_pt: null, dimension: 768, top_k: 5 }
+  - id: "file://../../_common/providers/provider.py"
+    label: "mE5-Base (Ours-MRL @ 256d)"
+    config: { model_path: "checkpoints/intfloat_multilingual-e5-base", checkpoint_pt: "checkpoints/intfloat_multilingual-e5-base/vietlawbert_mrl.pt", dimension: 256, top_k: 5 }
+
+defaultTest:
+  assert:
+    - type: javascript
+      value: file://../../_common/assertions/retrieval_metrics.js:docHitAtK
+      metric: doc_hit@5
+    - type: javascript
+      value: file://../../_common/assertions/retrieval_metrics.js:articleHitAtK
+      metric: article_hit@5
+    - type: javascript
+      value: file://../../_common/assertions/retrieval_metrics.js:clauseHitAtK
+      metric: clause_hit@5
+    - type: javascript
+      value: file://../../_common/assertions/retrieval_metrics.js:latencyReport
+      metric: latency_report
+      weight: 0
+    - type: javascript
+      value: file://../../_common/assertions/fail_category.js:classify
+      metric: fail_category
+      weight: 0
+
+tests: file://../../_common/datasets/load_tests.js
