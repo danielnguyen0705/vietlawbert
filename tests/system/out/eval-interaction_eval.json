@@ -1,0 +1,442 @@
+{
+  "evalId": "eval-MJw-2026-10-29T16:54:27",
+  "results": {
+    "version": 3,
+    "timestamp": "2026-10-29T16:54:27.478Z",
+    "prompts": [
+      {
+        "id": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "raw": "{{query}}",
+        "label": "{{query}}",
+        "provider": "VietLawBERT-Full-RAG-Pipeline",
+        "metrics": {
+          "score": 0,
+          "testPassCount": 0,
+          "testFailCount": 0,
+          "testErrorCount": 3,
+          "testCacheHitCount": 0,
+          "assertPassCount": 0,
+          "assertFailCount": 0,
+          "totalLatencyMs": 39847,
+          "tokenUsage": {
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "total": 0,
+            "numRequests": 3,
+            "completionDetails": {
+              "reasoning": 0,
+              "acceptedPrediction": 0,
+              "rejectedPrediction": 0,
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            },
+            "assertions": {
+              "total": 0,
+              "prompt": 0,
+              "completion": 0,
+              "cached": 0,
+              "numRequests": 0,
+              "completionDetails": {
+                "reasoning": 0,
+                "acceptedPrediction": 0,
+                "rejectedPrediction": 0,
+                "cacheReadInputTokens": 0,
+                "cacheCreationInputTokens": 0
+              }
+            }
+          },
+          "namedScores": {},
+          "namedScoresCount": {},
+          "namedScoreWeights": {},
+          "cost": 0
+        }
+      }
+    ],
+    "results": [
+      {
+        "cost": 0,
+        "error": "Lỗi thực thi Generation Provider: Path ./checkpoints/BAAI_bge-m3 not found",
+        "gradingResult": null,
+        "id": "918e4ea3-92c9-486c-b3b6-a2a1dbc7cc98",
+        "latencyMs": 39690,
+        "namedScores": {},
+        "prompt": {
+          "raw": "Kết hôn với người dưới 18 tuổi thì bị xử phạt như thế nào?",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "file://../../_common/providers/generation_provider.py",
+          "label": "VietLawBERT-Full-RAG-Pipeline"
+        },
+        "response": {
+          "error": "Lỗi thực thi Generation Provider: Path ./checkpoints/BAAI_bge-m3 not found",
+          "cached": false
+        },
+        "score": 0,
+        "success": false,
+        "testCase": {
+          "description": "seed_marriage_underage — xử phạt tổ chức/duy trì hôn nhân với người chưa đủ tuổi",
+          "vars": {
+            "query": "Kết hôn với người dưới 18 tuổi thì bị xử phạt như thế nào?",
+            "ground_truth_doc_number": "109/2026/NĐ-CP",
+            "ground_truth_article": "Điều 61"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "metric": "valid_answer",
+              "value": "JSON.parse(output).answer.length > 20"
+            },
+            {
+              "type": "javascript",
+              "metric": "citation_presence",
+              "value": "const data = JSON.parse(output);\nconst norm = s => String(s == null ? '' : s).toLowerCase().replace(/\\s+/g, '');\nconst target = norm(context.vars.ground_truth_doc_number);\nconst inAnswer = norm(data.answer).includes(target);\nconst inDocs = (data.retrieved_docs || []).some(d => norm(d).includes(target));\nreturn (inAnswer || inDocs)\n  ? { pass: true, score: 1, reason: `OK: tìm thấy ${target}` }\n  : { pass: false, score: 0, reason: `MISS ${target} — answer & retrieved_docs không chứa doc đích` };\n"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 0,
+        "tokenUsage": {
+          "prompt": 0,
+          "completion": 0,
+          "cached": 0,
+          "total": 0,
+          "numRequests": 1,
+          "completionDetails": {
+            "reasoning": 0,
+            "acceptedPrediction": 0,
+            "rejectedPrediction": 0,
+            "cacheReadInputTokens": 0,
+            "cacheCreationInputTokens": 0
+          },
+          "assertions": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0,
+            "completionDetails": {
+              "reasoning": 0,
+              "acceptedPrediction": 0,
+              "rejectedPrediction": 0,
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          }
+        },
+        "vars": {
+          "query": "Kết hôn với người dưới 18 tuổi thì bị xử phạt như thế nào?",
+          "ground_truth_doc_number": "109/2026/NĐ-CP",
+          "ground_truth_article": "Điều 61"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 2
+      },
+      {
+        "cost": 0,
+        "error": "Lỗi thực thi Generation Provider: Path ./checkpoints/BAAI_bge-m3 not found",
+        "gradingResult": null,
+        "id": "80d08c55-adc1-46d1-86dd-67fcc26e3cd8",
+        "latencyMs": 81,
+        "namedScores": {},
+        "prompt": {
+          "raw": "Quyền tác giả đối với tác phẩm có sử dụng hệ thống trí tuệ nhân tạo phát sinh khi nào?",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "file://../../_common/providers/generation_provider.py",
+          "label": "VietLawBERT-Full-RAG-Pipeline"
+        },
+        "response": {
+          "error": "Lỗi thực thi Generation Provider: Path ./checkpoints/BAAI_bge-m3 not found",
+          "cached": false
+        },
+        "score": 0,
+        "success": false,
+        "testCase": {
+          "description": "seed_ip_ai_authorship — quyền tác giả với tác phẩm có dùng AI",
+          "vars": {
+            "query": "Quyền tác giả đối với tác phẩm có sử dụng hệ thống trí tuệ nhân tạo phát sinh khi nào?",
+            "ground_truth_doc_number": "134/2026/NĐ-CP",
+            "ground_truth_article": "Điều 4"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "metric": "valid_answer",
+              "value": "JSON.parse(output).answer.length > 20"
+            },
+            {
+              "type": "javascript",
+              "metric": "citation_presence",
+              "value": "const data = JSON.parse(output);\nconst norm = s => String(s == null ? '' : s).toLowerCase().replace(/\\s+/g, '');\nconst target = norm(context.vars.ground_truth_doc_number);\nconst inAnswer = norm(data.answer).includes(target);\nconst inDocs = (data.retrieved_docs || []).some(d => norm(d).includes(target));\nreturn (inAnswer || inDocs)\n  ? { pass: true, score: 1, reason: `OK: tìm thấy ${target}` }\n  : { pass: false, score: 0, reason: `MISS ${target} — answer & retrieved_docs không chứa doc đích` };\n"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 1,
+        "tokenUsage": {
+          "prompt": 0,
+          "completion": 0,
+          "cached": 0,
+          "total": 0,
+          "numRequests": 1,
+          "completionDetails": {
+            "reasoning": 0,
+            "acceptedPrediction": 0,
+            "rejectedPrediction": 0,
+            "cacheReadInputTokens": 0,
+            "cacheCreationInputTokens": 0
+          },
+          "assertions": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0,
+            "completionDetails": {
+              "reasoning": 0,
+              "acceptedPrediction": 0,
+              "rejectedPrediction": 0,
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          }
+        },
+        "vars": {
+          "query": "Quyền tác giả đối với tác phẩm có sử dụng hệ thống trí tuệ nhân tạo phát sinh khi nào?",
+          "ground_truth_doc_number": "134/2026/NĐ-CP",
+          "ground_truth_article": "Điều 4"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 2
+      },
+      {
+        "cost": 0,
+        "error": "Lỗi thực thi Generation Provider: Path ./checkpoints/BAAI_bge-m3 not found",
+        "gradingResult": null,
+        "id": "17aa24f9-e03f-4893-be65-5c9d34c4181a",
+        "latencyMs": 76,
+        "namedScores": {},
+        "prompt": {
+          "raw": "Biện pháp quản lý đối với người sử dụng trái phép chất ma túy được quy định ra sao?",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "file://../../_common/providers/generation_provider.py",
+          "label": "VietLawBERT-Full-RAG-Pipeline"
+        },
+        "response": {
+          "error": "Lỗi thực thi Generation Provider: Path ./checkpoints/BAAI_bge-m3 not found",
+          "cached": false
+        },
+        "score": 0,
+        "success": false,
+        "testCase": {
+          "description": "seed_drug_use_management — biện pháp quản lý người sử dụng trái phép chất ma túy",
+          "vars": {
+            "query": "Biện pháp quản lý đối với người sử dụng trái phép chất ma túy được quy định ra sao?",
+            "ground_truth_doc_number": "163/2026/NĐ-CP",
+            "ground_truth_article": "Điều 59"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "metric": "valid_answer",
+              "value": "JSON.parse(output).answer.length > 20"
+            },
+            {
+              "type": "javascript",
+              "metric": "citation_presence",
+              "value": "const data = JSON.parse(output);\nconst norm = s => String(s == null ? '' : s).toLowerCase().replace(/\\s+/g, '');\nconst target = norm(context.vars.ground_truth_doc_number);\nconst inAnswer = norm(data.answer).includes(target);\nconst inDocs = (data.retrieved_docs || []).some(d => norm(d).includes(target));\nreturn (inAnswer || inDocs)\n  ? { pass: true, score: 1, reason: `OK: tìm thấy ${target}` }\n  : { pass: false, score: 0, reason: `MISS ${target} — answer & retrieved_docs không chứa doc đích` };\n"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 2,
+        "tokenUsage": {
+          "prompt": 0,
+          "completion": 0,
+          "cached": 0,
+          "total": 0,
+          "numRequests": 1,
+          "completionDetails": {
+            "reasoning": 0,
+            "acceptedPrediction": 0,
+            "rejectedPrediction": 0,
+            "cacheReadInputTokens": 0,
+            "cacheCreationInputTokens": 0
+          },
+          "assertions": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0,
+            "completionDetails": {
+              "reasoning": 0,
+              "acceptedPrediction": 0,
+              "rejectedPrediction": 0,
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          }
+        },
+        "vars": {
+          "query": "Biện pháp quản lý đối với người sử dụng trái phép chất ma túy được quy định ra sao?",
+          "ground_truth_doc_number": "163/2026/NĐ-CP",
+          "ground_truth_article": "Điều 59"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 2
+      }
+    ],
+    "stats": {
+      "successes": 0,
+      "failures": 0,
+      "errors": 3,
+      "tokenUsage": {
+        "prompt": 0,
+        "completion": 0,
+        "cached": 0,
+        "total": 0,
+        "numRequests": 3,
+        "completionDetails": {
+          "reasoning": 0,
+          "acceptedPrediction": 0,
+          "rejectedPrediction": 0,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0
+        },
+        "assertions": {
+          "total": 0,
+          "prompt": 0,
+          "completion": 0,
+          "cached": 0,
+          "numRequests": 0,
+          "completionDetails": {
+            "reasoning": 0,
+            "acceptedPrediction": 0,
+            "rejectedPrediction": 0,
+            "cacheReadInputTokens": 0,
+            "cacheCreationInputTokens": 0
+          }
+        }
+      },
+      "durationMs": 39933,
+      "evaluationDurationMs": 39933
+    }
+  },
+  "config": {
+    "tags": {},
+    "description": "VietLawBERT: Golden-case eval gắn với interaction log — Citation Matching (starter, tự mở rộng)",
+    "prompts": [
+      "{{query}}"
+    ],
+    "providers": [
+      {
+        "id": "file://../../_common/providers/generation_provider.py",
+        "label": "VietLawBERT-Full-RAG-Pipeline",
+        "config": {
+          "top_k": 5,
+          "timeoutMs": 600000
+        }
+      }
+    ],
+    "tests": [
+      {
+        "description": "seed_marriage_underage — xử phạt tổ chức/duy trì hôn nhân với người chưa đủ tuổi",
+        "vars": {
+          "query": "Kết hôn với người dưới 18 tuổi thì bị xử phạt như thế nào?",
+          "ground_truth_doc_number": "109/2026/NĐ-CP",
+          "ground_truth_article": "Điều 61"
+        }
+      },
+      {
+        "description": "seed_ip_ai_authorship — quyền tác giả với tác phẩm có dùng AI",
+        "vars": {
+          "query": "Quyền tác giả đối với tác phẩm có sử dụng hệ thống trí tuệ nhân tạo phát sinh khi nào?",
+          "ground_truth_doc_number": "134/2026/NĐ-CP",
+          "ground_truth_article": "Điều 4"
+        }
+      },
+      {
+        "description": "seed_drug_use_management — biện pháp quản lý người sử dụng trái phép chất ma túy",
+        "vars": {
+          "query": "Biện pháp quản lý đối với người sử dụng trái phép chất ma túy được quy định ra sao?",
+          "ground_truth_doc_number": "163/2026/NĐ-CP",
+          "ground_truth_article": "Điều 59"
+        }
+      }
+    ],
+    "env": {},
+    "outputPath": [
+      "../out/eval-interaction_eval.json"
+    ],
+    "extensions": [],
+    "metadata": {},
+    "evaluateOptions": {
+      "maxConcurrency": 1,
+      "timeoutMs": 600000
+    },
+    "defaultTest": {
+      "assert": [
+        {
+          "type": "javascript",
+          "metric": "valid_answer",
+          "value": "JSON.parse(output).answer.length > 20"
+        },
+        {
+          "type": "javascript",
+          "metric": "citation_presence",
+          "value": "const data = JSON.parse(output);\nconst norm = s => String(s == null ? '' : s).toLowerCase().replace(/\\s+/g, '');\nconst target = norm(context.vars.ground_truth_doc_number);\nconst inAnswer = norm(data.answer).includes(target);\nconst inDocs = (data.retrieved_docs || []).some(d => norm(d).includes(target));\nreturn (inAnswer || inDocs)\n  ? { pass: true, score: 1, reason: `OK: tìm thấy ${target}` }\n  : { pass: false, score: 0, reason: `MISS ${target} — answer & retrieved_docs không chứa doc đích` };\n"
+        }
+      ],
+      "vars": {},
+      "options": {},
+      "metadata": {}
+    },
+    "basePath": "/mnt/data/projects/vietlawbert/tests/system/configs"
+  },
+  "shareableUrl": null,
+  "metadata": {
+    "promptfooVersion": "0.125.1",
+    "nodeVersion": "v22.22.1",
+    "platform": "linux",
+    "arch": "x64",
+    "exportedAt": "2026-10-29T16:55:07.514Z",
+    "evaluationCreatedAt": "2026-10-29T16:54:27.478Z"
+  },
+  "vars": [
+    "query",
+    "ground_truth_doc_number",
+    "ground_truth_article"
+  ],
+  "runtimeOptions": {
+    "eventSource": "cli",
+    "maxConcurrency": 1,
+    "timeoutMs": 600000,
+    "showProgressBar": true,
+    "repeat": 1,
+    "cache": true
+  }
+}
