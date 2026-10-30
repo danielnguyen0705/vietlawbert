@@ -18,6 +18,10 @@ from _common.paths import DATASETS_DIR
 
 BENCHMARK_FILE = DATASETS_DIR / "demo.json"
 
+# Đăng ký marker Tầng 4 để `pytest -m tier4` chọn được bộ test này.
+# Các test gọi retriever thật → cần Qdrant + Elasticsearch đang chạy.
+pytestmark = [pytest.mark.tier4, pytest.mark.requires_qdrant, pytest.mark.requires_es]
+
 
 @pytest.fixture(scope="module")
 def vietlawbench_samples():

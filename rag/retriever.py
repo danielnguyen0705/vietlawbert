@@ -14,9 +14,33 @@ import numpy as np
 import pandas as pd
 
 from configs.config import config
-from configs.paths import ARTIFACTS_DIR
+from configs.paths import ARTIFACTS_DIR, ROOT_DIR
 
 logger = logging.getLogger("VietLawBERT_HybridRetriever")
+
+
+def _resolve_model_source(name: str) -> str:
+    """
+    Phân giải nguồn mô hình BỀN VỮNG theo gốc repo (độc lập thư mục làm việc - cwd).
+
+    - HF Hub id (vd 'BAAI/bge-m3') không tồn tại cục bộ  -> giữ nguyên (tải/offline-cache).
+    - Checkpoint cục bộ (vd 'checkpoints/BAAI_bge-m3' hay './checkpoints/...') -> phân giải
+      về đường dẫn TUYỆT ĐỐI theo ROOT_DIR, tránh lỗi 'Path ./checkpoints/... not found'
+      khi promptfoo/pytest chạy từ thư mục con (tests/system/configs/...).
+    """
+    if not name:
+        return name
+    cand = Path(name)
+    try:
+        if cand.exists():
+            return str(cand.resolve())
+    except OSError:
+        pass
+    rel = name[2:] if name.startswith("./") else name
+    anchored = (Path(ROOT_DIR) / rel)
+    if anchored.exists():
+        return str(anchored.resolve())
+    return name  # coi như HF Hub id
 
 
 class LegalHybridRetriever:
@@ -66,7 +90,7 @@ class LegalHybridRetriever:
         else:
             from sentence_transformers import SentenceTransformer
             self.encoder = SentenceTransformer(
-                config.BASE_MODEL_NAME,
+                _resolve_model_source(config.BASE_MODEL_NAME),
                 device=config.EMBED_DEVICE,
             )
 
