@@ -55,8 +55,20 @@ def test_relation_types_are_recognized(neo4j_driver):
     if not hist:
         pytest.skip("Đồ thị chưa có cạnh mang thuộc tính r.type để kiểm đếm.")
     print("\n[HIN] Phổ quan hệ hiện có:", {k: hist[k] for k in sorted(hist, key=lambda x: -hist[x])})
-    unknown = {k for k in hist if k not in KNOWN_RELATIONS and not k.startswith("REL_")}
+    unknown = {k for k in hist if k not in KNOWN_RELATIONS and not k.startswith("REL_") and k != "UNMAPPED"}
     assert not unknown, f"Xuất hiện loại quan hệ lạ ngoài ontology: {unknown}"
+
+    # REL_* / UNMAPPED = quan hệ CHƯA map được về 22 loại canonical → phải là thiểu số,
+    # không được tràn lan (nếu nhiều → lỗi pipelines._to_standard_relation hoặc ontology thiếu key).
+    total = sum(hist.values())
+    unmapped = sum(n for k, n in hist.items() if k.startswith("REL_") or k == "UNMAPPED")
+    if total:
+        frac = unmapped / total
+        print(f"[HIN] Cạnh chưa map (REL_*/UNMAPPED): {unmapped}/{total} = {frac:.1%}")
+        assert frac <= 0.05, (
+            f"Quá nhiều cạnh chưa map đúng 22 quan hệ: {frac:.1%} (>5%). "
+            f"Kiểm tra pipelines._to_standard_relation + system_ontology_map.json."
+        )
 
 
 def test_relation_type_coverage(neo4j_driver):

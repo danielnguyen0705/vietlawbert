@@ -35,6 +35,10 @@ from configs.paths import ARTIFACTS_DIR
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | [%(levelname)s] | %(message)s")
 logger = logging.getLogger("VietLawBERT_GraphEmbedder")
 
+# Trọng số cạnh pháp lý trong random walk (>>1 để walk đi qua quan hệ liên-VB,
+# tránh đồ thị hình sao làm pha loãng tín hiệu 22 quan hệ → gốc của graph_boost≈0).
+LEGAL_EDGE_WEIGHT = float(os.getenv("GRAPH_LEGAL_EDGE_WEIGHT", "20"))
+
 
 class Neo4jGraphExtractor:
     def __init__(self, uri: Optional[str] = None, user: Optional[str] = None, password: Optional[str] = None):
@@ -48,33 +52,58 @@ class Neo4jGraphExtractor:
     def close(self):
         self.driver.close()
 
-    def fetch_legal_edges(self) -> List[Tuple[str, str]]:
-        """Trích xuất danh sách cặp đỉnh quan hệ pháp lý (Bao gồm HAS_CHUNK và LEGAL_RELATION)."""
+    def fetch_weighted_edges(self, legal_weight: float = 20.0) -> List[Tuple[str, str, float]]:
+        """
+        Trích xuất cạnh đồ thị kèm TRỌNG SỐ, phân biệt theo loại:
+          - Cạnh phân cấp HAS_CHUNK / HAS_ARTICLE: trọng số 1.0. ĐƯA Article vào để chunk nối nhau
+            qua điều (sibling trong cùng điều) thay vì chỉ nối hình sao vào văn bản cha.
+          - Cạnh pháp lý LEGAL_RELATION (22 quan hệ): trọng số `legal_weight` (>>1), để random walk
+            đi qua quan hệ liên-văn-bản đủ thường xuyên → vector đồ thị mã hóa được ngữ nghĩa pháp lý.
+        Khắc phục gốc rễ graph_boost≈0: trước đây gộp mọi cạnh vô hướng + BỎ Article → đồ thị hình sao,
+        tín hiệu 22 quan hệ bị pha loãng tới ~0 (xác suất walk rẽ vào cạnh pháp lý ≈ n_legal/n_chunk ≈ 1-2%).
+        """
         cypher = """
         MATCH (s)-[r]->(t)
-        WHERE (s:LawDocument OR s:Chunk) AND (t:LawDocument OR t:Chunk)
-        RETURN coalesce(s.chunk_id, s.doc_id) AS u,
-               coalesce(t.chunk_id, t.doc_id) AS v
+        WHERE (s:LawDocument OR s:Chunk OR s:Article)
+          AND (t:LawDocument OR t:Chunk OR t:Article)
+        RETURN coalesce(s.chunk_id, s.article_id, s.doc_id) AS u,
+               coalesce(t.chunk_id, t.article_id, t.doc_id) AS v,
+               type(r) AS etype
         """
-        edges = []
-        logger.info("Đang truy xuất toàn bộ cạnh liên kết từ Neo4j...")
+        edges: List[Tuple[str, str, float]] = []
+        n_legal = 0
+        logger.info("Đang truy xuất cạnh (có trọng số, gồm Article) từ Neo4j...")
         with self.driver.session() as session:
             result = session.run(cypher)
             for record in result:
-                u, v = record["u"], record["v"]
-                if u and v and str(u) != str(v):
-                    edges.append((str(u), str(v)))
+                u, v, etype = record["u"], record["v"], record["etype"]
+                if not u or not v or str(u) == str(v):
+                    continue
+                if etype == "LEGAL_RELATION":
+                    w = float(legal_weight)
+                    n_legal += 1
+                else:
+                    w = 1.0
+                edges.append((str(u), str(v), w))
 
-        logger.info("✓ Đã trích xuất thành công %d cạnh quan hệ pháp lý từ Neo4j.", len(edges))
+        logger.info("✓ Trích xuất %d cạnh (trong đó %d cạnh pháp lý LEGAL_RELATION ×%.0f).",
+                    len(edges), n_legal, legal_weight)
+        if n_legal == 0:
+            logger.warning("CẢNH BÁO: KHÔNG có cạnh LEGAL_RELATION — đồ thị chỉ còn cấu trúc phân cấp, "
+                           "graph-rerank sẽ vô nghĩa. Kiểm tra build_hin_graph + ontology.")
         return edges
+
+    # Giữ tên cũ để tương thích ngược (nay trả về cạnh có trọng số).
+    def fetch_legal_edges(self) -> List[Tuple[str, str, float]]:
+        return self.fetch_weighted_edges(legal_weight=LEGAL_EDGE_WEIGHT)
 
 
 class FastGraphWalker:
-    """Bộ sinh Random Walk tối ưu hóa trên mảng số nguyên phẳng (Integer Array Mapping)."""
+    """Random Walk CÓ TRỌNG SỐ trên mảng số nguyên phẳng (ưu tiên cạnh pháp lý)."""
 
-    def __init__(self, edges: List[Tuple[str, str]]):
+    def __init__(self, edges: List[Tuple[str, str, float]]):
         unique_nodes = set()
-        for u, v in edges:
+        for u, v, _w in edges:
             unique_nodes.add(u)
             unique_nodes.add(v)
 
@@ -82,22 +111,25 @@ class FastGraphWalker:
         self.node_to_idx = {node: idx for idx, node in enumerate(self.nodes)}
         self.num_nodes = len(self.nodes)
 
-        logger.info("Chuyển đổi đồ thị sang Integer IDs (%d nút duy nhất)...", self.num_nodes)
+        logger.info("Chuyển đồ thị sang Integer IDs (%d nút duy nhất)...", self.num_nodes)
 
-        adj_dict = defaultdict(list)
-        for u, v in edges:
-            u_idx = self.node_to_idx[u]
-            v_idx = self.node_to_idx[v]
-            adj_dict[u_idx].append(v_idx)
-            adj_dict[v_idx].append(u_idx)
+        # Adjacency CÓ TRỌNG SỐ, vô hướng (để học biểu diễn đồng nhất).
+        nbr = defaultdict(list)
+        wgt = defaultdict(list)
+        for u, v, w in edges:
+            ui = self.node_to_idx[u]
+            vi = self.node_to_idx[v]
+            nbr[ui].append(vi); wgt[ui].append(w)
+            nbr[vi].append(ui); wgt[vi].append(w)
 
-        self.adj = [tuple(set(adj_dict[i])) if i in adj_dict else () for i in range(self.num_nodes)]
-        del adj_dict
+        self.adj_nodes = [tuple(nbr[i]) if i in nbr else () for i in range(self.num_nodes)]
+        self.adj_wgt = [tuple(wgt[i]) if i in wgt else () for i in range(self.num_nodes)]
+        del nbr, wgt
 
     def generate_walks(self, num_walks: int = 5, walk_length: int = 20) -> torch.Tensor:
-        """Sinh chuỗi bước duyệt ngẫu nhiên trực tiếp vào Tensor 2D (Tiết kiệm 95% RAM)."""
+        """Sinh chuỗi bước duyệt ngẫu nhiên CÓ TRỌNG SỐ vào Tensor 2D (Tiết kiệm 95% RAM)."""
         total_walks = self.num_nodes * num_walks
-        logger.info("Bắt đầu sinh %d chuỗi bước duyệt (Chiều dài: %d)...", total_walks, walk_length)
+        logger.info("Bắt đầu sinh %d chuỗi bước duyệt có trọng số (Chiều dài: %d)...", total_walks, walk_length)
 
         walks_tensor = torch.empty((total_walks, walk_length), dtype=torch.long)
         row_idx = 0
@@ -114,27 +146,28 @@ class FastGraphWalker:
             )
 
             for node in pbar:
-                walk = [node]
-                curr = node
-                neighbors = self.adj[curr]
-
-                if not neighbors:
-                    walks_tensor[row_idx] = torch.tensor([node] * walk_length, dtype=torch.long)
+                if not self.adj_nodes[node]:
+                    walks_tensor[row_idx] = torch.full((walk_length,), node, dtype=torch.long)
                     row_idx += 1
                     continue
 
+                walk = [node]
+                curr = node
                 for _ in range(walk_length - 1):
-                    curr = random.choice(neighbors)
-                    walk.append(curr)
-                    neighbors = self.adj[curr]
+                    neighbors = self.adj_nodes[curr]
+                    weights = self.adj_wgt[curr]
                     if not neighbors:
                         walk.extend([curr] * (walk_length - len(walk)))
                         break
+                    curr = random.choices(neighbors, weights=weights, k=1)[0]
+                    walk.append(curr)
 
+                if len(walk) < walk_length:
+                    walk.extend([walk[-1]] * (walk_length - len(walk)))
                 walks_tensor[row_idx] = torch.tensor(walk, dtype=torch.long)
                 row_idx += 1
 
-        logger.info("✓ Hoàn tất sinh %d chuỗi bước đi ngẫu nhiên vào Tensor.", total_walks)
+        logger.info("✓ Hoàn tất sinh %d chuỗi bước đi ngẫu nhiên (có trọng số) vào Tensor.", total_walks)
         return walks_tensor
 
 
@@ -257,12 +290,14 @@ def compute_and_export_embeddings(
     target_output = Path(output_path) if output_path else (ARTIFACTS_DIR / f"graph_embeddings_{dimensions}d.parquet")
 
     extractor = Neo4jGraphExtractor(uri=uri, user=user, password=password)
-    edges = extractor.fetch_legal_edges()
+    edges = extractor.fetch_weighted_edges(legal_weight=LEGAL_EDGE_WEIGHT)
     extractor.close()
 
     if not edges:
-        logger.warning("Đồ thị Neo4j chưa có cạnh liên kết. Giả lập 100 cạnh để bảo toàn luồng...")
-        edges = [(f"doc_{i}", f"chunk_{i}") for i in range(100)]
+        raise RuntimeError(
+            "Đồ thị Neo4j KHÔNG có cạnh nào — DỪNG để tránh sinh vector rác. "
+            "Hãy chạy build_hin_graph trước và kiểm tra Neo4j đang chạy."
+        )
 
     walker = FastGraphWalker(edges)
     del edges

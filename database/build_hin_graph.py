@@ -177,7 +177,7 @@ class HINGraphBuilder:
                 if item.get("relationships") and isinstance(item["relationships"], list):
                     for rel in item["relationships"]:
                         tgt_id = str(rel.get("target_id") or "").strip()
-                        rel_type = str(rel.get("edge_type") or "CAN_CU_BAN_HANH").upper().replace(" ", "_")
+                        rel_type = str(rel.get("edge_type") or "").strip().upper().replace(" ", "_") or "UNMAPPED"
                         direction = rel.get("direction", "OUTGOING")
                         if tgt_id and tgt_id != doc_id:
                             src_id = tgt_id if direction == "INCOMING" else doc_id
@@ -222,7 +222,7 @@ class HINGraphBuilder:
                                     "article_id": str(c.get("article_id") or ""),
                                     "article_num": str(c.get("article_num") or ""),
                                     "hierarchy_path": str(c.get("hierarchy_path") or meta_c.get("hierarchy_path") or ""),
-                                    "macro_label": str(c.get("macro_label") or meta_c.get("macro_label") or "CHUNG"),
+                                    "macro_label": str(c.get("macro_label") or meta_c.get("macro_label") or ""),
                                     "text": str(c.get("text") or c.get("content") or ""),
                                 })
                         except Exception as parse_err:
