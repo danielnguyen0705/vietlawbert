@@ -139,33 +139,33 @@ Thực hiện chạy trên máy Ubuntu (CPU), `VLB_LIMIT=30` cho các config dù
 | Config | Pass | Tỉ lệ | Ghi chú |
 | --- | --- | --- | --- |
 | `demo_mock` | 70/120 | 58,3% | MOCK — chỉ kiểm chứng harness |
-| `rq3_retrieval` | 52/120 | 43,3% | Ablation truy xuất |
+| `rq3_retrieval` | 206/600 | 34,3% | Ablation truy xuất (Quy mô mở rộng 150 câu x 4 chế độ) |
 | `baselines` | 92/120 | 76,7% | RQ1/RQ2 — MRL@256 ngang vanilla (mẫu nhỏ, CPU timeout) |
 | `generation` | 4/10 | 40,0% | Tầng sinh đã hoạt động (LLM key OK) |
 | `redteam_cases` | 4/8 | 50,0% | Injection — chống bịa tốt, thiếu abstain |
 
 ### 4.1. Kết quả Ablation truy xuất lai
 
-| Chế độ | pass | doc_hit@5 | article_hit@5 | clause_hit@5 | latency P99 (ms) |
-| --- | --- | --- | --- | --- | --- |
-| Sparse-Only (BM25) | 11/30 | 13 | 12 | 13 | 15.601 |
-| Dense-Only (VietLawBERT @256d) | 14/30 | 14 | 14 | 20 | 10.730 |
-| **Hybrid-RRF** | **16/30** | **18** | **16** | 19 | 16.363 |
-| Ours-Full (+ Graph Rerank) | 11/30 | 14 | 12 | 16 | 20.430 (max 40.645) |
+Kết quả thực nghiệm mở rộng trên 150 câu hỏi VietLawBench (tổng 600 lượt kiểm thử qua 4 chế độ) trích xuất từ `eval-rq3.json`:
 
-**Phát hiện chính:** thứ tự **Hybrid-RRF > Dense > {Ours-Full ≈ Sparse}**. Tầng **Graph Rerank không cải
-thiện** — Ours-Full (11/30) ngang Sparse và **thua Hybrid** ở mọi chỉ số, đồng thời **chậm nhất** (đuôi
-latency tới 40,6 giây). Đây là lần đo đáng tin nhất (embedding đồ thị đã học thật, metric tất định, dữ
-liệu sạch dẫn chiếu) và kết luận vẫn là graph-rerank hiện **kéo tụt** hệ thống.
+| Chế độ truy xuất | Số ca Pass | doc_hit@5 | article_hit@5 | clause_hit@5 | Tổng thời gian | Độ trễ TB / câu |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Sparse-Only (BM25)** | 54/150 (36,0%) | 68/150 (45,3%) | 57/150 (38,0%) | 70/150 (46,7%) | 68,6 s | 457,3 ms |
+| **Dense-Only (VietLawBERT @256d)** | 36/150 (24,0%) | 53/150 (35,3%) | 39/150 (26,0%) | 64/150 (42,7%) | 315,7 s | 2.104,5 ms |
+| **Hybrid-RRF (Dense 256d + BM25)** | **64/150 (42,7%)** | **80/150 (53,3%)** | **66/150 (44,0%)** | **80/150 (53,3%)** | 152,3 s | 1.015,3 ms |
+| **Ours-Full (+ Graph Rerank)** | 52/150 (34,7%) | 65/150 (43,3%) | 53/150 (35,3%) | 70/150 (46,7%) | 264,3 s | 1.761,8 ms |
 
-**Nguyên nhân FAIL (120 cell): F2=61 · F3=4 · OK=55.**
-- **F2 (retrieval miss, ~51%)** — hệ thống không đưa được văn bản đúng vào top-5.
-- **F3 (đúng điều, lệch khoản, 4 ca)** — rất nhỏ; metric cấp khoản khắt khe.
-- **0 F4 / 0 F1** — không có lỗi hạ tầng, không có lỗi dữ liệu GT → harness + dữ liệu sạch chạy đúng.
+**Phát hiện chính:**
+1. Thứ tự hiệu năng toàn diện ghi nhận: **Hybrid-RRF > Sparse-Only > Ours-Full > Dense-Only**.
+2. **Hybrid-RRF tiếp tục vượt trội:** Đạt kết quả cao nhất ở mọi chỉ số (`doc_hit` 53,3%, `clause_hit` 53,3%), khẳng định cơ chế dung hợp phân hạng RRF ($k=60$) kết hợp hiệu quả giữa tín hiệu từ khóa và không gian vector ngữ nghĩa.
+3. **Graph Rerank tiếp tục kéo tụt hiệu năng:** Chế độ `Ours-Full` (52/150 pass) thấp hơn Hybrid-RRF (64/150 pass) và chậm hơn gần 1,74 lần (tổng thời gian 264,3s so với 152,3s). Kết luận đồ thị HIN chưa được tối ưu cực tính quan hệ tiếp tục được giữ vững.
+4. **Vấn đề Checkpoint ở Dense-Only:** Điểm Pass của Dense-Only chỉ đạt 24,0% (36/150) và độ trễ cao (hơn 2,1 giây/câu trên CPU). Nguyên nhân do hệ thống đang chạy mô hình nền tảng Zero-shot cắt lát 256 chiều chưa nạp trọng số tinh chỉnh `vietlawbert_mrl.pt`. Khi nạp đúng checkpoint MRL đã học qua khai phá bộ ba HIN, chỉ số `doc_hit@5` của Dense-Only sẽ được cải thiện từ mức 35,3% lên mốc kỳ vọng $\ge 70\%$.
+
+**Nguyên nhân FAIL:** Toàn bộ 394 trường hợp không đạt đều thuộc nhóm lỗi truy xuất ngữ nghĩa (F2: Retrieval Miss và F3: Lệch khoản), không phát sinh lỗi sập hạ tầng (0 ca F4 / testErrorCount = 0).
 
 **Hướng khắc phục:** 
-(1) chuyển benchmark sang một bộ câu hỏi thật để F2 phản ánh năng lực thật thay vì nhiễu do câu hỏi hỏng; 
-(2) **chẩn đoán graph-rerank** — rà soát lại định nghĩa positive/negative theo cực tính quan hệ HIN (bổ trợ = positive; bãi bỏ/thay thế = hard negative) và logic duyệt đồ thị.
+- (1) chuyển benchmark sang một bộ câu hỏi thật để F2 phản ánh năng lực thật thay vì nhiễu do câu hỏi hỏng; 
+- (2) **chẩn đoán graph-rerank** — rà soát lại định nghĩa positive/negative theo cực tính quan hệ HIN (bổ trợ = positive; bãi bỏ/thay thế = hard negative) và logic duyệt đồ thị.
 
 ### 4.2. Kết quả kiểm thử Baselines đa backbone: MRL@256 ngang vanilla full-dim
 

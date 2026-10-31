@@ -7,6 +7,7 @@ Khắc phục triệt để lỗi lệch số chiều MRL d=256 và tự động
 from __future__ import annotations
 
 import logging
+import re
 from typing import List, Dict, Any, Optional
 from collections import defaultdict
 from pathlib import Path
@@ -114,6 +115,18 @@ class LegalHybridRetriever:
             config.QDRANT_COLLECTION_NAME,
             config.ES_INDEX_NAME,
         )
+
+    @staticmethod
+    def _graph_key(cid: str) -> str:
+        """
+        Chuẩn hóa chunk_id về đúng cấp của VECTOR ĐỒ THỊ để tra graph_cache.
+        Đồ thị keyed ở cấp ĐIỀU ({doc}_art_N); chunk truy xuất ở cấp KHOẢN ({doc}_art_N_cl_M / _root).
+        → tước hậu tố khoản về cấp điều. Khắc phục lệch granularity khiến graph_boost=0 (nhánh graph chết).
+        """
+        m = re.match(r"^(.*_art_\d+)", cid)
+        if m:
+            return m.group(1)
+        return re.split(r"_(?:art|preamble)_", cid, maxsplit=1)[0]
 
     def _ensure_graph_cache(self) -> None:
         """Nạp lười (Lazy Load) cache vector đồ thị 128d theo cơ chế vector hóa tốc độ cao khi thực sự cần dùng."""
@@ -243,12 +256,12 @@ class LegalHybridRetriever:
         if self.alpha > 0 and not self._graph_cache_loaded:
             self._ensure_graph_cache()
 
-        top_cid = str(candidates[0].get("chunk_id") or candidates[0].get("id") or "")
+        top_cid = self._graph_key(str(candidates[0].get("chunk_id") or candidates[0].get("id") or ""))
         anchor_g_vec = self.graph_cache.get(top_cid)
 
         final_candidates = []
         for idx, item in enumerate(candidates):
-            cid = str(item.get("chunk_id") or item.get("id") or "")
+            cid = self._graph_key(str(item.get("chunk_id") or item.get("id") or ""))
             text_score = float(ce_scores[idx])
 
             graph_score = 0.0

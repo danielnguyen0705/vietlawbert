@@ -15,6 +15,7 @@ import argparse
 import time
 from pathlib import Path
 from collections import defaultdict
+from itertools import accumulate
 from typing import List, Dict, Tuple, Optional, Any
 
 import torch
@@ -124,6 +125,9 @@ class FastGraphWalker:
 
         self.adj_nodes = [tuple(nbr[i]) if i in nbr else () for i in range(self.num_nodes)]
         self.adj_wgt = [tuple(wgt[i]) if i in wgt else () for i in range(self.num_nodes)]
+        # Tiền tính cumulative weights MỘT LẦN → random.choices(cum_weights=...) chỉ O(log d)/bước
+        # thay vì O(d)/bước (nguyên nhân walk chậm 7.5h). Trọng số tĩnh nên cache được.
+        self.adj_cumwgt = [tuple(accumulate(w)) if w else () for w in self.adj_wgt]
         del nbr, wgt
 
     def generate_walks(self, num_walks: int = 5, walk_length: int = 20) -> torch.Tensor:
@@ -155,11 +159,10 @@ class FastGraphWalker:
                 curr = node
                 for _ in range(walk_length - 1):
                     neighbors = self.adj_nodes[curr]
-                    weights = self.adj_wgt[curr]
                     if not neighbors:
                         walk.extend([curr] * (walk_length - len(walk)))
                         break
-                    curr = random.choices(neighbors, weights=weights, k=1)[0]
+                    curr = random.choices(neighbors, cum_weights=self.adj_cumwgt[curr], k=1)[0]
                     walk.append(curr)
 
                 if len(walk) < walk_length:
