@@ -126,7 +126,8 @@ class HINTripletMiner:
         inter_query = """
         MATCH (d1:LawDocument)-[r:LEGAL_RELATION]->(d2:LawDocument)
         WHERE r.type IN [
-            'CAN_CU_BAN_HANH', 'DAN_CHIEU', 'QUY_DINH_CHI_TIET_HUONG_DAN', 'HOP_NHAT', 'HUONG_DAN'
+            'CAN_CU_BAN_HANH', 'DAN_CHIEU', 'QUY_DINH_CHI_TIET_HUONG_DAN', 'HOP_NHAT',
+            'HUONG_DAN_AP_DUNG', 'SUA_DOI_BO_SUNG', 'GIAI_THICH'
         ]
         WITH d1, d2, r LIMIT 5000
         MATCH (d1)-[:HAS_CHUNK]->(c1:Chunk)
@@ -167,6 +168,51 @@ class HINTripletMiner:
 
         logger.info("✓ Trích xuất thành công %d cặp Positive liên kết từ Neo4j.", len(pairs))
         return pairs
+
+    # Cypher: triplet ĐỐI KHÁNG — anchor & positive cùng VB hiện hành A; negative = điều của VB
+    # bị A THAY_THE/BAI_BO (bản CŨ/hết hiệu lực) cùng cấp macro → lexically gần nhưng pháp lý SAI.
+    # Đây là hard-negative chất lượng cao theo cực tính quan hệ (findings B5 — anh Khánh).
+    ANTAGONISTIC_TRIPLET_CYPHER = """
+    MATCH (a:LawDocument)-[r:LEGAL_RELATION]->(old:LawDocument)
+    WHERE toUpper(r.type) IN ['THAY_THE', 'BAI_BO', 'DINH_CHI_THI_HANH']
+    MATCH (a)-[:HAS_CHUNK]->(ca:Chunk)
+    MATCH (a)-[:HAS_CHUNK]->(cp:Chunk)
+    WHERE ca.chunk_id < cp.chunk_id
+      AND ca.chunk_id IS NOT NULL AND cp.chunk_id IS NOT NULL
+    MATCH (old)-[:HAS_CHUNK]->(cn:Chunk)
+    WHERE coalesce(cn.macro_label,'') = coalesce(ca.macro_label,'')
+      AND cn.chunk_id IS NOT NULL
+    RETURN ca.chunk_id AS anchor_id, coalesce(ca.content,'') AS anchor_text,
+           cp.chunk_id AS positive_id, coalesce(cp.content,'') AS positive_text,
+           cn.chunk_id AS negative_id, coalesce(cn.content,'') AS negative_text,
+           coalesce(a.doc_number,'POLARITY') AS hierarchy_label
+    LIMIT $limit
+    """
+
+    def fetch_antagonistic_triplets(self, limit: int = 10000) -> List[Dict[str, Any]]:
+        """Khai phá triplet hard-negative theo cực tính đối kháng (THAY_THE/BAI_BO) trực tiếp từ đồ thị."""
+        logger.info("Khai phá triplet ĐỐI KHÁNG (hard-negative theo cực tính quan hệ)...")
+        out: List[Dict[str, Any]] = []
+        try:
+            with self.driver.session() as session:
+                for r in session.run(self.ANTAGONISTIC_TRIPLET_CYPHER, limit=int(limit)):
+                    a_t, p_t, n_t = str(r["anchor_text"]), str(r["positive_text"]), str(r["negative_text"])
+                    if len(a_t.strip()) < 30 or len(p_t.strip()) < 30 or len(n_t.strip()) < 30:
+                        continue
+                    if n_t.strip() == a_t.strip() or n_t.strip() == p_t.strip():
+                        continue
+                    out.append({
+                        "anchor": a_t, "positive": p_t, "negative": n_t,
+                        "query": a_t, "hard_negative": n_t,
+                        "anchor_id": str(r["anchor_id"]), "positive_id": str(r["positive_id"]),
+                        "negative_id": str(r["negative_id"]),
+                        "hierarchy_label": str(r["hierarchy_label"]),
+                        "hardness_score": 1.0, "neg_source": "antagonistic_relation",
+                    })
+        except Exception as exc:
+            logger.warning("Bỏ qua triplet đối kháng (%s).", exc)
+        logger.info("✓ Khai phá %d triplet đối kháng (cực tính).", len(out))
+        return out
 
     def load_graph_embeddings(self) -> None:
         """Nạp toàn bộ 1.28M vector đồ thị vào RAM và chuẩn hóa L2 (chỉ tốn ~620MB RAM)."""
@@ -324,7 +370,10 @@ def mine_and_export_hin_triplets(output_path: str, limit: int = 50000, beta: flo
         raw_pairs = miner.fetch_positive_pairs_from_neo4j(limit=limit)
         valid_pairs = [p for p in raw_pairs if len(p["anchor_text"].strip()) >= 30 and len(p["positive_text"].strip()) >= 30]
         miner.load_graph_embeddings()
-        df_triplets = miner.mine_triplets(pairs=valid_pairs, beta=beta, max_triplets=limit)
+        df_bm25 = miner.mine_triplets(pairs=valid_pairs, beta=beta, max_triplets=limit)
+        # Bổ sung hard-negative theo CỰC TÍNH đối kháng (THAY_THE/BAI_BO) — chất lượng cao hơn BM25
+        antagonistic = miner.fetch_antagonistic_triplets(limit=max(5000, limit // 5))
+        df_triplets = pd.concat([df_bm25, pd.DataFrame(antagonistic)], ignore_index=True) if antagonistic else df_bm25
 
         out_file = Path(output_path)
         out_file.parent.mkdir(parents=True, exist_ok=True)

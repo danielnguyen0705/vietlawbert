@@ -236,42 +236,147 @@ class LegalHybridRetriever:
             fused.append(elem)
         return fused
 
+    # Quan hệ BỔ TRỢ (Hierarchical + Operational): mở rộng để LÀM GIÀU ngữ cảnh.
+    # KHÔNG mở rộng qua quan hệ đối kháng (THAY_THE/BAI_BO/...) → tránh kéo VB hết hiệu lực.
+    BO_TRO_RELATIONS = {
+        "CAN_CU_BAN_HANH", "QUY_DINH_CHI_TIET_HUONG_DAN", "HUONG_DAN_AP_DUNG",
+        "DAN_CHIEU", "GIAI_THICH", "HOP_NHAT", "SUA_DOI_BO_SUNG",
+    }
+
+    def _get_neo4j(self):
+        """Kết nối Neo4j lười cho graph-expansion (fail-soft: lỗi → bỏ qua mở rộng, không làm hỏng truy xuất)."""
+        drv = getattr(self, "_neo4j_driver", None)
+        if drv is None:
+            try:
+                from neo4j import GraphDatabase
+                self._neo4j_driver = GraphDatabase.driver(
+                    config.NEO4J_URI,
+                    auth=(config.NEO4J_USER, getattr(config, "NEO4J_PASSWORD", "")),
+                    connection_acquisition_timeout=10.0,
+                )
+                self._neo4j_driver.verify_connectivity()
+            except Exception as exc:
+                logger.warning("Graph-expansion: không kết nối Neo4j (%s) → bỏ qua mở rộng.", exc)
+                self._neo4j_driver = False
+        return self._neo4j_driver or None
+
+    def _search_sparse_in_docs(self, query: str, doc_ids: List[str], top_k: int = 20,
+                               must_be_effective: bool = True) -> List[Dict[str, Any]]:
+        """ES search GIỚI HẠN trong tập doc_id (các VB liên quan qua đồ thị) — lấy điều khớp câu hỏi."""
+        if not doc_ids:
+            return []
+        filt: List[Dict[str, Any]] = [{"terms": {"doc_id": list(doc_ids)[:200]}}]
+        if must_be_effective:
+            filt.append({"term": {"is_effective": True}})
+        es_query = {
+            "bool": {
+                "must": [{"multi_match": {
+                    "query": query,
+                    "fields": ["hierarchy_path^3", "content^1.5"],
+                    "type": "best_fields", "tie_breaker": 0.3,
+                }}],
+                "filter": filt,
+            }
+        }
+        try:
+            res = self.es.search(index=config.ES_INDEX_NAME, query=es_query, size=top_k)
+            hits = []
+            for h in res["hits"]["hits"]:
+                src = h["_source"]
+                src["score"] = float(h.get("_score") or 0.0)
+                src["chunk_id"] = str(src.get("chunk_id") or h["_id"])
+                hits.append(src)
+            return hits
+        except Exception as exc:
+            logger.warning("Graph-expansion ES filter lỗi: %s", exc)
+            return []
+
+    def _graph_expand(self, candidates: List[Dict[str, Any]], query: str, top_m: int = 5,
+                      must_be_effective: bool = True) -> List[Dict[str, Any]]:
+        """
+        MỞ RỘNG pool (tăng recall): từ top-M hit tin cậy → lấy VB liên quan qua quan hệ BỔ TRỢ
+        (Cypher GET_NEIGHBORS) → fetch điều khớp câu hỏi trong các VB đó (ES filter doc_id) → ứng viên bổ sung.
+        Đây là hiện thực đúng "theo vết 22 quan hệ để surface điều liên quan" của Đề cương (thay re-score).
+        """
+        driver = self._get_neo4j()
+        if driver is None:
+            return []
+        seed_docs, seen = [], set()
+        for c in candidates[:top_m]:
+            did = str(c.get("doc_id") or "")
+            if did and did not in seen:
+                seen.add(did); seed_docs.append(did)
+        if not seed_docs:
+            return []
+        try:
+            from database.cypher_templates import GET_NEIGHBORS
+            neighbor_docs = set()
+            with driver.session() as sess:
+                for did in seed_docs:
+                    for rec in sess.run(GET_NEIGHBORS, doc_id=did, limit=25):
+                        rtype = str(rec.get("rel_type") or "").upper()
+                        nid = str(rec.get("neighbor_id") or "")
+                        if nid and nid not in seen and rtype in self.BO_TRO_RELATIONS:
+                            neighbor_docs.add(nid)
+        except Exception as exc:
+            logger.warning("Graph-expansion traversal lỗi: %s", exc)
+            return []
+        if not neighbor_docs:
+            return []
+        exp = self._search_sparse_in_docs(query, list(neighbor_docs), top_k=20, must_be_effective=must_be_effective)
+        for h in exp:
+            h["from_expansion"] = True
+        return exp
+
     def retrieve(self, query: str, top_k: int = 5, must_be_effective: bool = True) -> List[Dict[str, Any]]:
-        """Quy trình truy xuất lai toàn trình kiểm soát SLA dưới 500ms."""
+        """
+        Truy xuất lai + GRAPH EXPANSION (Đề cương: theo vết 22 quan hệ để surface điều liên quan).
+        Pipeline: Hybrid-RRF → mở rộng pool bằng điều từ VB liên quan (quan hệ BỔ TRỢ) → rerank text.
+        Cơ chế graph-cosine re-score CŨ chỉ bật khi GRAPH_ALPHA>0 và GRAPH_EXPANSION=0 (mặc định: expansion).
+        """
         dense_candidates = self._search_dense(query, top_k=50, must_be_effective=must_be_effective)
         sparse_candidates = self._search_sparse_es(query, top_k=50, must_be_effective=must_be_effective)
-
         candidates = self._rrf_fusion(dense_candidates, sparse_candidates, k=getattr(config, "RRF_K", 60), top_k=50)
         if not candidates:
             return []
 
-        # Cross-Encoder Re-ranking nếu được nạp
+        use_expansion = bool(getattr(config, "GRAPH_EXPANSION", True))
+        if use_expansion:
+            exp_hits = self._graph_expand(
+                candidates, query,
+                top_m=int(getattr(config, "GRAPH_EXPANSION_TOP_M", 5)),
+                must_be_effective=must_be_effective,
+            )
+            if exp_hits:
+                candidates = self._rrf_fusion(candidates, exp_hits, k=getattr(config, "RRF_K", 60), top_k=60)
+
+        # Rerank bằng text score (cross-encoder nếu có, else RRF)
         if self.reranker is not None:
             pairs = [[query, c.get("content", "") or c.get("text", "")] for c in candidates]
             ce_scores = self.reranker.predict(pairs)
         else:
             ce_scores = [c.get("rrf_score", 0.0) for c in candidates]
 
-        # Kích hoạt nạp cache đồ thị nếu alpha > 0 và chưa nạp vào bộ nhớ
-        if self.alpha > 0 and not self._graph_cache_loaded:
-            self._ensure_graph_cache()
-
-        top_cid = self._graph_key(str(candidates[0].get("chunk_id") or candidates[0].get("id") or ""))
-        anchor_g_vec = self.graph_cache.get(top_cid)
+        # (Mặc định TẮT) graph-cosine re-score cũ — chỉ khi alpha>0 và KHÔNG expansion.
+        use_cosine = (self.alpha > 0) and (not use_expansion)
+        anchor_g_vec = None
+        if use_cosine:
+            if not self._graph_cache_loaded:
+                self._ensure_graph_cache()
+            anchor_g_vec = self.graph_cache.get(
+                self._graph_key(str(candidates[0].get("chunk_id") or candidates[0].get("id") or "")))
 
         final_candidates = []
         for idx, item in enumerate(candidates):
-            cid = self._graph_key(str(item.get("chunk_id") or item.get("id") or ""))
-            text_score = float(ce_scores[idx])
-
+            text_score = float(ce_scores[idx]) if idx < len(ce_scores) else float(item.get("rrf_score", 0.0))
             graph_score = 0.0
-            if anchor_g_vec is not None and cid in self.graph_cache:
-                cand_g_vec = self.graph_cache[cid]
-                denom = (np.linalg.norm(anchor_g_vec) * np.linalg.norm(cand_g_vec)) + 1e-9
-                graph_score = float(np.dot(anchor_g_vec, cand_g_vec) / denom)
-
-            final_score = text_score + self.alpha * graph_score
-            item["final_rerank_score"] = round(final_score, 4)
+            if use_cosine and anchor_g_vec is not None:
+                cid = self._graph_key(str(item.get("chunk_id") or item.get("id") or ""))
+                if cid in self.graph_cache:
+                    cand = self.graph_cache[cid]
+                    denom = (np.linalg.norm(anchor_g_vec) * np.linalg.norm(cand)) + 1e-9
+                    graph_score = float(np.dot(anchor_g_vec, cand) / denom)
+            item["final_rerank_score"] = round(text_score + self.alpha * graph_score, 4)
             item["graph_boost"] = round(graph_score, 4)
             final_candidates.append(item)
 

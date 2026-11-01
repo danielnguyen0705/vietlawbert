@@ -127,6 +127,10 @@ class Config:
     RRF_K: int = int(os.getenv("RRF_K", 60))
     RETRIEVAL_TOP_K: int = int(os.getenv("RETRIEVAL_TOP_K", 5))
     GRAPH_ALPHA: float = float(os.getenv("GRAPH_ALPHA", 0.2))
+    # Graph EXPANSION (Đề cương: theo vết 22 quan hệ để surface điều liên quan).
+    # Mặc định BẬT; thay cho cơ chế graph-cosine re-score (gây hại — xem RQ3 31/10).
+    GRAPH_EXPANSION: bool = os.getenv("GRAPH_EXPANSION", "1") in ("1","true","True")
+    GRAPH_EXPANSION_TOP_M: int = int(os.getenv("GRAPH_EXPANSION_TOP_M", 5))
 
     # ==============================================================================
     # 5. THU THẬP DỮ LIỆU & OCR PIPELINE
