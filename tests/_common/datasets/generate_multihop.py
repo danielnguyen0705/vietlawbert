@@ -66,13 +66,37 @@ def _heading(text: str) -> str:
     return ""
 
 
-def generate(limit: int, out: str) -> int:
+def _normdoc(s: str) -> str:
+    """Chuẩn hóa doc_number để so khớp (bỏ dấu, đ->d, thường, bỏ khoảng trắng)."""
+    import unicodedata
+    s = unicodedata.normalize("NFKD", str(s or ""))
+    s = re.sub(r"[\u0300-\u036f]", "", s)
+    return s.lower().replace("\u0111", "d").replace(" ", "")
+
+
+def _load_indexed(path):
+    """Nạp tập doc_number đang có trong index ES (1 doc_number/dòng). None nếu không dùng."""
+    if not path:
+        return None
+    idx = set()
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            t = line.strip()
+            if t:
+                idx.add(_normdoc(t))
+    logger.info("Nạp %d doc_number có trong index để lọc cặp (A,B).", len(idx))
+    return idx
+
+
+def generate(limit: int, out: str, indexed_path: str = None) -> int:
     driver = GraphDatabase.driver(
         config.NEO4J_URI,
         auth=(config.NEO4J_USER, getattr(config, "NEO4J_PASSWORD", "")),
     )
     # lấy dư ứng viên để sau khi lọc trần-mỗi-B và câu rỗng vẫn đủ `limit`
-    cand = max(int(limit) * 4, 2000)
+    cand = max(int(limit) * 8, 4000) if indexed_path else max(int(limit) * 4, 2000)
+    indexed = _load_indexed(indexed_path)
+    n_skip_idx = 0
     cases = []
     per_b = collections.Counter()
     try:
@@ -86,6 +110,11 @@ def generate(limit: int, out: str) -> int:
                 heading = _heading(a_text)
                 if not heading or not b_doc or not b_chunk:
                     continue
+                if indexed is not None:
+                    a_doc = str(rec["a_doc"] or "")
+                    if _normdoc(a_doc) not in indexed or _normdoc(b_doc) not in indexed:
+                        n_skip_idx += 1
+                        continue
                 if per_b[b_doc] >= MAX_PER_B:       # chặn một B chiếm quá nhiều ca
                     continue
                 per_b[b_doc] += 1
@@ -110,6 +139,8 @@ def generate(limit: int, out: str) -> int:
         for c in cases:
             f.write(json.dumps(c, ensure_ascii=False) + "\n")
 
+    if indexed is not None:
+        logger.info("Đã loại %d cặp vì A hoặc B không nằm trong index ES.", n_skip_idx)
     n_b = len(set(c["ground_truth_doc_number"] for c in cases))
     n_rel = collections.Counter(c["relation"] for c in cases)
     logger.info("✓ Sinh %d ca | %d đáp án B phân biệt | quan hệ=%s → %s",
@@ -122,9 +153,11 @@ def generate(limit: int, out: str) -> int:
 def main():
     ap = argparse.ArgumentParser(description="Sinh bộ test multi-hop thật từ đồ thị HIN (Track 3.1 v2)")
     ap.add_argument("--limit", type=int, default=500)
+    ap.add_argument("--indexed-docs", default=None,
+                    help="File doc_number (1/dòng) có trong index ES; chỉ giữ cặp (A,B) đều thuộc tập này (Hướng A).")
     ap.add_argument("--out", default=str(Path(__file__).resolve().parent / "vietlawbench_multihop.jsonl"))
     args = ap.parse_args()
-    generate(args.limit, args.out)
+    generate(args.limit, args.out, args.indexed_docs)
 
 
 if __name__ == "__main__":
