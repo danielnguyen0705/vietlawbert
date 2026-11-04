@@ -88,14 +88,25 @@ def _load_indexed(path):
     return idx
 
 
-def generate(limit: int, out: str, indexed_path: str = None) -> int:
+def _indexed_from_es():
+    """Lấy tập doc_number có trong ES TRỰC TIẾP (khỏi phụ thuộc file hay bị git clean xoá)."""
+    from elasticsearch import Elasticsearch
+    es = Elasticsearch(config.ES_HOST)
+    res = es.search(index=config.ES_INDEX_NAME, size=0,
+                    aggs={"docs": {"terms": {"field": "doc_number.keyword", "size": 5000}}})
+    idx = {_normdoc(b["key"]) for b in res["aggregations"]["docs"]["buckets"]}
+    logger.info("Lấy %d doc_number từ ES để lọc cặp (A,B).", len(idx))
+    return idx
+
+
+def generate(limit: int, out: str, indexed_path: str = None, from_es: bool = False) -> int:
     driver = GraphDatabase.driver(
         config.NEO4J_URI,
         auth=(config.NEO4J_USER, getattr(config, "NEO4J_PASSWORD", "")),
     )
     # lấy dư ứng viên để sau khi lọc trần-mỗi-B và câu rỗng vẫn đủ `limit`
-    cand = max(int(limit) * 8, 4000) if indexed_path else max(int(limit) * 4, 2000)
-    indexed = _load_indexed(indexed_path)
+    cand = max(int(limit) * 8, 4000) if (indexed_path or from_es) else max(int(limit) * 4, 2000)
+    indexed = _indexed_from_es() if from_es else _load_indexed(indexed_path)
     n_skip_idx = 0
     cases = []
     per_b = collections.Counter()
@@ -153,11 +164,13 @@ def generate(limit: int, out: str, indexed_path: str = None) -> int:
 def main():
     ap = argparse.ArgumentParser(description="Sinh bộ test multi-hop thật từ đồ thị HIN (Track 3.1 v2)")
     ap.add_argument("--limit", type=int, default=500)
+    ap.add_argument("--indexed-from-es", action="store_true",
+                    help="Lấy danh sách doc_number indexed TRỰC TIẾP từ ES (khuyến nghị; không cần file).")
     ap.add_argument("--indexed-docs", default=None,
                     help="File doc_number (1/dòng) có trong index ES; chỉ giữ cặp (A,B) đều thuộc tập này (Hướng A).")
     ap.add_argument("--out", default=str(Path(__file__).resolve().parent / "vietlawbench_multihop.jsonl"))
     args = ap.parse_args()
-    generate(args.limit, args.out, args.indexed_docs)
+    generate(args.limit, args.out, args.indexed_docs, args.indexed_from_es)
 
 
 if __name__ == "__main__":
