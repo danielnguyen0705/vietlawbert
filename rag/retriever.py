@@ -314,7 +314,7 @@ class LegalHybridRetriever:
             neighbor_docs = set()
             with driver.session() as sess:
                 for dn in seed_docs:
-                    for rec in sess.run(GET_NEIGHBORS_BY_DOCNUM, doc_number=dn, limit=25):
+                    for rec in sess.run(GET_NEIGHBORS_BY_DOCNUM, doc_number=dn, limit=200):
                         rtype = str(rec.get("rel_type") or "").upper()
                         ndn = str(rec.get("neighbor_doc_number") or "")
                         if ndn and ndn != "N/A" and ndn not in seen and rtype in self.BO_TRO_RELATIONS:

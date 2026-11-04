@@ -40,7 +40,7 @@ LIMIT $limit
 # Tra neighbor theo doc_number (khóa nhất quán ES<->Neo4j; doc_id KHÔNG đồng bộ).
 GET_NEIGHBORS_BY_DOCNUM = """
 MATCH (d:LawDocument {doc_number: $doc_number})-[r:LEGAL_RELATION]-(n:LawDocument)
-RETURN r.type AS rel_type, n.doc_number AS neighbor_doc_number
+RETURN DISTINCT r.type AS rel_type, n.doc_number AS neighbor_doc_number
 LIMIT $limit
 """
 
