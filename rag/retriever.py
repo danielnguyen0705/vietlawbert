@@ -260,12 +260,13 @@ class LegalHybridRetriever:
                 self._neo4j_driver = False
         return self._neo4j_driver or None
 
-    def _search_sparse_in_docs(self, query: str, doc_ids: List[str], top_k: int = 20,
+    def _search_sparse_in_docs(self, query: str, doc_numbers: List[str], top_k: int = 20,
                                must_be_effective: bool = True) -> List[Dict[str, Any]]:
-        """ES search GIỚI HẠN trong tập doc_id (các VB liên quan qua đồ thị) — lấy điều khớp câu hỏi."""
-        if not doc_ids:
+        """ES search GIỚI HẠN trong tập doc_number (các VB liên quan qua đồ thị) — lấy điều khớp câu hỏi.
+        Lọc theo doc_number.keyword: doc_id KHÔNG nhất quán ES<->Neo4j (kiểm chứng 11/50 vs 50/50)."""
+        if not doc_numbers:
             return []
-        filt: List[Dict[str, Any]] = [{"terms": {"doc_id": list(doc_ids)[:200]}}]
+        filt: List[Dict[str, Any]] = [{"terms": {"doc_number.keyword": list(doc_numbers)[:200]}}]
         if must_be_effective:
             filt.append({"term": {"is_effective": True}})
         es_query = {
@@ -295,7 +296,7 @@ class LegalHybridRetriever:
                       must_be_effective: bool = True) -> List[Dict[str, Any]]:
         """
         MỞ RỘNG pool (tăng recall): từ top-M hit tin cậy → lấy VB liên quan qua quan hệ BỔ TRỢ
-        (Cypher GET_NEIGHBORS) → fetch điều khớp câu hỏi trong các VB đó (ES filter doc_id) → ứng viên bổ sung.
+        (Cypher GET_NEIGHBORS_BY_DOCNUM) → fetch điều khớp câu hỏi trong các VB đó (ES filter doc_number) → ứng viên bổ sung.
         Đây là hiện thực đúng "theo vết 22 quan hệ để surface điều liên quan" của Đề cương (thay re-score).
         """
         driver = self._get_neo4j()
@@ -303,21 +304,21 @@ class LegalHybridRetriever:
             return []
         seed_docs, seen = [], set()
         for c in candidates[:top_m]:
-            did = str(c.get("doc_id") or "")
-            if did and did not in seen:
-                seen.add(did); seed_docs.append(did)
+            dn = str(c.get("doc_number") or c.get("doc_no") or "")
+            if dn and dn not in seen:
+                seen.add(dn); seed_docs.append(dn)
         if not seed_docs:
             return []
         try:
-            from database.cypher_templates import GET_NEIGHBORS
+            from database.cypher_templates import GET_NEIGHBORS_BY_DOCNUM
             neighbor_docs = set()
             with driver.session() as sess:
-                for did in seed_docs:
-                    for rec in sess.run(GET_NEIGHBORS, doc_id=did, limit=25):
+                for dn in seed_docs:
+                    for rec in sess.run(GET_NEIGHBORS_BY_DOCNUM, doc_number=dn, limit=25):
                         rtype = str(rec.get("rel_type") or "").upper()
-                        nid = str(rec.get("neighbor_id") or "")
-                        if nid and nid not in seen and rtype in self.BO_TRO_RELATIONS:
-                            neighbor_docs.add(nid)
+                        ndn = str(rec.get("neighbor_doc_number") or "")
+                        if ndn and ndn != "N/A" and ndn not in seen and rtype in self.BO_TRO_RELATIONS:
+                            neighbor_docs.add(ndn)
         except Exception as exc:
             logger.warning("Graph-expansion traversal lỗi: %s", exc)
             return []

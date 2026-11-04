@@ -30,9 +30,18 @@ RETURN a.doc_id AS a_id, a.doc_number AS a_dn,
 def main():
     ap=argparse.ArgumentParser(); ap.add_argument("--n",type=int,default=50)
     ap.add_argument("--indexed",default="tests/_common/datasets/indexed_docs.txt"); a=ap.parse_args()
-    idx=[l.strip() for l in open(a.indexed) if l.strip()]
-    print(f"Số doc_number trong index nạp vào bộ lọc: {len(idx)}")
     r=LegalHybridRetriever()
+    # Lấy danh sách doc_number có trong ES TRỰC TIẾP qua client (khỏi phụ thuộc file hay bị git clean xoá)
+    idx=[]
+    try:
+        res=r.es.search(index=config.ES_INDEX_NAME, size=0,
+                        aggs={"docs":{"terms":{"field":"doc_number.keyword","size":5000}}})
+        idx=[b["key"] for b in res["aggregations"]["docs"]["buckets"]]
+    except Exception as exc:
+        print("Agg ES lỗi (%s) -> thử đọc file." % exc)
+        try: idx=[l.strip() for l in open(a.indexed) if l.strip()]
+        except Exception: idx=[]
+    print(f"Số doc_number trong index nạp vào bộ lọc: {len(idx)} | mẫu: {idx[:3]}")
     drv=GraphDatabase.driver(config.NEO4J_URI,auth=(config.NEO4J_USER,config.NEO4J_PASSWORD))
     pairs=[]
     with drv.session() as s:
