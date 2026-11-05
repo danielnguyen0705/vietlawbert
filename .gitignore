@@ -56,3 +56,8 @@ CLAUDE.md
 
 # Interaction & feedback runtime logs (du lieu sinh khi chay demo, khong commit)
 flagging/*.jsonl
+VLQA/
+**/VLQA/
+*vlqa*.json
+legal_corpus.json
+train.json

@@ -26,6 +26,7 @@ except Exception:
 from sentence_transformers import SentenceTransformer
 
 from configs.config import config
+from configs.global_id import canonical_doc_id
 from configs.paths import RAW_SHARDS_DIR
 from preprocess.ast_parser import HybridASTParser
 from database.qdrant_client import QdrantClientWrapper
@@ -187,7 +188,17 @@ class IngestPipelineWorker:
                     except json.JSONDecodeError:
                         continue
 
-                    doc_id = str(doc_record.get("doc_id") or doc_record.get("item_id") or f"doc_{line_idx}")
+                    meta_detail = doc_record.get("metadata_detail") or {}
+                    meta_api = doc_record.get("metadata_api") or {}
+                    doc_number = str(
+                        doc_record.get("doc_number")
+                        or meta_detail.get("docNum")
+                        or meta_api.get("docNum")
+                        or "N/A"
+                    )
+                    _crawler_id = str(doc_record.get("doc_id") or doc_record.get("item_id") or f"doc_{line_idx}")
+                    # KHÓA TOÀN CỤC: doc_id tất định từ doc_number (đồng nhất Neo4j/Qdrant/ES).
+                    doc_id = canonical_doc_id(doc_number) or _crawler_id
 
                     if self.qdrant.doc_exists(doc_id):
                         skipped_existing_docs += 1
@@ -196,16 +207,6 @@ class IngestPipelineWorker:
                     raw_text = self._extract_clean_text_fallback(doc_record)
                     if not raw_text:
                         continue
-
-                    meta_detail = doc_record.get("metadata_detail") or {}
-                    meta_api = doc_record.get("metadata_api") or {}
-
-                    doc_number = str(
-                        doc_record.get("doc_number")
-                        or meta_detail.get("docNum")
-                        or meta_api.get("docNum")
-                        or "N/A"
-                    )
                     title = str(
                         doc_record.get("title")
                         or meta_detail.get("title")

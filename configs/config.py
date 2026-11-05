@@ -69,6 +69,10 @@ class Config:
     ES_HOST: str = os.getenv("ES_HOST", "http://localhost:9200")
     ES_INDEX_NAME: str = os.getenv("ES_INDEX_NAME", "vietlaw_sparse_idx")
 
+    # Benchmark VLQA (CHỈ đánh giá, không train; KHÔNG commit — xem .gitignore).
+    # Mỗi máy tự set trong .env: Windows D:\\UIT-HK7\\VietLawBERT\\VLQA ; Ubuntu /mnt/data/projects/VLQA
+    VLQA_DIR: str = os.getenv("VLQA_DIR", "")
+
     # Redis In-Memory Cache (Pre-computed Graph Embeddings 128d)
     REDIS_HOST: str = os.getenv("REDIS_HOST", "localhost")
     REDIS_PORT: int = int(os.getenv("REDIS_PORT", 6379))

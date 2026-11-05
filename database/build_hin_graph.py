@@ -44,6 +44,9 @@ def save_hin_checkpoint(completed: Set[str]) -> None:
         logger.warning("Không thể lưu HIN checkpoint: %s", exc)
 
 
+from configs.global_id import canonical_doc_id, resolve_target_id
+
+
 class HINGraphBuilder:
     def __init__(self, neo4j_client: Optional[Neo4jClient] = None):
         self.client = neo4j_client or Neo4jClient()
@@ -117,8 +120,30 @@ class HINGraphBuilder:
         """
         return self.client.execute_batch(cypher, relations, batch_size=batch_size)
 
+    def _scan_id_map(self, file_path: Path) -> Dict[str, str]:
+        """Lượt 1: dựng map crawler_id -> doc_number (để canonical hóa đầu ĐÍCH của quan hệ)."""
+        op = gzip.open(file_path, "rt", encoding="utf-8") if file_path.suffix == ".gz" else open(file_path, "r", encoding="utf-8")
+        m: Dict[str, str] = {}
+        with op as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    it = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                cid = str(it.get("doc_id") or it.get("item_id") or "").strip()
+                md = it.get("metadata_detail") or {}; ma = it.get("metadata_api") or {}
+                dn = str(it.get("doc_number") or md.get("docNum") or ma.get("docNum") or "").strip()
+                if cid and dn:
+                    m[cid] = dn
+        logger.info("Khóa toàn cục: quét %d ánh xạ crawler_id→doc_number.", len(m))
+        return m
+
     def build_from_stream(self, file_path: Path, parse_chunks: bool = True) -> None:
         logger.info("Đang nạp dữ liệu đồ thị từ tệp: %s...", file_path.name)
+        self._id_map = self._scan_id_map(file_path)
         opener = gzip.open(file_path, "rt", encoding="utf-8") if file_path.suffix == ".gz" else open(file_path, "r", encoding="utf-8")
 
         docs_buffer: List[Dict[str, Any]] = []
@@ -138,13 +163,15 @@ class HINGraphBuilder:
                 meta_detail = item.get("metadata_detail") or {}
                 meta_api = item.get("metadata_api") or {}
 
-                doc_id = str(item.get("doc_id") or item.get("item_id") or "UNKNOWN")
                 doc_number = str(
                     item.get("doc_number")
                     or meta_detail.get("docNum")
                     or meta_api.get("docNum")
                     or "N/A"
                 )
+                _crawler_id = str(item.get("doc_id") or item.get("item_id") or "")
+                # KHÓA TOÀN CỤC: doc_id tất định từ doc_number (idempotent; đồng nhất xuyên kho).
+                doc_id = canonical_doc_id(doc_number) or _crawler_id or "UNKNOWN"
                 title = str(item.get("title") or meta_detail.get("title") or meta_api.get("title") or "")
                 effective_date = str(
                     item.get("effective_date") or meta_detail.get("effFrom") or meta_api.get("effFrom") or ""
@@ -176,7 +203,8 @@ class HINGraphBuilder:
                 # Trích xuất quan hệ ontology đã chuẩn hóa
                 if item.get("relationships") and isinstance(item["relationships"], list):
                     for rel in item["relationships"]:
-                        tgt_id = str(rel.get("target_id") or "").strip()
+                        _tgt_raw = str(rel.get("target_id") or "").strip()
+                        tgt_id = resolve_target_id(_tgt_raw, self._id_map) or _tgt_raw
                         rel_type = str(rel.get("edge_type") or "").strip().upper().replace(" ", "_") or "UNMAPPED"
                         direction = rel.get("direction", "OUTGOING")
                         if tgt_id and tgt_id != doc_id:
@@ -199,7 +227,8 @@ class HINGraphBuilder:
                                     rel_type_clean = self._edge_ontology.get((group_name, str(rel_k))) or f"REL_{rel_k}"
                                     if isinstance(doc_list, list):
                                         for d_entry in doc_list:
-                                            tgt = str(d_entry.get("id") or "").strip()
+                                            _tgt_raw = str(d_entry.get("id") or "").strip()
+                                            tgt = resolve_target_id(_tgt_raw, self._id_map) or _tgt_raw
                                             if tgt and tgt != doc_id:
                                                 relations_buffer.append({
                                                     "source_id": tgt if is_incoming else doc_id,
