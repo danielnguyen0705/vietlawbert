@@ -47,11 +47,20 @@ class Neo4jClient:
         self.driver.close()
         logger.info("Đã đóng kết nối Neo4j Driver.")
 
-    def drop_database(self) -> None:
-        logger.warning("Đang dọn sạch toàn bộ cơ sở dữ liệu Neo4j...")
+    def drop_database(self, batch_size: int = 10000) -> None:
+        # Xóa THEO LÔ (mỗi lô là 1 transaction tự-commit) để tránh OutOfMemory khi graph lớn.
+        logger.warning("Đang dọn sạch toàn bộ Neo4j theo lô (batch=%d)...", batch_size)
+        total = 0
         with self.driver.session() as session:
-            session.run("MATCH (n) DETACH DELETE n").consume()
-        logger.info("Đã dọn sạch cơ sở dữ liệu Neo4j.")
+            while True:
+                c = session.run(
+                    "MATCH (n) WITH n LIMIT $b DETACH DELETE n RETURN count(n) AS c",
+                    b=batch_size,
+                ).single()["c"]
+                total += c
+                if c == 0:
+                    break
+        logger.info("Đã dọn sạch Neo4j: xóa %d node.", total)
 
     def create_constraints(self) -> None:
         """Tạo ràng buộc duy nhất và chỉ mục trên LawDocument, Article, Chunk và Relationship."""
