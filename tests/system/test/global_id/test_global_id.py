@@ -23,3 +23,9 @@ def test_resolve_target_via_map_or_docnumber():
     assert G.resolve_target_id("crawler-xyz", m) == G.canonical_doc_id("80/2015/QH13")
     assert G.resolve_target_id("80/2015/QH13", {}) == G.canonical_doc_id("80/2015/QH13")
     assert G.resolve_target_id("", {}) == ""
+
+
+def test_dirty_quote_invariant():
+    # doc_number nguồn dính nháy r: '"38/2019/QĐ-UBND' phải cùng id với '38/2019/QD-UBND'
+    assert G.canonical_doc_id('"38/2019/QĐ-UBND') == G.canonical_doc_id("38/2019/QD-UBND")
+    assert G.canonical_doc_id("\'\'17/2022/TT-BCT") == G.canonical_doc_id("17/2022/TT-BCT")

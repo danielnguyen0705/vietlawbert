@@ -141,9 +141,10 @@ class HINGraphBuilder:
         logger.info("Khóa toàn cục: quét %d ánh xạ crawler_id→doc_number.", len(m))
         return m
 
-    def build_from_stream(self, file_path: Path, parse_chunks: bool = True) -> None:
+    def build_from_stream(self, file_path: Path, parse_chunks: bool = True, id_map: Optional[Dict[str, str]] = None) -> None:
         logger.info("Đang nạp dữ liệu đồ thị từ tệp: %s...", file_path.name)
-        self._id_map = self._scan_id_map(file_path)
+        # Dùng map TOÀN CỤC (mọi shard) nếu được truyền; nếu không, quét riêng file này.
+        self._id_map = id_map if id_map is not None else self._scan_id_map(file_path)
         opener = gzip.open(file_path, "rt", encoding="utf-8") if file_path.suffix == ".gz" else open(file_path, "r", encoding="utf-8")
 
         docs_buffer: List[Dict[str, Any]] = []
@@ -289,10 +290,18 @@ def run_build_hin(
     user: Optional[str] = None,
     password: Optional[str] = None,
     parse_chunks: bool = True,
+    rebuild: bool = False,
 ) -> None:
-    client = Neo4jClient(uri=uri, user=user, password=password)
+    # rebuild=True: WIPE toàn bộ Neo4j + xóa checkpoint → dựng lại sạch bằng khóa canonical.
+    client = Neo4jClient(uri=uri, user=user, password=password, drop_existing=rebuild)
     builder = HINGraphBuilder(neo4j_client=client)
 
+    if rebuild:
+        try:
+            HIN_CHECKPOINT_FILE.unlink()
+            logger.info("Đã xóa checkpoint HIN (%s) để dựng lại từ đầu.", HIN_CHECKPOINT_FILE.name)
+        except FileNotFoundError:
+            pass
     completed = load_hin_checkpoint()
     path = Path(metadata_path)
 
@@ -302,11 +311,16 @@ def run_build_hin(
             if not f.name.endswith(".quarantine.jsonl") and not f.name.endswith(".corrupted")
         ])
         logger.info("Tìm thấy %d shards (Đã nạp HIN trước đó: %d).", len(files), len(completed))
+        # Lượt TOÀN CỤC: gộp map crawler_id->doc_number của MỌI shard (để canonical hóa target liên-shard)
+        global_id_map: Dict[str, str] = {}
+        for f in files:
+            global_id_map.update(builder._scan_id_map(f))
+        logger.info("Khóa toàn cục (mọi shard): %d ánh xạ crawler_id->doc_number.", len(global_id_map))
         for f in files:
             if f.name in completed:
                 logger.info("[HIN SKIP] Bỏ qua Shard đã nạp: %s", f.name)
                 continue
-            builder.build_from_stream(f, parse_chunks=parse_chunks)
+            builder.build_from_stream(f, parse_chunks=parse_chunks, id_map=global_id_map)
             completed.add(f.name)
             save_hin_checkpoint(completed)
     else:
@@ -323,6 +337,7 @@ if __name__ == "__main__":
     parser.add_argument("--user", default=config.NEO4J_USER)
     parser.add_argument("--password", default=config.NEO4J_PASSWORD)
     parser.add_argument("--no-chunks", action="store_true", help="Chỉ nạp văn bản và quan hệ, bỏ qua nạp Chunk")
+    parser.add_argument("--rebuild", action="store_true", help="WIPE Neo4j + xóa checkpoint rồi dựng lại sạch bằng khóa canonical")
     args = parser.parse_args()
 
     run_build_hin(
@@ -331,4 +346,5 @@ if __name__ == "__main__":
         user=args.user,
         password=args.password,
         parse_chunks=not args.no_chunks,
+        rebuild=args.rebuild,
     )

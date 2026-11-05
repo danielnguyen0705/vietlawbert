@@ -23,6 +23,7 @@ def normalize_doc_number(doc_number: str) -> str:
     s = "".join(c for c in s if not unicodedata.combining(c))
     s = s.replace("Đ", "D").replace("đ", "d")
     s = re.sub(r"\s+", "", s).upper()
+    s = s.strip("'\"`.,;:()[]{}-")  # bỏ nháy/ký tự rác đầu-cuối (doc_number nguồn hay dính)
     return s
 
 
@@ -36,8 +37,10 @@ def canonical_doc_id(doc_number: str) -> str:
     if norm in _INVALID:
         return ""
     slug = re.sub(r"[^A-Z0-9]+", "-", norm).strip("-")
-    h = hashlib.sha1(norm.encode("utf-8")).hexdigest()[:8]
-    return f"{slug}-{h}" if slug else h
+    if not slug:
+        return ""
+    h = hashlib.sha1(slug.encode("utf-8")).hexdigest()[:8]  # hash SLUG → quote/rác không tách id
+    return f"{slug}-{h}"
 
 
 def resolve_target_id(raw_target: str, crawlerid_to_docnum: dict) -> str:
