@@ -61,3 +61,5 @@ VLQA/
 *vlqa*.json
 legal_corpus.json
 train.json
+*vlqa*.jsonl
+vietlawbench_vlqa.jsonl
