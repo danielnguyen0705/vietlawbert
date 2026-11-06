@@ -53,8 +53,9 @@ def test_docid_is_canonical_of_docnumber():
     assert frac <= 0.02, "doc_id chưa canonical theo doc_number (cần dựng lại Neo4j)"
 
 
-def test_crossstore_docid_overlap_neo4j_es():
-    """doc_id của Neo4j phải tồn tại trong ES (đồng nhất khóa xuyên kho)."""
+def test_crossstore_es_subset_of_neo4j_canonical():
+    """Bất biến ĐÚNG cho index (kể cả có-mục-tiêu): MỌI doc trong ES phải có doc_id canonical
+    và tồn tại trong Neo4j. Lấy mẫu PHÍA ES (không phải Neo4j) để không bị nhiễu bởi độ phủ."""
     try:
         from configs.config import config
         from elasticsearch import Elasticsearch
@@ -62,16 +63,23 @@ def test_crossstore_docid_overlap_neo4j_es():
         if not es.ping(): pytest.skip("ES không ping được.")
     except Exception as e:
         pytest.skip(f"ES không kết nối: {e}")
+    # lấy mẫu (doc_id, doc_number) từ ES
+    res = es.search(index=config.ES_INDEX_NAME, size=100,
+                    query={"match_all": {}}, source=["doc_id", "doc_number"])
+    hits = res["hits"]["hits"]
+    if not hits: pytest.skip("ES chưa có dữ liệu (chạy ingest_targeted trước).")
     d = _neo4j()
+    canon_ok = inneo = 0
     with d.session() as s:
-        ids = [r["id"] for r in s.run(
-            "MATCH (x:LawDocument) WHERE x.doc_number IS NOT NULL AND x.doc_number<>'N/A' "
-            "RETURN x.doc_id AS id LIMIT 100")]
+        for h in hits:
+            src = h["_source"]; es_id = src.get("doc_id"); dn = src.get("doc_number")
+            if es_id == G.canonical_doc_id(dn):
+                canon_ok += 1
+            c = s.run("MATCH (x:LawDocument {doc_id:$i}) RETURN count(x) AS c", i=es_id).single()["c"]
+            if c > 0:
+                inneo += 1
     d.close()
-    if not ids: pytest.skip("Chưa có LawDocument.")
-    hit = sum(1 for i in ids
-              if es.count(index=config.ES_INDEX_NAME, query={"term": {"doc_id": i}})["count"] > 0)
-    frac = hit / len(ids)
-    print(f"\n[cross-store] doc_id Neo4j có trong ES: {hit}/{len(ids)} ({frac:.1%})")
-    # Lưu ý: còn phụ thuộc độ phủ ES; ngưỡng thấp để chỉ bắt lỗi KHÓA, không phải độ phủ
-    assert frac >= 0.30, "Khóa doc_id Neo4j↔ES vẫn lệch (không phải do độ phủ): cần dựng lại cùng canonical"
+    n = len(hits)
+    print(f"\n[cross-store] ES doc_id canonical: {canon_ok}/{n} | tồn tại trong Neo4j: {inneo}/{n}")
+    assert canon_ok / n >= 0.95, "doc_id trong ES chưa canonical (chạy lại ingest_targeted bằng pipeline canonical)"
+    assert inneo / n >= 0.90, "doc_id ES không khớp Neo4j (hai kho lệch khóa)"

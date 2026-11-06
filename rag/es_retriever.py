@@ -74,7 +74,7 @@ class LegalElasticsearchRetriever:
                 "doc_number": {
                     "type": "text",
                     "analyzer": "vietnamese_legal_analyzer",
-                    "fields": {"raw": {"type": "keyword"}},
+                    "fields": {"keyword": {"type": "keyword"}},
                 },
                 "hierarchy_path": {
                     "type": "text",
