@@ -10,6 +10,7 @@ import gc
 import sys
 import argparse
 import logging
+from configs.logging_config import get_subsystem_logger
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -24,7 +25,7 @@ from configs.paths import RAW_SHARDS_DIR
 from configs.config import config
 from pipeline.ingest_pipeline import IngestPipelineWorker, load_checkpoint, save_checkpoint
 
-logger = logging.getLogger("VietLawBERT_EmbeddingConsumerCLI")
+logger = get_subsystem_logger("cli", "consume_embeddings")
 
 
 def resolve_compute_device(requested_device: str) -> str:

@@ -29,6 +29,7 @@ Gradio 6.x notes:
 from __future__ import annotations
 
 import logging
+from configs.logging_config import get_subsystem_logger
 import sys
 from pathlib import Path
 
@@ -44,7 +45,7 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     datefmt="%H:%M:%S",
 )
-logger = logging.getLogger("demo.app")
+logger = get_subsystem_logger("demo", "app")
 
 # ── Import sau khi sys.path đã ổn định
 from demo.config import (

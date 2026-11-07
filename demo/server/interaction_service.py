@@ -47,12 +47,13 @@ from __future__ import annotations
 import json
 import uuid
 import logging
+from configs.logging_config import get_subsystem_logger
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from demo.config import FLAGGING_DIR, INTERACTIONS_FILE
 
-logger = logging.getLogger("demo.interaction_service")
+logger = get_subsystem_logger("demo", "interaction_service")
 
 # ID cho mỗi lần chạy demo (1 process). Giúp nhóm các lượt cùng một phiên khi phân tích.
 RUN_ID = uuid.uuid4().hex[:8]

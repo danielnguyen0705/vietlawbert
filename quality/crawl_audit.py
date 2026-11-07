@@ -15,6 +15,7 @@ import re
 import html as html_lib
 import argparse
 import logging
+from configs.logging_config import get_subsystem_logger
 from collections import Counter
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Set, Iterator
@@ -22,7 +23,7 @@ from typing import Dict, Any, List, Optional, Set, Iterator
 from configs.paths import ROOT_DIR, ARTIFACTS_DIR
 from configs.config import config
 
-logger = logging.getLogger("VietLawBERT_CrawlAudit")
+logger = get_subsystem_logger("quality", "crawl_audit")
 
 VIETNAMESE_CHARS = set(
     "àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ"

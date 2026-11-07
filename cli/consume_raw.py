@@ -8,6 +8,7 @@ from __future__ import annotations
 import sys
 import argparse
 import logging
+from configs.logging_config import get_subsystem_logger
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -21,7 +22,7 @@ from configs.paths import RAW_SHARDS_DIR
 from configs.config import config
 from database.build_hin_graph import run_build_hin
 
-logger = logging.getLogger("VietLawBERT_RawConsumerCLI")
+logger = get_subsystem_logger("cli", "consume_raw")
 
 
 def main() -> int:

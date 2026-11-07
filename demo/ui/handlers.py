@@ -17,6 +17,7 @@ Handlers:
 from __future__ import annotations
 
 import logging
+from configs.logging_config import get_subsystem_logger
 from typing import List, Dict, Any, Tuple
 
 import gradio as gr
@@ -25,7 +26,7 @@ from demo.config import USE_MOCK_BACKEND, DEFAULT_TOP_K, DEFAULT_MODE
 from demo.server import retrieval_service, generation_service, feedback_service, interaction_service
 from demo.ui.panels import render_evidence, render_metrics
 
-logger = logging.getLogger("demo.handlers")
+logger = get_subsystem_logger("demo", "handlers")
 
 # Type aliases — Gradio 6.x format
 # ChatHistory: list of {"role": "user"|"assistant", "content": str}

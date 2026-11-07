@@ -9,6 +9,7 @@ import os
 import json
 import gzip
 import logging
+from configs.logging_config import get_subsystem_logger
 import re
 import unicodedata
 from pathlib import Path
@@ -23,7 +24,7 @@ class LegalOntologyMappingPipeline:
     def __init__(self):
         self.ontology_path = Path(__file__).resolve().parent / "system_ontology_map.json"
         self.static_mapping, self.edge_templates, self.category_aliases = self._load_system_ontology()
-        self.logger = logging.getLogger("VietLawBERT_Pipeline")
+        self.logger = get_subsystem_logger("crawler", "pipeline")
 
         self.raw_shards_dir = Path(RAW_SHARDS_DIR)
         self.raw_shards_dir.mkdir(parents=True, exist_ok=True)

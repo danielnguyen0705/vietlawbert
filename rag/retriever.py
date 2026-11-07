@@ -7,6 +7,7 @@ Khắc phục triệt để lỗi lệch số chiều MRL d=256 và tự động
 from __future__ import annotations
 
 import logging
+from configs.logging_config import get_subsystem_logger
 import re
 from typing import List, Dict, Any, Optional
 from collections import defaultdict
@@ -17,7 +18,7 @@ import pandas as pd
 from configs.config import config
 from configs.paths import ARTIFACTS_DIR, ROOT_DIR
 
-logger = logging.getLogger("VietLawBERT_HybridRetriever")
+logger = get_subsystem_logger("rag", "retriever")
 
 
 def _resolve_model_source(name: str) -> str:

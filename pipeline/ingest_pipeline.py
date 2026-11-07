@@ -10,6 +10,7 @@ import gc
 import json
 import gzip
 import logging
+from configs.logging_config import get_subsystem_logger
 import argparse
 import uuid
 from pathlib import Path
@@ -33,7 +34,7 @@ from database.qdrant_client import QdrantClientWrapper
 from rag.es_retriever import LegalElasticsearchRetriever
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | [%(levelname)s] | %(message)s")
-logger = logging.getLogger("VietLawBERT_IngestPipeline")
+logger = get_subsystem_logger("pipeline", "ingest_pipeline")
 
 CHECKPOINT_FILE = config.STORAGE_ROOT / ".ingest_checkpoint.json"
 

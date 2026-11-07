@@ -11,6 +11,7 @@ import os
 import json
 import random
 import logging
+from configs.logging_config import get_subsystem_logger
 import argparse
 import time
 from pathlib import Path
@@ -34,7 +35,7 @@ from configs.config import config
 from configs.paths import ARTIFACTS_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | [%(levelname)s] | %(message)s")
-logger = logging.getLogger("VietLawBERT_GraphEmbedder")
+logger = get_subsystem_logger("training", "compute_graph_embeddings")
 
 # Trọng số cạnh pháp lý trong random walk (>>1 để walk đi qua quan hệ liên-VB,
 # tránh đồ thị hình sao làm pha loãng tín hiệu 22 quan hệ → gốc của graph_boost≈0).

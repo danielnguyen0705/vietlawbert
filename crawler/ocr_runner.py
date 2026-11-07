@@ -12,6 +12,7 @@ import io
 import json
 import argparse
 import logging
+from configs.logging_config import get_subsystem_logger
 import urllib.request
 import html as html_lib
 from pathlib import Path
@@ -24,7 +25,7 @@ from artifacts.canonical import read_jsonl, write_jsonl
 from artifacts.merge import merge_records_streaming
 from crawler.shard_runner import write_json_atomic
 
-logger = logging.getLogger("VietLawBERT_OCRRunner")
+logger = get_subsystem_logger("crawler", "ocr_runner")
 
 
 def pending_records(path: Path) -> List[Dict[str, Any]]:
@@ -147,7 +148,7 @@ def main() -> int:
             continue
 
         stem = quarantine.name.replace(".quarantine.jsonl", "")
-        print(f"[TIẾN HÀNH OCR] Shard: {stem} | Số lượng tài liệu: {len(records)} (Đa luồng: {args.concurrency})...", flush=True)
+        logger.info("[TIẾN HÀNH OCR] Shard: %s | Số lượng tài liệu: %d (Đa luồng: %s)...", stem, len(records), args.concurrency)
 
         recovered = []
         unresolved = []
@@ -195,7 +196,7 @@ def main() -> int:
         state.append(entry)
         write_json_atomic(state_path, {"shards": state})
 
-    print("\n✓ HOÀN TẤT TIẾN TRÌNH XỬ LÝ OCR CHO TOÀN BỘ CÁC SHARD CÁCH LY.", flush=True)
+    logger.info("✓ HOÀN TẤT TIẾN TRÌNH XỬ LÝ OCR CHO TOÀN BỘ CÁC SHARD CÁCH LY.")
     return 0
 
 

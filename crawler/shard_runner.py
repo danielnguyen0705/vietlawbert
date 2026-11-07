@@ -17,8 +17,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import List
 
+logger = get_subsystem_logger("crawler", "shard_runner")
+
 from configs.paths import ROOT_DIR, RAW_SHARDS_DIR
 from configs.config import config
+from configs.logging_config import get_subsystem_logger
 
 
 @dataclass(frozen=True)
@@ -124,7 +127,7 @@ def run_shard(
     if raw_artifact.exists():
         candidate = audit_crawl(raw_artifact, shard.expected_documents, allow_upstream_missing, allow_ocr_pending)
         if candidate["passed"]:
-            print(f"[KHÔI PHỤC TỆP THÔ THÀNH CÔNG] {raw_artifact.name}", flush=True)
+            logger.info("[KHÔI PHỤC TỆP THÔ THÀNH CÔNG] %s", raw_artifact.name)
             result = candidate
 
     if result is None:
@@ -189,10 +192,10 @@ def main() -> int:
             existing = audit_crawl(artifact, shard.expected_documents, args.allow_upstream_missing, args.defer_ocr)
             if not existing["passed"]:
                 raise RuntimeError(f"Tệp Shard {artifact.name} không đạt chuẩn Quality Gate.")
-            print(f"[BỎ QUA VÌ ĐÃ CÀO] {index}/{len(shards)}: {artifact.name}", flush=True)
+            logger.info("[BỎ QUA VÌ ĐÃ CÀO] %d/%d: %s", index, len(shards), artifact.name)
             result = existing
         else:
-            print(f"[TIẾN HÀNH CÀO] {index}/{len(shards)}: Trang {shard.start_page} - {shard.end_page}", flush=True)
+            logger.info("[TIẾN HÀNH CÀO] %d/%d: Trang %s - %s", index, len(shards), shard.start_page, shard.end_page)
             result = run_shard(
                 ROOT_DIR,
                 output_dir,
@@ -214,7 +217,7 @@ def main() -> int:
             },
         )
 
-    print("\n✓ HOÀN THÀNH CÀO PHÂN ĐOẠN VĂN BẢN PHÁP LUẬT.", flush=True)
+    logger.info("✓ HOÀN THÀNH CÀO PHÂN ĐOẠN VĂN BẢN PHÁP LUẬT.")
     return 0
 
 

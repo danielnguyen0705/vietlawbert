@@ -7,12 +7,13 @@ from __future__ import annotations
 
 import time
 import logging
+from configs.logging_config import get_subsystem_logger
 from typing import List, Dict, Any, Optional
 
 from neo4j import GraphDatabase, Driver
 from configs.config import config
 
-logger = logging.getLogger("VietLawBERT_Neo4jClient")
+logger = get_subsystem_logger("database", "neo4j_client")
 
 
 class Neo4jClient:

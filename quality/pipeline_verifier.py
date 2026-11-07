@@ -12,6 +12,7 @@ import gzip
 import json
 import argparse
 import logging
+from configs.logging_config import get_subsystem_logger
 from pathlib import Path
 from typing import Dict, Any, Set, List, Optional, Tuple
 
@@ -28,7 +29,7 @@ logging.basicConfig(
     format="%(asctime)s | [%(levelname)s] | %(name)s - %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
-logger = logging.getLogger("VietLawBERT_LineageVerifier")
+logger = get_subsystem_logger("quality", "pipeline_verifier")
 
 
 def write_json_atomic(path: Path, value: dict) -> None:

@@ -9,11 +9,12 @@ import sys
 import json
 import argparse
 import logging
+from configs.logging_config import get_subsystem_logger
 from typing import Dict, Any
 
 from configs.config import config
 
-logger = logging.getLogger("VietLawBERT_DBInspect")
+logger = get_subsystem_logger("quality", "database_inspection")
 
 
 def inspect_mongodb() -> Dict[str, Any]:

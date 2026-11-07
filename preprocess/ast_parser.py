@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import re
 import logging
+from configs.logging_config import get_subsystem_logger
 from typing import Dict, Any, List, Optional, Tuple
 
-logger = logging.getLogger("VietLawBERT_ASTParser")
+logger = get_subsystem_logger("preprocess", "ast_parser")
 
 
 class LegalHierarchyTracker:

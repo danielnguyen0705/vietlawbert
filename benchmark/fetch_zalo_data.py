@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import json
 import logging
+from configs.logging_config import get_subsystem_logger
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
 
 from configs.paths import BENCHMARK_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | [%(levelname)s] | %(message)s")
-logger = logging.getLogger("VietLawBERT_ZaloFetcher")
+logger = get_subsystem_logger("benchmark", "fetch_zalo")
 
 
 class ZaloDataFetcher:

@@ -12,6 +12,7 @@ import time
 import random
 import argparse
 import logging
+from configs.logging_config import get_subsystem_logger
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 from elasticsearch import Elasticsearch
@@ -22,7 +23,7 @@ from configs.config import config
 from benchmark.fetch_zalo_data import ZaloDataFetcher
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | [%(levelname)s] | %(message)s")
-logger = logging.getLogger("VietLawBERT_BenchBuilder")
+logger = get_subsystem_logger("benchmark", "build_vietlawbench")
 
 DYNAMIC_SCENARIO_PROMPT = """Bạn là một Luật sư chuyên gia và Chuyên gia khảo thí pháp lý hàng đầu.
 Nhiệm vụ của bạn là đọc một đoạn quy định pháp luật và đặt câu hỏi dưới góc nhìn của một NGƯỜI DÂN hoặc DOANH NGHIỆP đang gặp vướng mắc thực tế trong đời sống.

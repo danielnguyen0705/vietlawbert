@@ -10,6 +10,7 @@ import os
 import sys
 import json
 import logging
+from configs.logging_config import get_subsystem_logger
 import argparse
 from pathlib import Path
 from typing import Dict, List, Any, Iterable
@@ -20,7 +21,7 @@ try:
 except ImportError:
     from canonical import read_jsonl, write_jsonl, extract_item_id
 
-logger = logging.getLogger("VietLawBERT_ArtifactMerge")
+logger = get_subsystem_logger("artifacts", "merge")
 
 
 def merge_records(base: Iterable[dict], overlays: Iterable[Iterable[dict]]) -> List[dict]:

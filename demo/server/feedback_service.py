@@ -24,13 +24,14 @@ from __future__ import annotations
 
 import json
 import logging
+from configs.logging_config import get_subsystem_logger
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from demo.config import FLAGGING_DIR, FEEDBACK_FILE
 
-logger = logging.getLogger("demo.feedback_service")
+logger = get_subsystem_logger("demo", "feedback_service")
 
 
 def _ensure_flagging_dir() -> None:

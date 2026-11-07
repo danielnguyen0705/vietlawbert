@@ -12,6 +12,7 @@ import os
 import re
 import json
 import logging
+from configs.logging_config import get_subsystem_logger
 import argparse
 import random
 from pathlib import Path
@@ -22,7 +23,7 @@ import pandas as pd
 from tqdm import tqdm
 from neo4j import GraphDatabase
 
-logging.getLogger("elastic_transport").setLevel(logging.WARNING)
+logging.getLogger("neo4j").setLevel(logging.WARNING)
 logging.getLogger("elasticsearch").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 
@@ -30,7 +31,7 @@ from configs.config import config
 from configs.paths import ARTIFACTS_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | [%(levelname)s] | %(message)s")
-logger = logging.getLogger("VietLawBERT_HINTripletMiner")
+logger = get_subsystem_logger("training", "generate_hin_triplets")
 
 LEGAL_STOP_WORDS = {
     "căn", "cứ", "luật", "số", "ngày", "tháng", "năm", "của", "về", "việc",

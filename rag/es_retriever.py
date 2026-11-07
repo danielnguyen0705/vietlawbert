@@ -6,10 +6,11 @@ Sử dụng Elasticsearch 8.x với Custom Vietnamese Legal Analyzer và chuẩn
 from __future__ import annotations
 
 import logging
+from configs.logging_config import get_subsystem_logger
 from typing import List, Dict, Any, Optional
 from elasticsearch import Elasticsearch, helpers
 
-logger = logging.getLogger("VietLawBERT_ESRetriever")
+logger = get_subsystem_logger("rag", "es_retriever")
 
 
 class LegalElasticsearchRetriever:

@@ -17,11 +17,12 @@ from pathlib import Path
 from configs.config import config
 from configs.paths import RAW_SHARDS_DIR
 from configs.global_id import normalize_doc_number
+from configs.logging_config import get_subsystem_logger
 from neo4j import GraphDatabase
 from pipeline.ingest_pipeline import IngestPipelineWorker
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | [%(levelname)s] | %(message)s")
-logger = logging.getLogger("VietLawBERT_IngestTargeted")
+logger = get_subsystem_logger("pipeline", "ingest_targeted")
 
 BO_TRO = ["DAN_CHIEU", "CAN_CU_BAN_HANH", "QUY_DINH_CHI_TIET_HUONG_DAN",
           "HUONG_DAN_AP_DUNG", "GIAI_THICH", "HOP_NHAT", "SUA_DOI_BO_SUNG"]

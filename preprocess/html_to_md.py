@@ -9,6 +9,7 @@ import os
 import sys
 import glob
 import logging
+from configs.logging_config import get_subsystem_logger
 import re
 from pathlib import Path
 from bs4 import BeautifulSoup
@@ -16,7 +17,7 @@ import html2text
 
 from configs.paths import RAW_HTML_DIR, PROCESSED_DIR, get_log_path
 
-logger = logging.getLogger("VietLawBERT_HTMLConverter")
+logger = get_subsystem_logger("preprocess", "html_to_md")
 
 
 class HTMLConverter:

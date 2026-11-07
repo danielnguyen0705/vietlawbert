@@ -8,6 +8,7 @@ from __future__ import annotations
 import time
 import uuid
 import logging
+from configs.logging_config import get_subsystem_logger
 import warnings
 from typing import List, Dict, Any, Optional
 
@@ -26,7 +27,7 @@ from qdrant_client.models import (
 
 from configs.config import config
 
-logger = logging.getLogger("VietLawBERT_QdrantClient")
+logger = get_subsystem_logger("database", "qdrant_client")
 
 
 class QdrantClientWrapper:

@@ -15,6 +15,7 @@ import sys
 import time
 import tarfile
 import logging
+from configs.logging_config import get_subsystem_logger
 import argparse
 from pathlib import Path
 from dotenv import load_dotenv
@@ -25,7 +26,7 @@ import torch
 load_dotenv(".env")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | [%(levelname)s] | %(message)s")
-logger = logging.getLogger("VietLawBERT_CloudMaster")
+logger = get_subsystem_logger("master", "cloud_entrypoint")
 
 from configs.config import config
 from configs.paths import ARTIFACTS_DIR, MODELS_DIR, ROOT_DIR, BENCHMARK_DIR

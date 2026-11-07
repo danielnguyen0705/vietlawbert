@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import gzip
 import logging
+from configs.logging_config import get_subsystem_logger
 import argparse
 import collections
 from pathlib import Path
@@ -19,7 +20,7 @@ from database.neo4j_client import Neo4jClient
 from preprocess.ast_parser import HybridASTParser
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | [%(levelname)s] | %(message)s")
-logger = logging.getLogger("VietLawBERT_HINBuilder")
+logger = get_subsystem_logger("database", "build_hin_graph")
 
 HIN_CHECKPOINT_FILE = config.STORAGE_ROOT / ".hin_graph_checkpoint.json"
 

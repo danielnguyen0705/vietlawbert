@@ -13,6 +13,7 @@ import json
 import math
 import argparse
 import logging
+from configs.logging_config import get_subsystem_logger
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -33,7 +34,7 @@ from configs.config import config
 from configs.paths import MODELS_DIR, ARTIFACTS_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | [%(levelname)s] | %(name)s - %(message)s")
-logger = logging.getLogger("VietLawBERT_TrainMRL")
+logger = get_subsystem_logger("training", "train_mrl")
 
 
 class HierarchyAwareMatryoshkaLoss(nn.Module):

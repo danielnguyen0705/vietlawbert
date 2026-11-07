@@ -17,9 +17,10 @@ from __future__ import annotations
 
 import time
 import logging
+from configs.logging_config import get_subsystem_logger
 from typing import List, Dict, Any, Optional
 
-logger = logging.getLogger("demo.retrieval_service")
+logger = get_subsystem_logger("demo", "retrieval_service")
 
 # ─── Singleton state ────────────────────────────────────────────────────────
 _retriever = None

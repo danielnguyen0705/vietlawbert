@@ -11,6 +11,7 @@ import re
 import csv
 import json
 import logging
+from configs.logging_config import get_subsystem_logger
 from pathlib import Path
 from typing import List, Dict, Any
 from openai import OpenAI
@@ -20,7 +21,7 @@ from configs.paths import ROOT_DIR
 from configs.config import config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | [%(levelname)s] | %(message)s")
-logger = logging.getLogger("VietLawBERT_LLMJudge")
+logger = get_subsystem_logger("benchmark", "llm_judge")
 
 JUDGE_PROMPT_TEMPLATE = """Bạn là một chuyên gia thẩm định hệ thống hỏi đáp Pháp luật (Legal RAG Judge).
 Nhiệm vụ của bạn là đánh giá khách quan câu trả lời của mô hình dựa trên câu hỏi và ngữ cảnh trích dẫn.

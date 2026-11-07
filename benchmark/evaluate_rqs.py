@@ -15,6 +15,7 @@ import csv
 import json
 import time
 import logging
+from configs.logging_config import get_subsystem_logger
 import argparse
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
@@ -31,7 +32,7 @@ from benchmark.evaluate_rrf import load_benchmark, evaluate_query, retrieve_by_m
 from benchmark.llm_judge import LegalLLMJudge
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | [%(levelname)s] | %(message)s")
-logger = logging.getLogger("VietLawBERT_RQEvaluator")
+logger = get_subsystem_logger("benchmark", "eval_rqs")
 
 
 class UniversalEncoderWrapper:
