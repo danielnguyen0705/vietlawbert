@@ -331,6 +331,11 @@ def run_build_hin(
     else:
         builder.build_from_stream(path, parse_chunks=parse_chunks)
 
+    _dropped = getattr(client, "_dropped_total", 0)
+    if _dropped:
+        logger.error("⚠ CẢNH BÁO: %d bản ghi bị BỎ do lỗi nạp Neo4j — graph KHÔNG trọn vẹn (xem log).", _dropped)
+    else:
+        logger.info("✓ Không có bản ghi nào bị bỏ trong quá trình nạp.")
     client.close()
     logger.info("Quá trình xây dựng mạng HIN trên Neo4j đã hoàn tất mỹ mãn.")
 

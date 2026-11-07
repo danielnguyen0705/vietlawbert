@@ -38,6 +38,8 @@ class Neo4jClient:
         )
         self.driver.verify_connectivity()
         logger.info("Kết nối Neo4j Bolt thành công tại %s.", self.uri)
+        self.last_dropped = 0
+        self._dropped_total = 0
 
         if drop_existing:
             self.drop_database()
@@ -97,40 +99,77 @@ class Neo4jClient:
         with self.driver.session() as session:
             return session.execute_read(lambda tx: tx.run(cypher, parameters or {}).data())
 
+    def _reconnect(self) -> None:
+        """Tái tạo driver khi kết nối Bolt chết giữa chừng (defunct/ServiceUnavailable/timeout)."""
+        try:
+            self.driver.close()
+        except Exception:
+            pass
+        self.driver = GraphDatabase.driver(
+            self.uri,
+            auth=(self.user, self.password),
+            max_connection_lifetime=3600,
+            max_connection_pool_size=50,
+            connection_acquisition_timeout=60.0,
+        )
+        self.driver.verify_connectivity()
+        logger.info("Đã TÁI KẾT NỐI Neo4j driver sau lỗi kết nối.")
+
     def execute_batch(
         self,
         cypher: str,
         batch: List[Dict[str, Any]],
         batch_size: int = 500,
-        max_retries: int = 3,
+        max_retries: int = 5,
     ) -> int:
-        """Thực thi ghi theo lô kèm Consume triệt để chống nghẽn bộ đệm lazy evaluation."""
+        """
+        Ghi theo lô CHỊU LỖI, chống mất dữ liệu âm thầm:
+        - MỖI sub-batch mở SESSION RIÊNG: session chết KHÔNG đầu độc các lô sau.
+        - Lỗi KẾT NỐI (defunct/ServiceUnavailable/timeout) => TÁI TẠO driver rồi thử lại
+          với backoff tăng dần; lỗi DỮ LIỆU thì chỉ thử lại (không tái kết nối).
+        - ĐẾM mọi bản ghi bị bỏ (self.last_dropped + tích luỹ self._dropped_total) và
+          ghi log ERROR để lần chạy A100 không mất bản ghi mà không ai hay.
+        """
         if not batch:
+            self.last_dropped = 0
             return 0
 
-        total = 0
-        with self.driver.session() as session:
-            for i in range(0, len(batch), batch_size):
-                sub_batch = batch[i : i + batch_size]
-                success = False
-                for attempt in range(1, max_retries + 1):
-                    try:
+        conn_markers = ("defunct", "ServiceUnavailable", "SessionExpired",
+                        "connection", "Connection", "timed out", "handshake", "Couldn't connect")
+        total, dropped = 0, 0
+        for i in range(0, len(batch), batch_size):
+            sub_batch = batch[i : i + batch_size]
+            success = False
+            for attempt in range(1, max_retries + 1):
+                try:
+                    with self.driver.session() as session:
                         session.run(cypher, parameters={"batch": sub_batch}).consume()
-                        total += len(sub_batch)
-                        success = True
-                        break
-                    except Exception as exc:
-                        logger.warning(
-                            "Lỗi nạp batch Neo4j (Lần %d/%d): %s. Tạm dừng %ds...",
-                            attempt,
-                            max_retries,
-                            exc,
-                            attempt * 2,
-                        )
-                        time.sleep(attempt * 2)
-                if not success:
-                    logger.error("Bỏ qua sub-batch Neo4j (%d bản ghi) sau %d lần thử.", len(sub_batch), max_retries)
+                    total += len(sub_batch)
+                    success = True
+                    break
+                except Exception as exc:
+                    msg = str(exc)
+                    is_conn = any(m in msg for m in conn_markers)
+                    logger.warning(
+                        "Lỗi nạp batch Neo4j (Lần %d/%d, %s): %s. Tạm dừng %ds...",
+                        attempt, max_retries,
+                        "KẾT NỐI" if is_conn else "DỮ LIỆU", msg[:160], attempt * 2,
+                    )
+                    time.sleep(attempt * 2)
+                    if is_conn:
+                        try:
+                            self._reconnect()
+                        except Exception as rexc:
+                            logger.warning("Tái kết nối thất bại: %s", str(rexc)[:120])
+            if not success:
+                dropped += len(sub_batch)
+                logger.error("BỎ sub-batch Neo4j (%d bản ghi) sau %d lần thử.",
+                             len(sub_batch), max_retries)
 
+        self.last_dropped = dropped
+        self._dropped_total = getattr(self, "_dropped_total", 0) + dropped
+        if dropped:
+            logger.error("⚠ Tổng bản ghi Neo4j bị bỏ (tích luỹ phiên): %d", self._dropped_total)
         return total
 
 

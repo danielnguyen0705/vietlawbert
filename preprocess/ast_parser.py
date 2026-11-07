@@ -61,11 +61,12 @@ class LegalHierarchyTracker:
         return " > ".join(nodes) if nodes else "Toàn văn"
 
     def get_macro_label(self) -> str:
-        if self.current_chapter:
-            return self.current_chapter
-        if self.current_part:
-            return self.current_part
-        return "CHUNG"
+        # macro_label là NHÃN PHÂN NHÓM dạng KEYWORD (hard-negative mining gom theo chương/phần,
+        # Qdrant payload, index RANGE Neo4j). Với văn bản bị mất ký tự xuống dòng (HTML phẳng 1 dòng),
+        # regex ^Chương...(.*)$ có thể nuốt cả thân văn bản vào nhãn → vượt giới hạn index ~32KB
+        # khiến RỚT NGUYÊN lô 1000 bản ghi. Cắt về 200 ký tự: an toàn index, giữ nguyên ngữ nghĩa gom nhóm.
+        lbl = self.current_chapter or self.current_part or "CHUNG"
+        return lbl[:200] if len(lbl) > 200 else lbl
 
 
 class HybridASTParser:
