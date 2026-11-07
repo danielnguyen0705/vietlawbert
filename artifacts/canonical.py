@@ -8,7 +8,6 @@ from __future__ import annotations
 import os
 import gzip
 import json
-import base64
 import hashlib
 from pathlib import Path
 from typing import Iterator, Dict, Any, List, Optional, Iterable
@@ -101,42 +100,6 @@ def extract_item_id(record: Dict[str, Any]) -> str:
     if not item_id:
         raise KeyError(f"Bản ghi thiếu item_id/doc_id: {record}")
     return item_id
-
-
-def encode_kafka_envelope(record: Dict[str, Any]) -> bytes:
-    item_id = extract_item_id(record)
-    payload = encode_payload(record)
-    sha256_sum = payload_hash(payload)
-
-    compressed_bytes = gzip.compress(payload, compresslevel=6, mtime=0)
-    b64_payload = base64.b64encode(compressed_bytes).decode("ascii")
-
-    envelope = {
-        "schema": "vietlaw.raw.gzip.v1",
-        "item_id": item_id,
-        "payload_sha256": sha256_sum,
-        "uncompressed_bytes": len(payload),
-        "payload_gzip_b64": b64_payload,
-    }
-    return json.dumps(envelope, separators=(",", ":")).encode("utf-8")
-
-
-def decode_kafka_envelope(value: bytes | str) -> bytes:
-    if isinstance(value, str):
-        value = value.encode("utf-8")
-
-    envelope = json.loads(value.decode("utf-8"))
-    if envelope.get("schema") != "vietlaw.raw.gzip.v1":
-        raise ValueError(f"Schema không hỗ trợ: {envelope.get('schema')}")
-
-    payload = gzip.decompress(base64.b64decode(envelope["payload_gzip_b64"]))
-    if len(payload) != int(envelope["uncompressed_bytes"]):
-        raise ValueError("Sai uncompressed_bytes")
-
-    if payload_hash(payload) != envelope["payload_sha256"]:
-        raise ValueError("Mã SHA-256 không khớp")
-
-    return payload
 
 
 def artifact_manifest(paths: List[Path]) -> Dict[str, str]:

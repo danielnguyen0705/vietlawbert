@@ -216,7 +216,7 @@ def load_benchmark(benchmark_dir: str | Path) -> Dict[str, List[Dict[str, Any]]]
     datasets = {}
     b_path = Path(benchmark_dir)
 
-    for filename in ["single_hop.jsonl", "multi_hop.jsonl", "vietlawbench_1000.jsonl"]:
+    for filename in ["single_hop.jsonl", "multi_hop.jsonl", "vietlawbench_1000.jsonl", "vietlawbench_vlqa.jsonl"]:
         file_path = b_path / filename
         if not file_path.exists():
             continue

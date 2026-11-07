@@ -95,6 +95,13 @@ class LegalHybridRetriever:
                 device=config.EMBED_DEVICE,
             )
 
+        try:
+            _msq = int(getattr(config, "EMBED_MAX_SEQ", 0))
+            if _msq > 0:
+                self.encoder.max_seq_length = _msq
+        except Exception:
+            pass
+
         self.reranker = reranker_model
         self.alpha = alpha_graph if alpha_graph is not None else getattr(config, "GRAPH_ALPHA", 0.2)
 

@@ -10,8 +10,6 @@ from .canonical import (
     encode_payload,
     payload_hash,
     extract_item_id,
-    encode_kafka_envelope,
-    decode_kafka_envelope,
     canonical_artifacts,
     artifact_manifest,
 )
@@ -23,8 +21,6 @@ __all__ = [
     "encode_payload",
     "payload_hash",
     "extract_item_id",
-    "encode_kafka_envelope",
-    "decode_kafka_envelope",
     "canonical_artifacts",
     "artifact_manifest",
     "merge_records",

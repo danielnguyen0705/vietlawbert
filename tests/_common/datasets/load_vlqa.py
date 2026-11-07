@@ -16,6 +16,7 @@ import os, re, json, argparse, logging
 from pathlib import Path
 from configs.config import config
 from configs.global_id import canonical_doc_id, normalize_doc_number
+from configs.paths import BENCHMARK_DIR
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | [%(levelname)s] | %(message)s")
 logger = logging.getLogger("VietLawBERT_VLQA")
@@ -67,6 +68,7 @@ def load_vlqa(vlqa_dir: str):
             "query": str(rec.get("question") or "").strip(),
             "ground_truth_doc_number": law_ids[0],
             "ground_truth_doc_numbers": law_ids,
+            "ground_truth_docs": [{"doc_number": x, "article": ""} for x in law_ids],
             "ground_truth_doc_id": canonical_doc_id(law_ids[0]),
             "relevant_aids": aids,
             "answer_ref": str(rec.get("answer") or "")[:500],
@@ -76,7 +78,7 @@ def load_vlqa(vlqa_dir: str):
 
 def main():
     ap = argparse.ArgumentParser(description="Nạp VLQA làm benchmark đánh giá (map sang doc_number của mình)")
-    ap.add_argument("--out", default=str(Path(__file__).resolve().parent / "vietlawbench_vlqa.jsonl"))
+    ap.add_argument("--out", default=str(BENCHMARK_DIR / "vietlawbench_vlqa.jsonl"))
     args = ap.parse_args()
     if not config.VLQA_DIR or not os.path.isdir(config.VLQA_DIR):
         raise SystemExit(f"VLQA_DIR không hợp lệ: {config.VLQA_DIR!r} — set trong .env trước.")

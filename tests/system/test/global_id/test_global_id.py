@@ -29,3 +29,12 @@ def test_dirty_quote_invariant():
     # doc_number nguồn dính nháy r: '"38/2019/QĐ-UBND' phải cùng id với '38/2019/QD-UBND'
     assert G.canonical_doc_id('"38/2019/QĐ-UBND') == G.canonical_doc_id("38/2019/QD-UBND")
     assert G.canonical_doc_id("\'\'17/2022/TT-BCT") == G.canonical_doc_id("17/2022/TT-BCT")
+
+
+def test_doc_type_and_rank():
+    assert G.doc_type_and_rank("80/2015/QH13")[1] == 2
+    assert G.doc_type_and_rank("14/2022/TT-NHNN")[1] == 7
+    assert G.doc_type_and_rank("109/2026/NĐ-CP")[1] == 5
+    assert G.doc_type_and_rank("72/2026/QĐ-UBND")[1] == 8
+    assert G.doc_type_and_rank("23/2015/UBTVQH13")[1] == 3
+    assert G.doc_type_and_rank("N/A")[1] == 9

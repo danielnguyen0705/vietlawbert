@@ -44,7 +44,7 @@ def save_hin_checkpoint(completed: Set[str]) -> None:
         logger.warning("Không thể lưu HIN checkpoint: %s", exc)
 
 
-from configs.global_id import canonical_doc_id, resolve_target_id
+from configs.global_id import canonical_doc_id, resolve_target_id, doc_type_and_rank
 
 
 class HINGraphBuilder:
@@ -80,7 +80,9 @@ class HINGraphBuilder:
             d.effective_date = doc.effective_date,
             d.status = doc.status,
             d.org = doc.org,
-            d.issue_date = doc.issue_date
+            d.issue_date = doc.issue_date,
+            d.doc_type = doc.doc_type,
+            d.legal_rank = doc.legal_rank
         """
         return self.client.execute_batch(cypher, docs, batch_size=batch_size)
 
@@ -190,9 +192,12 @@ class HINGraphBuilder:
                     or "N/A"
                 )
 
+                _doc_type, _legal_rank = doc_type_and_rank(doc_number)
                 metadata = {
                     "doc_id": doc_id,
                     "doc_number": doc_number,
+                    "doc_type": _doc_type,
+                    "legal_rank": _legal_rank,
                     "title": title,
                     "effective_date": effective_date,
                     "status": status_raw,

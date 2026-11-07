@@ -21,6 +21,7 @@ class LegalHierarchyTracker:
         self.current_section: str = ""
         self.current_article: str = ""
         self.current_article_title: str = ""
+        self.block_tag: str = ""   # namespace khối phụ lục (Quy chế/Quy định ban hành kèm) chống va chạm số Điều
 
     def reset_part(self, part_name: str):
         self.current_part = part_name
@@ -69,13 +70,16 @@ class LegalHierarchyTracker:
 
 class HybridASTParser:
     def __init__(self):
-        self.re_part = re.compile(r'^(?:PHẦN|Phần)\s+([IVXLCDM\d]+)[\.:\s]*(.*)$', re.MULTILINE)
+        # Nhận cả 'Phần I', 'Phần 1' LẪN 'Phần thứ nhất/hai/...' (Bộ luật Dân sự/Hình sự dùng dạng thứ-tự chữ)
+        self.re_part = re.compile(r'^(?:PHẦN|Phần)\s+(thứ\s+[^\s:.]+|[IVXLCDM\d]+)[\.:\s]*(.*)$', re.MULTILINE)
         self.re_chapter = re.compile(r'^(?:CHƯƠNG|Chương)\s+([IVXLCDM\d]+)[\.:\s]*(.*)$', re.MULTILINE)
         self.re_section = re.compile(r'^(?:MỤC|Mục)\s+(\d+)[\.:\s]*(.*)$', re.MULTILINE)
         # Hỗ trợ cả số nguyên lẫn số kèm chữ cái (Điều 15a, Điều 28b)
         self.re_article = re.compile(r'^(?:ĐIỀU|Điều)\s+(\d+[a-zA-Z]?)[\.:\s]*(.*)$', re.MULTILINE)
         self.re_clause = re.compile(r'^(?:[*_]{0,2})(\d+)[\.\)\/][\s\xa0]+(.*)$')
         self.re_point = re.compile(r'^(?:[*_]{0,2})([a-zđ])[\.\)\/][\s\xa0]+(.*)$', re.IGNORECASE)
+        # Khối phụ lục đính kèm (Quyết định 'ban hành kèm theo' QUY CHẾ/QUY ĐỊNH…) — có hệ Điều RIÊNG
+        self.re_attached = re.compile(r'^(QUY CHẾ|QUY ĐỊNH|ĐIỀU LỆ|NỘI QUY|QUY TRÌNH|QUY CHUẨN)\b')
 
     def parse_document(self, text: str, metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
         if not text or not text.strip():
@@ -99,6 +103,8 @@ class HybridASTParser:
 
         current_article_lines: List[str] = []
         current_art_num: Optional[str] = None
+        block_counter = 0
+        seen_article = False
 
         def flush_article_buffer():
             nonlocal current_article_lines, current_art_num
@@ -112,6 +118,16 @@ class HybridASTParser:
             current_article_lines = []
 
         for line in lines:
+            # Phụ lục đính kèm (chỉ nhận SAU khi đã thấy Điều đầu — để không nhầm tiêu đề 'QUY ĐỊNH CHUNG')
+            if seen_article and self.re_attached.match(line):
+                flush_article_buffer()
+                current_art_num = None            # reset: không phát lại số Điều cũ của thân dưới namespace
+                block_counter += 1
+                tracker.reset_part("")
+                tracker.block_tag = f"b{block_counter}"
+                tracker.current_chapter = line.strip()[:120]
+                continue
+
             m_part = self.re_part.match(line)
             if m_part:
                 flush_article_buffer()
@@ -136,6 +152,7 @@ class HybridASTParser:
             if m_art:
                 flush_article_buffer()
                 current_art_num = m_art.group(1)
+                seen_article = True
                 tracker.current_article = current_art_num
                 tracker.current_article_title = m_art.group(2).strip()
                 current_article_lines.append(line)
@@ -196,7 +213,8 @@ class HybridASTParser:
             clauses.append((current_clause_num, current_clause_lines))
 
         macro_label = tracker.get_macro_label()
-        canonical_art_id = f"{doc_id}_art_{art_num}"
+        _blk = f"_{tracker.block_tag}" if getattr(tracker, "block_tag", "") else ""
+        canonical_art_id = f"{doc_id}{_blk}_art_{art_num}"
         doc_number = metadata.get("doc_number", "N/A")
 
         if not clauses:

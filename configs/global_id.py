@@ -58,3 +58,25 @@ def resolve_target_id(raw_target: str, crawlerid_to_docnum: dict) -> str:
     # raw_target có thể vốn đã là doc_number
     cid = canonical_doc_id(raw)
     return cid
+
+
+# Bậc hiệu lực pháp lý theo Luật Ban hành VBQPPL 2025 (1=cao nhất). Suy tất định từ ký hiệu doc_number.
+_RANK = {"Hiến pháp":1,"Luật/Nghị quyết Quốc hội":2,"Pháp lệnh/Nghị quyết UBTVQH":3,
+         "Lệnh/Quyết định Chủ tịch nước":4,"Nghị định/Nghị quyết Chính phủ":5,
+         "Quyết định/Chỉ thị Thủ tướng":6,"Thông tư":7,"Văn bản địa phương":8,"Khác":9}
+
+def doc_type_and_rank(doc_number: str):
+    """Trả (doc_type, legal_rank) từ ký hiệu doc_number. rank nhỏ = hiệu lực cao."""
+    norm = normalize_doc_number(doc_number)
+    sym = norm.split("/")[-1] if "/" in norm else norm   # vd 80/2015/QH13 -> QH13 ; 14/2022/TT-NHNN -> TT-NHNN
+    def R(t): return (t, _RANK[t])
+    if not sym or norm in _INVALID: return R("Khác")
+    if "UBTVQH" in sym:                      return R("Pháp lệnh/Nghị quyết UBTVQH")
+    if sym.startswith("QH") or re.search(r"QH\d+$", sym): return R("Luật/Nghị quyết Quốc hội")
+    if "HDND" in sym or sym.endswith("UBND") or "QD-UBND" in sym or "NQ-HDND" in sym:
+        return R("Văn bản địa phương")
+    if "TTLT" in sym or sym.startswith("TT"): return R("Thông tư")
+    if "QD-TTG" in sym or "CT-TTG" in sym or sym.endswith("TTG"): return R("Quyết định/Chỉ thị Thủ tướng")
+    if "ND-CP" in sym or "NQ-CP" in sym:      return R("Nghị định/Nghị quyết Chính phủ")
+    if "CTN" in sym or sym.startswith("L-") or sym.startswith("LCT"): return R("Lệnh/Quyết định Chủ tịch nước")
+    return R("Khác")

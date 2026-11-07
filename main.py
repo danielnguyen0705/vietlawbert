@@ -130,7 +130,7 @@ def cmd_crawl(total_docs: int = 160660, concurrency: int = getattr(config, "CRAW
     )
 
 
-def cmd_ingest(batch_size: int = config.EMBED_BATCH_SIZE, device: str = config.EMBED_DEVICE) -> bool:
+def cmd_ingest(batch_size: int = config.EMBED_BATCH_SIZE, device: str = config.EMBED_DEVICE, fresh: bool = False) -> bool:
     cpu_env = {}
     if device == "cpu":
         cpu_env = {
@@ -151,20 +151,21 @@ def cmd_ingest(batch_size: int = config.EMBED_BATCH_SIZE, device: str = config.E
             str(batch_size),
             "--device",
             device,
-        ],
+        ] + (["--fresh"] if fresh else []),
         "Bóc tách AST và nạp đồng thời Qdrant (Dense) & Elasticsearch (Sparse)",
         extra_env=cpu_env,
     )
 
 
-def cmd_graph() -> bool:
+def cmd_graph(rebuild: bool = False, node2vec: bool = True) -> bool:
     hin_ok = run_subcommand(
-        [sys.executable, "-u", "-m", "database.build_hin_graph", "--metadata", str(RAW_SHARDS_DIR)],
+        [sys.executable, "-u", "-m", "database.build_hin_graph", "--metadata", str(RAW_SHARDS_DIR)] + (["--rebuild"] if rebuild else []),
         "Xây dựng mạng thông tin dị thể (HIN) trên Neo4j",
     )
     if not hin_ok:
         return False
-
+    if not node2vec:
+        return True   # node2vec là bước CHUẨN BỊ HUẤN LUYỆN (hard-negative), bỏ qua ở pha dựng dữ liệu
     return run_subcommand(
         [sys.executable, "-u", "-m", "training.compute_graph_embeddings", "--dim", "128"],
         "Tiền tính toán Vector Đồ thị Compile-time (Node2Vec 128d)",
@@ -305,6 +306,25 @@ def cmd_post_ingest_all(device: str = config.EMBED_DEVICE, epochs: int = 3) -> b
     return True
 
 
+def cmd_build_data(total_docs: int = 160660, batch_size: int = config.EMBED_BATCH_SIZE, device: str = config.EMBED_DEVICE) -> bool:
+    """DỰNG DỮ LIỆU một mạch rồi DỪNG (chưa train): crawl -> ingest (WIPE canonical) -> HIN graph (rebuild).
+    Dùng cho vòng cloud tiền-huấn-luyện: xong bước này chạy GATE + eval; khi xanh mới train."""
+    logger.info("=== DỰNG DỮ LIỆU TỪ ĐẦU (crawl -> ingest -> graph), DỪNG TRƯỚC HUẤN LUYỆN ===")
+    steps = [
+        ("Kiểm tra hạ tầng CSDL", lambda: cmd_check_infrastructure()),
+        ("Cào dữ liệu (Shard Runner)", lambda: cmd_crawl(total_docs=total_docs)),
+        ("Nạp Qdrant+ES (WIPE canonical)", lambda: cmd_ingest(batch_size=batch_size, device=device, fresh=True)),
+        ("Dựng đồ thị HIN (rebuild, KHÔNG node2vec)", lambda: cmd_graph(rebuild=True, node2vec=False)),
+    ]
+    for name, func in steps:
+        logger.info(">>> GIAI ĐOẠN: %s", name)
+        if not func():
+            logger.error("✗ Dừng: giai đoạn '%s' thất bại.", name)
+            return False
+    logger.info("✓ DỰNG DỮ LIỆU HOÀN TẤT. Bước kế: chạy GATE (pytest tier1-2) + eval số liệu, xanh rồi mới train.")
+    return True
+
+
 def cmd_run_all(
     batch_size: int = config.EMBED_BATCH_SIZE,
     device: str = config.EMBED_DEVICE,
@@ -400,7 +420,7 @@ def main():
     parser = argparse.ArgumentParser(description="VietLawBERT Master Pipeline Gateway")
     parser.add_argument(
         "--phase",
-        choices=["check", "crawl", "ingest", "graph", "train", "benchmark", "post-ingest", "all"],
+        choices=["check", "crawl", "ingest", "graph", "build-data", "train", "benchmark", "post-ingest", "all"],
         help="Thực thi phân đoạn quy trình tương ứng",
     )
     parser.add_argument("--ask", type=str, help="Kiểm thử truy vấn hỏi đáp RAG trực tiếp")
@@ -427,6 +447,8 @@ def main():
         cmd_ingest(batch_size=args.batch_size, device=args.device)
     elif args.phase == "graph":
         cmd_graph()
+    elif args.phase == "build-data":
+        cmd_build_data(total_docs=args.total_docs, batch_size=args.batch_size, device=args.device)
     elif args.phase == "train":
         cmd_train(
             epochs=args.epochs,

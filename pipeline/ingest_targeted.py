@@ -27,13 +27,16 @@ BO_TRO = ["DAN_CHIEU", "CAN_CU_BAN_HANH", "QUY_DINH_CHI_TIET_HUONG_DAN",
           "HUONG_DAN_AP_DUNG", "GIAI_THICH", "HOP_NHAT", "SUA_DOI_BO_SUNG"]
 
 
-def build_target_set(vlqa_jsonl: str, add_neighbors: bool = True) -> set:
+def build_target_set(vlqa_jsonl: str, add_neighbors: bool = True, limit_vlqa: int = 0) -> set:
     vlqa = set()
     for l in open(vlqa_jsonl, encoding="utf-8"):
         for x in json.loads(l).get("ground_truth_doc_numbers", []):
             n = normalize_doc_number(x)
             if n:
                 vlqa.add(n)
+    if limit_vlqa and limit_vlqa > 0:
+        vlqa = set(sorted(vlqa)[:limit_vlqa])
+        logger.info("Giới hạn còn %d doc VLQA (sẽ cộng thêm hàng xóm).", len(vlqa))
     targets = set(vlqa)
     logger.info("Đích VLQA (chuẩn hóa): %d", len(vlqa))
     if add_neighbors:
@@ -63,12 +66,10 @@ def main():
     ap.add_argument("--no-neighbors", action="store_true", help="Chỉ nạp doc đích VLQA, bỏ hàng xóm")
     ap.add_argument("--limit-docs", type=int, default=0, help="Giới hạn số doc mục tiêu (smoke test nhanh); 0 = không giới hạn")
     ap.add_argument("--shard-path", default=str(RAW_SHARDS_DIR))
+    ap.add_argument("--fresh", action="store_true", help="WIPE Qdrant/ES rồi nạp lại từ đầu. KHÔNG có cờ này = RESUME (giữ dữ liệu, bỏ qua doc đã nạp).")
     args = ap.parse_args()
 
-    targets = build_target_set(args.vlqa_jsonl, add_neighbors=not args.no_neighbors)
-    if args.limit_docs > 0:
-        targets = set(list(targets)[:args.limit_docs])
-        logger.info("Giới hạn còn %d doc mục tiêu (smoke).", len(targets))
+    targets = build_target_set(args.vlqa_jsonl, add_neighbors=not args.no_neighbors, limit_vlqa=args.limit_docs)
 
     worker = IngestPipelineWorker(
         model_name_or_path=config.BASE_MODEL_NAME,
@@ -78,18 +79,23 @@ def main():
     )
     worker.only_docs = targets
 
-    # WIPE + tạo lại index sạch (canonical)
-    logger.warning("WIPE Qdrant collection [%s] + ES index [%s]...", config.QDRANT_COLLECTION_NAME, config.ES_INDEX_NAME)
-    try:
-        worker.qdrant.client.delete_collection(config.QDRANT_COLLECTION_NAME)
-    except Exception as e:
-        logger.info("Qdrant delete_collection: %s", e)
-    worker.qdrant.init_collection()
-    try:
-        worker.es.client.indices.delete(index=config.ES_INDEX_NAME, ignore_unavailable=True)
-    except Exception as e:
-        logger.info("ES delete index: %s", e)
-    worker.es._ensure_index_and_analyzer()
+    if args.fresh:
+        logger.warning("--fresh: WIPE Qdrant [%s] + ES [%s] rồi nạp lại từ đầu...", config.QDRANT_COLLECTION_NAME, config.ES_INDEX_NAME)
+        try:
+            worker.qdrant.client.delete_collection(config.QDRANT_COLLECTION_NAME)
+        except Exception as e:
+            logger.info("Qdrant delete_collection: %s", e)
+        worker.qdrant.init_collection()
+        try:
+            worker.es.client.indices.delete(index=config.ES_INDEX_NAME, ignore_unavailable=True)
+        except Exception as e:
+            logger.info("ES delete index: %s", e)
+        worker.es._ensure_index_and_analyzer()
+    else:
+        # RESUME: giữ nguyên dữ liệu đã nạp; chỉ đảm bảo collection/index tồn tại. doc_exists sẽ bỏ qua doc đã xong.
+        logger.info("RESUME (không --fresh): giữ dữ liệu hiện có; doc_exists bỏ qua doc đã nạp. Số điểm Qdrant hiện tại: %d",
+                    worker.qdrant.count_points(config.QDRANT_COLLECTION_NAME))
+        worker.qdrant.init_collection()
 
     p = Path(args.shard_path)
     files = sorted(f for f in p.glob("*.jsonl*")

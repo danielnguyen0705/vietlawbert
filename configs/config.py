@@ -91,6 +91,9 @@ class Config:
 
     EMBED_DEVICE: str = _resolve_embed_device()
     EMBED_BATCH_SIZE: int = int(os.getenv("EMBED_BATCH_SIZE", 32))
+    # Cắt độ dài chuỗi encode (bge-m3 attention O(n^2)); 256 giúp CPU khả thi. Phải ĐỒNG NHẤT index↔query.
+    # 0 = KHÔNG cắt (full-length, trung thực cho số công bố/GPU). Đặt >0 (vd 256) CHỈ để smoke CPU.
+    EMBED_MAX_SEQ: int = int(os.getenv("EMBED_MAX_SEQ", 0))
 
     # ==============================================================================
     # 3. CHUỖI ĐIỀU PHỐI LLM ĐA TẦNG (RAG & CASCADING FALLBACK)

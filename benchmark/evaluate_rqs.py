@@ -313,6 +313,7 @@ class ScientificBenchmarkRunner:
         self.samples = self.datasets.get("vietlawbench_1000") or (
             self.datasets.get("single_hop", []) + self.datasets.get("multi_hop", [])
         )
+        self.vlqa_samples = self.datasets.get("vietlawbench_vlqa", [])
         self.model_path = model_path or config.BASE_MODEL_NAME
         self.device = device
         self.encoder = UniversalEncoderWrapper(self.model_path, device=self.device, is_e5=("e5" in str(self.model_path).lower()))
@@ -482,6 +483,96 @@ class ScientificBenchmarkRunner:
             w.writerows(rows)
         logger.info("✓ Đã lưu bảng RQ3 tại: %s", csv_file.resolve())
 
+    def evaluate_rq_vlqa_external(self, out_path: Path, top_k_eval: int = 10, n_samples: int = 0):
+        """
+        P4 — Đánh giá RA SỐ trên BỘ NGOẠI VLQA (VLSP DRiLL 2025) ở cấp VĂN BẢN (doc_number).
+        Chạy truy xuất THẬT qua kho đã đánh chỉ mục (Qdrant + ES + Graph) theo từng chế độ
+        Ablation; xuất Hit@1/5/10, MRR@10, NDCG@10, MAP@10 và P95 (SLA < 500ms), kèm t-test
+        NDCG@10 (Hybrid+Graph vs Hybrid vs Dense). Chỉ câu có >=1 doc đích trong index mới đo
+        được end-to-end — độ phủ do load_vlqa in ra, tránh thổi phồng/kéo tụt chỉ số mù mờ.
+        """
+        if not self.vlqa_samples:
+            logger.warning("Bỏ qua P4-VLQA: chưa có vietlawbench_vlqa.jsonl trong %s "
+                           "(chạy: python -m tests._common.datasets.load_vlqa).", self.benchmark_dir)
+            return
+
+        samples = self.vlqa_samples if n_samples <= 0 else self.vlqa_samples[:n_samples]
+        logger.info("=== P4-VLQA: %d câu hỏi ngoại, đánh giá cấp văn bản ===", len(samples))
+
+        from database.qdrant_client import QdrantClientWrapper
+        from rag.es_retriever import LegalElasticsearchRetriever
+        from rag.retriever import LegalHybridRetriever
+        from sentence_transformers import SentenceTransformer
+
+        qdrant = QdrantClientWrapper(host=config.QDRANT_HOST, port=config.QDRANT_PORT)
+        es = LegalElasticsearchRetriever(hosts=[config.ES_HOST], index_name=config.ES_INDEX_NAME)
+        encoder = SentenceTransformer(config.BASE_MODEL_NAME, device=self.device)
+        retriever = LegalHybridRetriever(qdrant_wrapper=qdrant, es_retriever=es, encoder_model=encoder)
+
+        ks = [1, 5, 10]
+        plan = [
+            ("Sparse-only (BM25)", "sparse_only", False),
+            ("Dense-only (MRL)", "dense_only", False),
+            ("Hybrid (RRF)", "hybrid", False),
+            ("Hybrid + Graph (Full)", "hybrid", True),
+        ]
+
+        rows, ndcg_vectors = [], {}
+        prev_env = os.environ.get("GRAPH_EXPANSION")
+        try:
+            for label, mode, use_graph in plan:
+                os.environ["GRAPH_EXPANSION"] = "1" if use_graph else "0"
+                acc = {f"{p}@{k}": [] for p in ("Hit", "MRR", "NDCG", "MAP") for k in ks}
+                lats, ndcg10_vec = [], []
+                for s in samples:
+                    t0 = time.perf_counter()
+                    cands = retrieve_by_mode(retriever, s["query"], top_k=top_k_eval, mode=mode)
+                    lats.append((time.perf_counter() - t0) * 1000.0)
+                    m = evaluate_query(cands, s, ks, match_level="document")
+                    for k in ks:
+                        acc[f"Hit@{k}"].append(m.get(f"Hit@{k}", 0.0))
+                        acc[f"MRR@{k}"].append(m.get(f"MRR@{k}", 0.0))
+                        acc[f"NDCG@{k}"].append(m.get(f"NDCG@{k}", 0.0))
+                        acc[f"MAP@{k}"].append(m.get(f"MAP@{k}", 0.0))
+                    ndcg10_vec.append(m.get("NDCG@10", 0.0))
+                ndcg_vectors[label] = ndcg10_vec
+                p95 = float(np.percentile(lats, 95)) if lats else 0.0
+                row = {"Che_Do": label}
+                for p in ("Hit", "MRR", "NDCG", "MAP"):
+                    for k in ks:
+                        row[f"{p}@{k}"] = round(float(np.mean(acc[f"{p}@{k}"])), 4) if acc[f"{p}@{k}"] else 0.0
+                row["Latency_P95_ms"] = round(p95, 2)
+                row["SLA"] = "Đạt (<500ms)" if p95 < 500.0 else "Vượt ngưỡng"
+                rows.append(row)
+                logger.info("  %-24s Hit@10=%.4f NDCG@10=%.4f MAP@10=%.4f P95=%.1fms",
+                            label, row["Hit@10"], row["NDCG@10"], row["MAP@10"], p95)
+        finally:
+            if prev_env is None:
+                os.environ.pop("GRAPH_EXPANSION", None)
+            else:
+                os.environ["GRAPH_EXPANSION"] = prev_env
+
+        def _ttest(a_label, b_label):
+            a, b = ndcg_vectors.get(a_label, []), ndcg_vectors.get(b_label, [])
+            if len(a) == len(b) and len(a) >= 2 and not np.all(np.array(a) == np.array(b)):
+                _, p = stats.ttest_rel(a, b)
+                return float(p) if not np.isnan(p) else 1.0
+            return 1.0
+        sig_rows = [
+            {"So_Sanh": "Hybrid vs Dense-only", "p_value_NDCG@10": f"{_ttest('Hybrid (RRF)', 'Dense-only (MRL)'):.2e}"},
+            {"So_Sanh": "Hybrid+Graph vs Hybrid", "p_value_NDCG@10": f"{_ttest('Hybrid + Graph (Full)', 'Hybrid (RRF)'):.2e}"},
+        ]
+
+        out_path.mkdir(parents=True, exist_ok=True)
+        csv_file = out_path / "p4_vlqa_external_numbers.csv"
+        with open(csv_file, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.DictWriter(f, fieldnames=list(rows[0].keys())); w.writeheader(); w.writerows(rows)
+        sig_file = out_path / "p4_vlqa_significance.csv"
+        with open(sig_file, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.DictWriter(f, fieldnames=["So_Sanh", "p_value_NDCG@10"]); w.writeheader(); w.writerows(sig_rows)
+        logger.info("✓ Đã lưu bảng số P4-VLQA: %s | %s", csv_file.resolve(), sig_file.resolve())
+
+
     def evaluate_rq4_groundedness(self, out_path: Path):
         """RQ4: Đánh giá độ trung thực RAG thật với LLM-as-a-Judge."""
         logger.info("=== Đang thực thi RQ4: Đánh giá độ trung thực với LLM-as-a-Judge ===")
@@ -538,7 +629,7 @@ def main():
     parser.add_argument("--output-dir", default=str(ROOT_DIR / "benchmark" / "results"))
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--checkpoints-dir", default="checkpoints")
-    parser.add_argument("--rq", choices=["1", "2", "3", "4", "all", "baselines"], default="all")
+    parser.add_argument("--rq", choices=["1", "2", "3", "4", "vlqa", "all", "baselines"], default="all")
     args = parser.parse_args()
 
     if args.rq == "baselines":
@@ -558,6 +649,8 @@ def main():
         runner.evaluate_rq3_latency_ablation(out_p)
     elif args.rq == "4":
         runner.evaluate_rq4_groundedness(out_p)
+    elif args.rq == "vlqa":
+        runner.evaluate_rq_vlqa_external(out_p)
     else:
         runner.run_all(out_p)
 

@@ -105,6 +105,13 @@ class IngestPipelineWorker:
         self.device = resolve_safe_device(device)
         logger.info("Đang nạp mô hình %s trên [%s]...", self.model_name, self.device)
         self.encoder = SentenceTransformer(self.model_name, device=self.device)
+        try:
+            _msq = int(getattr(config, "EMBED_MAX_SEQ", 0))
+            if _msq > 0:
+                self.encoder.max_seq_length = _msq
+            logger.info("Đặt max_seq_length=%d cho encoder (tăng tốc CPU).", self.encoder.max_seq_length)
+        except Exception:
+            pass
 
     def _extract_clean_text_fallback(self, doc_record: Dict[str, Any]) -> str:
         text = doc_record.get("full_text") or doc_record.get("text") or ""
@@ -333,6 +340,7 @@ def main():
     parser.add_argument("--dim", type=int, default=config.QDRANT_VECTOR_DIM, help="Số chiều vector (256)")
     parser.add_argument("--batch-size", type=int, default=config.EMBED_BATCH_SIZE, help="Kích thước mini-batch")
     parser.add_argument("--device", default=config.EMBED_DEVICE, help="Thiết bị tính toán (cpu/cuda)")
+    parser.add_argument("--fresh", action="store_true", help="WIPE Qdrant/ES rồi nạp lại từ đầu (dựng sạch canonical)")
     args = parser.parse_args()
 
     worker = IngestPipelineWorker(
@@ -341,6 +349,15 @@ def main():
         batch_size=args.batch_size,
         device=args.device,
     )
+
+    if args.fresh:
+        logger.warning("--fresh: WIPE Qdrant [%s] + ES [%s] trước khi nạp...", config.QDRANT_COLLECTION_NAME, config.ES_INDEX_NAME)
+        try: worker.qdrant.client.delete_collection(config.QDRANT_COLLECTION_NAME)
+        except Exception as e: logger.info("Qdrant delete: %s", e)
+        worker.qdrant.init_collection()
+        try: worker.es.client.indices.delete(index=config.ES_INDEX_NAME, ignore_unavailable=True)
+        except Exception as e: logger.info("ES delete: %s", e)
+        worker.es._ensure_index_and_analyzer()
 
     completed_shards = load_checkpoint()
     p = Path(args.shard_path)
