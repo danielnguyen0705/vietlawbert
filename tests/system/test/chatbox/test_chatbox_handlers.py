@@ -132,7 +132,6 @@ def test_every_dropdown_mode_runs_and_is_logged(chat):
     assert all(r["answer"].strip() for r in recs)
 
 
-@pytest.mark.xfail(strict=False, reason="handler chưa kẹp top_k vào [1, MAX_TOP_K]; API /chat có thể nhận giá trị ngoài slider")
 @pytest.mark.parametrize("top_k", [0, -1, 10_000])
 def test_top_k_out_of_range_is_clamped(chat, top_k):
     from demo.config import MAX_TOP_K
@@ -194,3 +193,10 @@ def test_feedback_out_of_range_is_ignored(chat):
     chat.submit("Câu hỏi 1")
     chat.like(msg_index=99, liked=True)
     assert _read_jsonl(chat.feedback_file) == []
+
+
+def test_top_k_non_numeric_falls_back_to_default(chat):
+    from demo.config import DEFAULT_TOP_K
+    chat.submit("Câu hỏi với top_k không hợp lệ", top_k="abc")
+    rec = _read_jsonl(chat.interactions_file)[-1]
+    assert rec["top_k"] == DEFAULT_TOP_K

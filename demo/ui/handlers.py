@@ -22,7 +22,7 @@ from typing import List, Dict, Any, Tuple
 
 import gradio as gr
 
-from demo.config import USE_MOCK_BACKEND, DEFAULT_TOP_K, DEFAULT_MODE
+from demo.config import USE_MOCK_BACKEND, DEFAULT_TOP_K, MAX_TOP_K, DEFAULT_MODE
 from demo.server import retrieval_service, generation_service, feedback_service, interaction_service
 from demo.ui.panels import render_evidence, render_metrics
 
@@ -39,6 +39,14 @@ SessionMeta = List[Dict[str, Any]]
 def _msg(role: str, content: str) -> Dict[str, str]:
     """Tạo message dict theo Gradio 6.x format."""
     return {"role": role, "content": content}
+
+
+def _clamp_top_k(value) -> int:
+    try:
+        k = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_TOP_K
+    return max(1, min(k, MAX_TOP_K))
 
 
 def _run_pipeline(
@@ -87,6 +95,8 @@ def handle_submit(
 
     Returns (chatbot, history_state, meta_state, txt_clear, evidence_html, metrics_html)
     """
+    top_k = _clamp_top_k(top_k)
+
     empty_evidence = render_evidence([])
     empty_metrics  = render_metrics()
 
