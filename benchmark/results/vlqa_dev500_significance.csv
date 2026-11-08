@@ -1,0 +1,7 @@
+mode,baseline,metric,mean_mode,mean_baseline,mean_diff,t_stat,p_value,n
+system_sparse,bm25_content,NDCG@10,0.3282,0.3302,-0.0020,-0.9129,0.3617,500
+system_sparse,bm25_content,F2@2,0.2420,0.2447,-0.0027,-1.3732,0.1703,500
+bm25_plain,bm25_content,NDCG@10,0.4753,0.3302,0.1451,11.1170,0.0000,500
+bm25_plain,bm25_content,F2@2,0.3509,0.2447,0.1062,7.1149,0.0000,500
+bm25_seg,bm25_content,NDCG@10,0.5161,0.3302,0.1859,12.0920,0.0000,500
+bm25_seg,bm25_content,F2@2,0.3834,0.2447,0.1387,8.7261,0.0000,500
