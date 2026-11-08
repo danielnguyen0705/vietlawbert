@@ -12,7 +12,7 @@ Tuân thủ biên bản VLQA: chỉ dùng đánh giá; trích dẫn VLSP DRiLL 2
 Chạy:  python -m tests._common.datasets.load_vlqa            # sinh jsonl + báo độ phủ (nếu có ES)
 """
 from __future__ import annotations
-import os, re, json, argparse, logging
+import os, re, json, argparse, logging, random
 from pathlib import Path
 from configs.config import config
 from configs.global_id import canonical_doc_id, normalize_doc_number
@@ -62,6 +62,7 @@ def load_vlqa(vlqa_dir: str):
             unresolved += 1
             continue
         cases.append({
+            "qid": rec.get("qid"),
             "benchmark_id": f"vlqa_{rec.get('qid')}",
             "query_type": "vlqa",
             "retrieval_level": "document",
@@ -71,26 +72,111 @@ def load_vlqa(vlqa_dir: str):
             "ground_truth_docs": [{"doc_number": x, "article": ""} for x in law_ids],
             "ground_truth_doc_id": canonical_doc_id(law_ids[0]),
             "relevant_aids": aids,
+            "relevant_chunk_ids": [f"vlqa_{aid}" for aid in aids],
             "answer_ref": str(rec.get("answer") or "")[:500],
         })
     return cases, aid2law, unresolved
 
 
-def main():
+def select_dev(cases: list, n: int, seed: int = 42) -> list:
+    """
+    Chọn tập dev cố định từ danh sách câu hỏi:
+    - Chỉ lấy câu hỏi có ≥ 1 aid hợp lệ (relevant_aids hoặc relevant_chunk_ids không rỗng).
+    - Sắp xếp ổn định theo qid (int hoặc trích từ benchmark_id).
+    - Xáo trộn bằng random.Random(seed).
+    - Lấy N phần tử đầu tiên.
+    """
+    valid = [
+        c for c in cases
+        if c.get("relevant_aids") or c.get("relevant_chunk_ids")
+    ]
+
+    def _qid_key(c):
+        q = c.get("qid")
+        if q is not None:
+            try:
+                return (0, int(q))
+            except (ValueError, TypeError):
+                return (1, str(q))
+        bid = str(c.get("benchmark_id", ""))
+        m = re.search(r"\d+", bid)
+        if m:
+            return (0, int(m.group()))
+        return (1, bid)
+
+    valid.sort(key=_qid_key)
+    shuffled = list(valid)
+    rng = random.Random(seed)
+    rng.shuffle(shuffled)
+    return shuffled[:n]
+
+
+def main(argv=None):
     ap = argparse.ArgumentParser(description="Nạp VLQA làm benchmark đánh giá (map sang doc_number của mình)")
     ap.add_argument("--out", default=str(BENCHMARK_DIR / "vietlawbench_vlqa.jsonl"))
-    args = ap.parse_args()
-    if not config.VLQA_DIR or not os.path.isdir(config.VLQA_DIR):
-        raise SystemExit(f"VLQA_DIR không hợp lệ: {config.VLQA_DIR!r} — set trong .env trước.")
-    cases, aid2law, unresolved = load_vlqa(config.VLQA_DIR)
-    with open(args.out, "w", encoding="utf-8") as f:
-        for c in cases:
-            f.write(json.dumps(c, ensure_ascii=False) + "\n")
-    n_doc = len({c["ground_truth_doc_number"] for c in cases})
-    logger.info("✓ %d câu VLQA (bỏ %d câu không map được aid) | %d doc_number đích phân biệt → %s",
-                len(cases), unresolved, n_doc, args.out)
+    ap.add_argument("--dev-size", type=int, default=0, help="Số lượng câu cho tập dev cố định (0 = giữ hành vi cũ)")
+    ap.add_argument("--seed", type=int, default=42, help="Seed ngẫu nhiên chọn dev")
+    ap.add_argument("--dev-out", default=str(BENCHMARK_DIR / "vlqa_dev500.jsonl"))
+    ap.add_argument("--qids-out", default=str(BENCHMARK_DIR / "splits" / "vlqa_dev500_qids.txt"))
+    args = ap.parse_args(argv)
+
+    vlqa_dir = os.environ.get("VLQA_DIR") or getattr(config, "VLQA_DIR", "")
+    if not vlqa_dir or not os.path.isdir(vlqa_dir):
+        raise SystemExit(f"VLQA_DIR không hợp lệ: {vlqa_dir!r} — set trong .env trước.")
+
+    cases, aid2law, unresolved = load_vlqa(vlqa_dir)
+
+    if args.dev_size > 0:
+        dev_cases = select_dev(cases, args.dev_size, seed=args.seed)
+        dev_out_path = Path(args.dev_out)
+        dev_out_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(dev_out_path, "w", encoding="utf-8") as f:
+            for c in dev_cases:
+                f.write(json.dumps(c, ensure_ascii=False) + chr(10))
+
+        qids = []
+        for c in dev_cases:
+            q = c.get("qid")
+            if q is None:
+                bid = str(c.get("benchmark_id", ""))
+                m = re.search(r"\d+", bid)
+                q = int(m.group()) if m else bid
+            else:
+                try:
+                    q = int(q)
+                except (ValueError, TypeError):
+                    pass
+            qids.append(q)
+
+        try:
+            qids.sort(key=int)
+        except (ValueError, TypeError):
+            qids.sort(key=str)
+
+        qids_out_path = Path(args.qids_out)
+        qids_out_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(qids_out_path, "w", encoding="utf-8") as f:
+            for q in qids:
+                f.write(f"{q}" + chr(10))
+
+        logger.info(
+            "✓ Đã tạo dev set: %d câu (seed=%d) → %s | %d qids → %s",
+            len(dev_cases), args.seed, dev_out_path, len(qids), qids_out_path
+        )
+    else:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as f:
+            for c in cases:
+                f.write(json.dumps(c, ensure_ascii=False) + chr(10))
+        n_doc = len({c["ground_truth_doc_number"] for c in cases})
+        logger.info(
+            "✓ %d câu VLQA (bỏ %d câu không map được aid) | %d doc_number đích phân biệt → %s",
+            len(cases), unresolved, n_doc, out_path
+        )
 
     # Độ phủ: bao nhiêu % câu có ÍT NHẤT một doc đích nằm trong index ES
+    eval_target_cases = dev_cases if args.dev_size > 0 else cases
     try:
         from elasticsearch import Elasticsearch
         es = Elasticsearch(config.ES_HOST)
@@ -99,10 +185,10 @@ def main():
                 index=config.ES_INDEX_NAME, size=0,
                 aggs={"d": {"terms": {"field": "doc_number.keyword", "size": 10000}}}
             )["aggregations"]["d"]["buckets"]}
-            covered = sum(1 for c in cases
+            covered = sum(1 for c in eval_target_cases
                           if any(normalize_doc_number(x) in idx for x in c["ground_truth_doc_numbers"]))
-            logger.info("ĐỘ PHỦ ES: %d/%d câu (%.1f%%) có ≥1 doc đích trong index (phần đo được end-to-end hiện tại).",
-                        covered, len(cases), 100 * covered / max(len(cases), 1))
+            logger.info("ĐỘ PHỦ ES: %d/%d câu (%.1f%%) có ≥1 doc đích trong index.",
+                        covered, len(eval_target_cases), 100 * covered / max(len(eval_target_cases), 1))
     except Exception as exc:
         logger.info("Bỏ qua đo độ phủ ES (%s).", exc)
 
