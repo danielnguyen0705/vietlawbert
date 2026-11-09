@@ -111,6 +111,42 @@ def select_dev(cases: list, n: int, seed: int = 42) -> list:
     return shuffled[:n]
 
 
+def split_tune(cases: list, dev_qids: set | list) -> list:
+    """
+    Tách tập tune gồm toàn bộ câu hỏi có ≥ 1 aid hợp lệ và qid KHÔNG nằm trong dev_qids,
+    sắp xếp tăng dần theo qid.
+    """
+    dev_qids_all = set()
+    for q in dev_qids:
+        dev_qids_all.add(q)
+        try:
+            dev_qids_all.add(int(q))
+        except (ValueError, TypeError):
+            pass
+        dev_qids_all.add(str(q))
+
+    tune = [
+        c for c in cases
+        if (c.get("relevant_aids") or c.get("relevant_chunk_ids")) and c.get("qid") not in dev_qids_all
+    ]
+
+    def _qid_key(c):
+        q = c.get("qid")
+        if q is not None:
+            try:
+                return (0, int(q))
+            except (ValueError, TypeError):
+                return (1, str(q))
+        bid = str(c.get("benchmark_id", ""))
+        m = re.search(r"\d+", bid)
+        if m:
+            return (0, int(m.group()))
+        return (1, bid)
+
+    tune.sort(key=_qid_key)
+    return tune
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Nạp VLQA làm benchmark đánh giá (map sang doc_number của mình)")
     ap.add_argument("--out", default=str(BENCHMARK_DIR / "vietlawbench_vlqa.jsonl"))
@@ -118,6 +154,8 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=42, help="Seed ngẫu nhiên chọn dev")
     ap.add_argument("--dev-out", default=str(BENCHMARK_DIR / "vlqa_dev500.jsonl"))
     ap.add_argument("--qids-out", default=str(BENCHMARK_DIR / "splits" / "vlqa_dev500_qids.txt"))
+    ap.add_argument("--tune-out", default=str(BENCHMARK_DIR / "vlqa_tune1690.jsonl"))
+    ap.add_argument("--tune-qids-out", default=str(BENCHMARK_DIR / "splits" / "vlqa_tune1690_qids.txt"))
     args = ap.parse_args(argv)
 
     vlqa_dir = os.environ.get("VLQA_DIR") or getattr(config, "VLQA_DIR", "")
@@ -163,6 +201,44 @@ def main(argv=None):
             "✓ Đã tạo dev set: %d câu (seed=%d) → %s | %d qids → %s",
             len(dev_cases), args.seed, dev_out_path, len(qids), qids_out_path
         )
+
+        dev_qids_set = {c.get("qid") for c in dev_cases}
+        tune_cases = split_tune(cases, dev_qids_set)
+        tune_out_path = Path(args.tune_out)
+        tune_out_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(tune_out_path, "w", encoding="utf-8") as f:
+            for c in tune_cases:
+                f.write(json.dumps(c, ensure_ascii=False) + chr(10))
+
+        tune_qids = []
+        for c in tune_cases:
+            q = c.get("qid")
+            if q is None:
+                bid = str(c.get("benchmark_id", ""))
+                m = re.search(r"\d+", bid)
+                q = int(m.group()) if m else bid
+            else:
+                try:
+                    q = int(q)
+                except (ValueError, TypeError):
+                    pass
+            tune_qids.append(q)
+
+        try:
+            tune_qids.sort(key=int)
+        except (ValueError, TypeError):
+            tune_qids.sort(key=str)
+
+        tune_qids_out_path = Path(args.tune_qids_out)
+        tune_qids_out_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(tune_qids_out_path, "w", encoding="utf-8") as f:
+            for q in tune_qids:
+                f.write(f"{q}" + chr(10))
+
+        logger.info(
+            "✓ Đã tạo tune set: %d câu → %s | %d qids → %s",
+            len(tune_cases), tune_out_path, len(tune_qids), tune_qids_out_path
+        )
     else:
         out_path = Path(args.out)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -175,7 +251,6 @@ def main(argv=None):
             len(cases), unresolved, n_doc, out_path
         )
 
-    # Độ phủ: bao nhiêu % câu có ÍT NHẤT một doc đích nằm trong index ES
     eval_target_cases = dev_cases if args.dev_size > 0 else cases
     try:
         from elasticsearch import Elasticsearch
