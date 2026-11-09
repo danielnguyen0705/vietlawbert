@@ -1,5 +1,5 @@
-﻿"""
-benchmark/evaluate_vlqa_article.py — Đánh giá BM25, Dense và Hybrid RRF cấp điều luật trên tập dev VLQA (500 câu).
+"""
+benchmark/evaluate_vlqa_article.py — Đánh giá BM25, Dense, Hybrid RRF và Reranker cấp điều luật trên tập dev VLQA (500 câu).
 
 Chế độ:
 - bm25_content: truy vấn match content trên Elasticsearch index riêng vlqa_sparse_idx.
@@ -7,7 +7,9 @@ Chế độ:
 - bm25_plain: match content_plain (giữ dấu) trên vlqa_sparse_seg_idx.
 - bm25_seg: tách từ câu hỏi bằng pyvi, match content_seg trên vlqa_sparse_seg_idx.
 - dense: tìm kiếm vector precomputed BAAI/bge-m3 trong Qdrant vlqa_dense_bge_m3.
-- hybrid_rrf: kết hợp xếp hạng (RRF) giữa bm25_seg và dense.
+- hybrid_rrf: kết hợp xếp hạng (RRF k=60) giữa bm25_seg và dense.
+- hybrid_wrrf: kết hợp xếp hạng có trọng số (Weighted RRF) tối ưu từ tập tune.
+- rerank_hybrid50: tái xếp hạng top-50 bằng mô hình cross-encoder bge-reranker-v2-m3.
 """
 from __future__ import annotations
 
@@ -38,6 +40,7 @@ from benchmark.metrics_article import (
     aggregate,
 )
 from preprocess.vi_segment import get_segmenter, segment_text
+from benchmark.tune_vlqa_fusion import weighted_rrf, order_rerank_candidates
 
 logger = get_subsystem_logger("benchmark", "evaluate_vlqa_article")
 
@@ -145,8 +148,10 @@ def main(argv: List[str] | None = None) -> None:
     raw_vlqa_dir = os.environ.get("VLQA_DIR") or getattr(config, "VLQA_DIR", "")
     vlqa_dir_default = raw_vlqa_dir if raw_vlqa_dir else "D:\\VLQA"
     default_vectors_dir = str(Path(vlqa_dir_default) / "vectors" / "bge-m3")
+    default_fusion_params = str(BENCHMARK_DIR / "results" / "vlqa_fusion_params.json")
+    default_rerank_file = str(Path(vlqa_dir_default) / "task6" / "kaggle_out" / "rerank_top50.jsonl")
 
-    ap = argparse.ArgumentParser(description="Đánh giá BM25, Dense và Hybrid RRF cấp điều luật trên tập dev VLQA")
+    ap = argparse.ArgumentParser(description="Đánh giá BM25, Dense, Hybrid RRF và Reranker cấp điều luật trên tập dev VLQA")
     ap.add_argument("--dev", default=str(BENCHMARK_DIR / "vlqa_dev500.jsonl"))
     ap.add_argument("--index", default="vlqa_sparse_idx")
     ap.add_argument("--seg-index", default="vlqa_sparse_seg_idx")
@@ -156,8 +161,13 @@ def main(argv: List[str] | None = None) -> None:
     ap.add_argument("--piece-depth", type=int, default=400)
     ap.add_argument("--exact", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--rrf-k", type=int, default=getattr(config, "RRF_K", 60))
-    ap.add_argument("--baselines", default="bm25_content,bm25_seg")
-    ap.add_argument("--modes", default="bm25_content,system_sparse,bm25_plain,bm25_seg,dense,hybrid_rrf")
+    ap.add_argument("--fusion-params", default=default_fusion_params)
+    ap.add_argument("--rerank-file", default=default_rerank_file)
+    ap.add_argument("--baselines", default="bm25_content,bm25_seg,dense")
+    ap.add_argument(
+        "--modes",
+        default="bm25_content,system_sparse,bm25_plain,bm25_seg,dense,hybrid_rrf,hybrid_wrrf,rerank_hybrid50",
+    )
     ap.add_argument("--depth", type=int, default=100)
     ap.add_argument("--ks", default="1,2,3,5,10")
     ap.add_argument("--out-dir", default=str(BENCHMARK_DIR / "results"))
@@ -186,7 +196,7 @@ def main(argv: List[str] | None = None) -> None:
     logger.info("Nạp %d câu hỏi từ %s", len(questions), dev_path)
 
     modes = [m.strip() for m in args.modes.split(",") if m.strip()]
-    needs_es = any(m in modes for m in ["bm25_content", "system_sparse", "bm25_plain", "bm25_seg", "hybrid_rrf"])
+    needs_es = any(m in modes for m in ["bm25_content", "system_sparse", "bm25_plain", "bm25_seg", "hybrid_rrf", "hybrid_wrrf"])
 
     es_retriever = None
     es_client = None
@@ -205,16 +215,16 @@ def main(argv: List[str] | None = None) -> None:
 
     ks = [int(x.strip()) for x in args.ks.split(",") if x.strip()]
 
-    # Khởi tạo segmenter nếu có chế độ bm25_seg hoặc hybrid_rrf
+    # Khởi tạo segmenter nếu cần
     seg_fn = None
-    if any(m in modes for m in ["bm25_seg", "hybrid_rrf"]):
+    if any(m in modes for m in ["bm25_seg", "hybrid_rrf", "hybrid_wrrf"]):
         seg_fn = get_segmenter(args.segmenter)
 
     # Khởi tạo HTTP Client cho Qdrant
     qdrant_http = None
     query_vectors = None
     qid_to_vec_idx = {}
-    needs_dense = any(m in modes for m in ["dense", "hybrid_rrf"])
+    needs_dense = any(m in modes for m in ["dense", "hybrid_rrf", "hybrid_wrrf"])
 
     if needs_dense:
         qdrant_url = f"http://{config.QDRANT_HOST}:{config.QDRANT_PORT}"
@@ -232,6 +242,40 @@ def main(argv: List[str] | None = None) -> None:
             qids_list = json.load(qf)
         qid_to_vec_idx = {qid: i for i, qid in enumerate(qids_list)}
         logger.info("Nạp %d query vectors từ %s", len(query_vectors), qvec_path)
+
+    # Nạp tham số Weighted RRF nếu có hybrid_wrrf
+    fusion_params = {}
+    w_dense = 0.7
+    w_bm25 = 0.3
+    wrrf_k = 10
+    if "hybrid_wrrf" in modes or "rerank_hybrid50" in modes:
+        params_path = Path(args.fusion_params)
+        if params_path.exists():
+            with open(params_path, "r", encoding="utf-8") as pf:
+                fusion_params = json.load(pf)
+            w_dense = float(fusion_params.get("w_dense", 0.7))
+            w_bm25 = float(fusion_params.get("w_bm25", 0.3))
+            wrrf_k = int(fusion_params.get("rrf_k", 10))
+            logger.info("Nạp tham số tối ưu từ %s: w_dense=%.2f, w_bm25=%.2f, k=%d", params_path, w_dense, w_bm25, wrrf_k)
+        else:
+            logger.warning("Không tìm thấy file tham số fusion %s, dùng mặc định w_dense=0.7, k=10", params_path)
+
+    # Nạp bảng rerank nếu có rerank_hybrid50
+    rerank_by_qid: Dict[Any, List[str]] = {}
+    if "rerank_hybrid50" in modes:
+        rerank_path = Path(args.rerank_file)
+        if rerank_path.exists():
+            with open(rerank_path, "r", encoding="utf-8") as rf:
+                for line in rf:
+                    if line.strip():
+                        r = json.loads(line)
+                        if r.get("split") == "dev":
+                            ordered = order_rerank_candidates(r["candidates"], r["rerank_scores"])
+                            rerank_by_qid[r["qid"]] = ordered
+            logger.info("Nạp %d bản ghi rerank (dev) từ %s", len(rerank_by_qid), rerank_path)
+        else:
+            logger.error("Không tìm thấy file rerank: %s", rerank_path)
+            sys.exit(1)
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -256,6 +300,8 @@ def main(argv: List[str] | None = None) -> None:
         "dense": "search_only",
         "bm25_seg": "includes_query_segmentation",
         "hybrid_rrf": "bm25_seg+dense, query vector precomputed",
+        "hybrid_wrrf": "bm25_seg+dense, query vector precomputed",
+        "rerank_hybrid50": "offline GPU rerank (not measured)",
     }
 
     def execute_dense_search(qid: Any) -> Tuple[List[str], float]:
@@ -361,11 +407,32 @@ def main(argv: List[str] | None = None) -> None:
                     ranked = rrf_fuse([seg_ranked[:100], den_ranked[:100]], k=args.rrf_k, depth=args.depth)
                     latency_ms = seg_lat + den_lat
 
+                elif mode == "hybrid_wrrf":
+                    if qid in bm25_seg_cache:
+                        seg_ranked, seg_lat = bm25_seg_cache[qid]
+                    else:
+                        seg_ranked, seg_lat = execute_bm25_seg_search(query_text)
+                        bm25_seg_cache[qid] = (seg_ranked, seg_lat)
+
+                    if qid in dense_cache:
+                        den_ranked, den_lat = dense_cache[qid]
+                    else:
+                        den_ranked, den_lat = execute_dense_search(qid)
+                        dense_cache[qid] = (den_ranked, den_lat)
+
+                    ranked = weighted_rrf([seg_ranked[:100], den_ranked[:100]], [w_bm25, w_dense], k=wrrf_k, depth=args.depth)
+                    latency_ms = seg_lat + den_lat
+
+                elif mode == "rerank_hybrid50":
+                    ranked = rerank_by_qid.get(qid, [])[: args.depth]
+                    latency_ms = None
+
                 else:
                     logger.warning("Bỏ qua chế độ không xác định: %s", mode)
                     break
 
-                latencies.append(latency_ms)
+                if latency_ms is not None:
+                    latencies.append(latency_ms)
 
                 q_metrics = {}
                 for k in ks:
@@ -396,17 +463,19 @@ def main(argv: List[str] | None = None) -> None:
                     "top_10_ids": ranked[:10],
                     "ndcg@10": round(ndcg10, 4),
                     "f2": f2_dict,
-                    "latency_ms": round(latency_ms, 2),
+                    "latency_ms": round(latency_ms, 2) if latency_ms is not None else None,
                 }
                 pq_f.write(json.dumps(pq_record, ensure_ascii=False) + "\n")
 
                 if idx % 100 == 0 or idx == len(questions):
-                    logger.info("  [%s] Đã xử lý %d/%d câu (latency avg=%.1fms)", mode, idx, len(questions), sum(latencies)/len(latencies))
+                    avg_lat = sum(latencies)/len(latencies) if latencies else 0.0
+                    logger.info("  [%s] Đã xử lý %d/%d câu (latency avg=%.1fms)", mode, idx, len(questions), avg_lat)
 
         agg = aggregate(per_query_metrics)
         mode_agg[mode] = agg
-        p50 = percentile(latencies, 50)
-        p95 = percentile(latencies, 95)
+
+        p50 = percentile(latencies, 50) if latencies else None
+        p95 = percentile(latencies, 95) if latencies else None
 
         best_k = 1
         best_f2 = -1.0
@@ -435,8 +504,8 @@ def main(argv: List[str] | None = None) -> None:
             "Macro-F2@5": f"{agg.get('f2@5', 0.0):.4f}",
             "Macro-F2@10": f"{agg.get('f2@10', 0.0):.4f}",
             "best_F2_k": best_k,
-            "Latency_P50_ms": f"{p50:.2f}",
-            "Latency_P95_ms": f"{p95:.2f}",
+            "Latency_P50_ms": f"{p50:.2f}" if p50 is not None else "",
+            "Latency_P95_ms": f"{p95:.2f}" if p95 is not None else "",
             "Latency_scope": latency_scopes.get(mode, "search_only"),
         }
         all_mode_rows.append(row)
@@ -557,6 +626,16 @@ def main(argv: List[str] | None = None) -> None:
 
     if qdrant_http is not None:
         qdrant_http.close()
+
+    # 5. Báo cáo trung thực dev Macro-F2 tại k tối ưu trên tune cho rerank_hybrid50
+    if "rerank_hybrid50" in mode_agg:
+        chosen_k = fusion_params.get("rerank_best_f2_k", 2)
+        dev_f2_chosen = mode_agg["rerank_hybrid50"].get(f"f2@{chosen_k}", 0.0)
+        print("\n" + "=" * 90)
+        print("ĐÁNH GIÁ TRUNG THỰC RERANK_HYBRID50 TẠI K TỐI ƯU TỪ TẬP TUNE:")
+        print(f"  k chọn từ tune: {chosen_k}")
+        print(f"  dev Macro-F2@{chosen_k} (k={chosen_k} tối ưu trên tune) = {dev_f2_chosen:.4f}")
+        print("=" * 90 + "\n")
 
     logger.info("✓ Đã lưu bảng kết quả metrics vào %s", csv_file)
     logger.info("✓ Đã lưu bảng kiểm định ý nghĩa thống kê vào %s", sig_file)
