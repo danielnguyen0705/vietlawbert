@@ -1,0 +1,37 @@
+{
+  "power": {
+    "battery_status": 2,
+    "on_ac": true
+  },
+  "active_power_plan": "Power Scheme GUID: 5e1a0378-3ae1-4d53-b6d6-b92cc33b79f2  (ASUS Recommended)",
+  "ram": {
+    "total_gb": 15.63,
+    "available_before_load_gb": 2.07,
+    "available_after_load_gb": 1.82
+  },
+  "docker_stats": {
+    "raw": "elasticsearch_vietlaw 1.532GiB / 2GiB 0.65%\nqdrant_vietlaw 101.5MiB / 2GiB 0.34%"
+  },
+  "wslconfig": "absent",
+  "qdrant_collection": {
+    "name": "vlqa_dense_bge_m3",
+    "vectors_on_disk": true,
+    "points_count": 80715,
+    "indexed_vectors_count": 80715,
+    "status": "green"
+  },
+  "torch_num_threads": 12,
+  "checks": {
+    "cold_first_query_ms": 1040.22,
+    "overlap_dense_hnsw_vs_exact_mean": 1.0,
+    "overlap_dense_hnsw_vs_exact_min": 1.0,
+    "overlap_wrrf_hnsw_vs_exact_mean": 1.0,
+    "overlap_wrrf_hnsw_vs_exact_min": 1.0,
+    "dense_exact_recall10": 0.7725,
+    "perquery_dense_recall10": 0.7725,
+    "dense_recall10_diff": 0.0,
+    "wrrf_exact_recall10": 0.7775,
+    "perquery_wrrf_recall10": 0.7775,
+    "wrrf_recall10_diff": 0.0
+  }
+}
