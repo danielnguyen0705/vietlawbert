@@ -1,0 +1,13 @@
+{
+  "w_dense": 0.7,
+  "w_bm25": 0.3,
+  "rrf_k": 10,
+  "rerank_best_f2_k": 2,
+  "chosen_on": "tune1690",
+  "tune_NDCG@10": 0.6487,
+  "tune_Recall@10": 0.8084,
+  "tune_Recall@100": 0.935,
+  "tune_F2@2": 0.5024,
+  "tune_F2@3": 0.489,
+  "rerank_tune_F2_at_best_k": 0.5468
+}
