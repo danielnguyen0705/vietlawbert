@@ -1,0 +1,13 @@
+{
+  "python_version": "3.11.9",
+  "torch_version": "2.13.0+cpu",
+  "sentence_transformers_version": "3.0.1",
+  "transformers_version": "4.57.6",
+  "torch_num_threads": 12,
+  "cpu_count": 16,
+  "cpu_model": "12th Gen Intel(R) Core(TM) i5-1240P",
+  "total_ram_gb": 15.63,
+  "os": "Windows-10-10.0.26200-SP0",
+  "cuda_available": false,
+  "free_disk_d_gb": 81.71
+}

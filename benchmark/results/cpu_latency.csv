@@ -1,0 +1,12 @@
+part,pipeline_or_model,n,n_questions,P50_ms,P95_ms,share_under_500ms
+B1,BAAI/bge-m3,1,100,113.80,258.39,1.0000
+B2,bge-reranker-v2-m3,5,30,24528.88,28044.70,0.0000
+B2,bge-reranker-v2-m3,10,30,61069.99,63322.35,0.0000
+B2,bge-reranker-v2-m3,20,30,108310.11,121158.00,0.0000
+B2,mMiniLM,10,30,5897.37,6836.38,0.0000
+B2,mMiniLM,20,30,7677.89,11277.66,0.0000
+B2,mMiniLM,50,30,19579.19,21302.77,0.0000
+B3,dense,10,50,492.78,1030.25,0.5400
+B3,hybrid_wrrf,10,50,596.53,1425.95,0.1800
+B3,hybrid_wrrf + rerank bge-reranker-v2-m3,20,50,57178.49,116065.47,0.0000
+B3,hybrid_wrrf + rerank mMiniLM,20,50,5725.11,6527.02,0.0000

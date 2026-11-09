@@ -1,0 +1,4 @@
+model,n,NDCG@10,Recall@10,MRR@10,F2@2
+hybrid_rrf (baseline),0,0.6083,0.7589,0.5989,0.4748
+BAAI/bge-reranker-v2-m3,20,0.6829,0.8083,0.6813,0.5403
+cross-encoder/mmarco-mMiniLMv2-L12-H384-v1,20,0.6150,0.7625,0.6026,0.4686
