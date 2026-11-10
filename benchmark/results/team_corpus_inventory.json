@@ -1,0 +1,123 @@
+{
+  "schema": {
+    "chunk_id": "string",
+    "doc_id": "string",
+    "doc_number": "string",
+    "doc_title": "string",
+    "hierarchy_path": "string",
+    "level": "string",
+    "content": "string",
+    "full_context_text": "string",
+    "issue_date": "string",
+    "effective_date": "string",
+    "is_administrative": "bool"
+  },
+  "schema_uniform_across_all_files": true,
+  "schema_differing_files": [],
+  "counts": {
+    "n_files": 161,
+    "total_rows_chunks": 1130727,
+    "n_distinct_doc_ids": 154320,
+    "n_distinct_doc_numbers": 67076,
+    "n_distinct_normalized_doc_numbers": 64989,
+    "distinct_documents_count_column": "doc_number"
+  },
+  "chunk_level": {
+    "distribution": {
+      "ARTICLE": 1107812,
+      "DOCUMENT": 22915
+    },
+    "hierarchy_samples": [
+      "Quyết định số 72/2026/QĐ-UBND Ban hành Quy chế tổ chức và hoạt động của thôn, tổ dân phố trên địa bàn tỉnh Lào Cai > Điề",
+      "Quyết định số 65/2026/QĐ-UBND Bãi bỏ Quyết định số 10/2018/QĐ-UBND, Quyết định số 19/2018/QĐ-UBND và Quyết định số 27/20",
+      "Quyết định số 95/2026/QĐ-CTUBND Quy định Danh mục và định mức khoán chi cho từng nhiệm vụ, hoạt động trong xây dựng quyế"
+    ]
+  },
+  "content_length_chars": {
+    "mean": 1480.56,
+    "P50": 653.0,
+    "P95": 4004.0,
+    "max": 2620161
+  },
+  "distributions": {
+    "is_administrative": {
+      "False": 1129671,
+      "True": 1056
+    },
+    "has_effective_date": {
+      "True": 1100600,
+      "False": 30127
+    },
+    "doc_types_by_document": {
+      "Quyết định": 88354,
+      "Nghị quyết": 27288,
+      "Thông tư": 19860,
+      "Chỉ thị": 8255,
+      "Nghị định": 5339,
+      "Khác": 4388,
+      "Luật": 588,
+      "Pháp lệnh": 243,
+      "Hiến pháp": 5
+    },
+    "issue_years_top15": {
+      "2025": 9734,
+      "2024": 7275,
+      "2026": 6229,
+      "2016": 6056,
+      "2014": 6020,
+      "2007": 5633,
+      "2017": 5410,
+      "2015": 5396,
+      "2008": 5383,
+      "2013": 5298,
+      "2023": 5217,
+      "2006": 5180,
+      "2022": 5138,
+      "2021": 5108,
+      "2012": 5037
+    }
+  },
+  "dense_index_ram_estimates": {
+    "float32_1024d_bytes": 4631457792,
+    "float32_1024d_gb": 4.313,
+    "float32_256d_bytes": 1157864448,
+    "float32_256d_gb": 1.078,
+    "int8_256d_bytes": 289466112,
+    "int8_256d_gb": 0.27
+  },
+  "vlqa_link": {
+    "document_level": {
+      "vlqa_total_docs": 2157,
+      "vlqa_normalized_unique_docs": 2156,
+      "team_normalized_unique_docs": 64989,
+      "vlqa_docs_in_team_corpus_count": 1921,
+      "vlqa_docs_in_team_corpus_share": 0.891,
+      "dev_split": {
+        "n_questions": 500,
+        "all_gold_docs_exist_count": 478,
+        "share_all_gold_docs_exist": 0.956,
+        "at_least_one_gold_doc_exists_count": 480,
+        "share_at_least_one_gold_doc_exists": 0.96
+      },
+      "tune_split": {
+        "n_questions": 1690,
+        "all_gold_docs_exist_count": 1634,
+        "share_all_gold_docs_exist": 0.9669,
+        "at_least_one_gold_doc_exists_count": 1638,
+        "share_at_least_one_gold_doc_exists": 0.9692
+      }
+    },
+    "article_level_sample": {
+      "sample_size": 200,
+      "seed": 42,
+      "target_docs_count": 150,
+      "total_target_chunks_evaluated": 10172,
+      "best_containment_A_ge_0_8_count": 191,
+      "best_containment_A_ge_0_8_share": 0.955,
+      "best_containment_C_ge_0_8_count": 192,
+      "best_containment_C_ge_0_8_share": 0.96,
+      "neither_ge_0_5_count": 4,
+      "neither_ge_0_5_share": 0.02
+    }
+  }
+}
