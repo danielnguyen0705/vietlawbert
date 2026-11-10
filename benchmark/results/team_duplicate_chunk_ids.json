@@ -1,0 +1,29 @@
+{
+  "total_unique_chunk_ids": 1130317,
+  "repeated_chunk_ids_count": 410,
+  "identical_content_count": 410,
+  "different_content_count": 0,
+  "different_content_same_doc_number": 0,
+  "different_content_different_doc_number": 0,
+  "repeated_files_distribution": {
+    "crawl_pages_00001_00010.parquet, crawl_pages_00011_00020.parquet": 9,
+    "crawl_pages_00011_00020.parquet, crawl_pages_00021_00030.parquet": 113,
+    "crawl_pages_01561_01570.parquet, crawl_pages_01571_01580.parquet": 287,
+    "crawl_pages_01591_01600.parquet, crawl_pages_01601_01607.parquet": 1
+  },
+  "es_kept_rule": "last_occurrence_by_filename_and_row_order",
+  "es_content_hash_matches_last_copy": true,
+  "sample_checked_chunk_ids": [
+    "9d65e510-896c-11f1-8f0a-55ba5de6aa00_art_1",
+    "9d65e510-896c-11f1-8f0a-55ba5de6aa00_art_2",
+    "9d65e510-896c-11f1-8f0a-55ba5de6aa00_art_3",
+    "9d65e510-896c-11f1-8f0a-55ba5de6aa00_art_4",
+    "9d65e510-896c-11f1-8f0a-55ba5de6aa00_art_5"
+  ],
+  "gold_cross_check": {
+    "vlqa_affected_gold_chunk_ids_count": 0,
+    "vlqa_affected_qids": [],
+    "vlb_affected_gold_chunk_ids_count": 0,
+    "vlb_affected_benchmark_ids": []
+  }
+}
