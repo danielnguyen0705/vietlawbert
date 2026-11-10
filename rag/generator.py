@@ -76,6 +76,41 @@ LEGAL_PROMPT_TEMPLATE = """=== CĂN CỨ PHÁP LÝ TRUY XUẤT ===
 """
 
 
+# ─── Guardrails tầng sinh (RQ4 / Tier 5): injection · abstain · citation ──────
+_INJECTION_PAT = re.compile(
+    r"(bỏ\s*qua.*(chỉ\s*dẫn|hướng\s*dẫn|quy\s*tắc)|ignore\s+(previous|above|all)|"
+    r"đóng\s*vai|giả\s*vờ\s*là|jailbreak|lách\s*luật|né\s*luật|trốn\s*thuế|né\s*thuế|"
+    r"làm\s*giả.*(giấy|hồ\s*sơ|con\s*dấu)|hợp\s*thức\s*hóa|rửa\s*tiền|"
+    r"hối\s*lộ.*(không\s*bị|an\s*toàn|cách\s*nào))",
+    re.IGNORECASE,
+)
+
+
+def detect_prompt_injection(query: str) -> bool:
+    """Phát hiện câu hỏi hướng dẫn lách luật / jailbreak (Tier 5 — Safety Guardrail)."""
+    return bool(_INJECTION_PAT.search(str(query or "")))
+
+
+def top_context_score(contexts) -> float:
+    """Điểm căn cứ cao nhất trong pool (ưu tiên final_rerank_score → rrf_score → score)."""
+    best = 0.0
+    for c in contexts or []:
+        if isinstance(c, dict):
+            s = c.get("final_rerank_score", c.get("rrf_score", c.get("score", 0.0)))
+            try:
+                best = max(best, float(s))
+            except (TypeError, ValueError):
+                pass
+    return best
+
+
+def should_abstain(contexts, min_score: float = 0.0) -> bool:
+    """Từ chối khi KHÔNG có căn cứ, hoặc điểm căn cứ cao nhất dưới ngưỡng tin cậy (nếu đặt)."""
+    if not contexts:
+        return True
+    return min_score > 0.0 and top_context_score(contexts) < min_score
+
+
 @dataclass
 class LLMProviderNode:
     name: str
@@ -259,20 +294,32 @@ class LegalGenerator:
         clean_query = query.strip()
         logger.info("Đang xử lý câu hỏi: '%s...'", clean_query[:80])
 
+        if detect_prompt_injection(clean_query):
+            logger.warning("Guardrail: câu hỏi có dấu hiệu lách luật/injection — TỪ CHỐI.")
+            return {
+                "query": clean_query,
+                "answer": "Xin lỗi, câu hỏi có dấu hiệu yêu cầu lách luật hoặc vi phạm quy chuẩn pháp lý nên không thể hỗ trợ.",
+                "contexts": [], "has_context": False, "attribution_score": 0.0,
+                "model_used": "Guardrail", "refused": True,
+                "refusal_reason": "injection_or_evasion", "citation_ok": False,
+            }
+
         if contexts is None:
             retrieved_contexts = self.retriever.retrieve(clean_query, top_k=top_k)
         else:
             retrieved_contexts = contexts
 
-        if not retrieved_contexts:
+        _min_score = float(getattr(config, "ABSTAIN_MIN_SCORE", 0.0))
+        if should_abstain(retrieved_contexts, _min_score):
             fallback_msg = "Cơ sở dữ liệu hiện tại không đủ căn cứ pháp lý để giải đáp thắc mắc này."
             return {
                 "query": clean_query,
                 "answer": fallback_msg,
-                "contexts": [],
+                "contexts": retrieved_contexts or [],
                 "has_context": False,
                 "attribution_score": 0.0,
-                "model_used": "None",
+                "model_used": "None", "refused": True, "refusal_reason": "insufficient_evidence",
+                "citation_ok": False,
             }
 
         context_str = self._format_context(retrieved_contexts)
@@ -291,6 +338,8 @@ class LegalGenerator:
             "has_context": True,
             "attribution_score": attr_score,
             "model_used": provider_used,
+            "refused": False,
+            "citation_ok": bool(attr_score > 0.0),
         }
 
     def generate_response(self, query: str, top_k: int = 3, contexts: Optional[List[Any]] = None) -> Dict[str, Any]:

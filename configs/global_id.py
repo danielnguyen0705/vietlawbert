@@ -16,10 +16,49 @@ import unicodedata
 
 _INVALID = {"", "N/A", "NA", "UNKNOWN", "NONE", "NULL"}
 
+# --- Làm sạch doc_number bẩn (nhiễm tiền tố/hậu tố, "Không số", rò rỉ tiêu đề) ---
+_LABEL_PREFIX = re.compile(r"^(?:số|sô|so|văn\s*bản|vb(?:\s*tạm\s*nhập)?|bản\s*nháp|ban\s*nhap|dự\s*thảo|du\s*thao)\b[\s:.\-]*", re.I)
+_TYPE_PREFIX  = re.compile(r"^(?:TT|NĐ|ND|QĐ|QD|NQ|CT|PL)\s+(?=\d)", re.I)
+_DRAFT_SUFFIX = re.compile(r"[\s.]*(?:\.sua|\.sửa|\.draft)\s*$", re.I)
+_NO_NUMBER    = re.compile(r"không\s*số|khong\s*so", re.I)
+_DESC_MARKERS = re.compile(r"(kỳ\s*họp|về\s*việc|khóa\s*\d|bất\s*thường|phiên\s*họp)", re.I)
+
+
+def _preclean(raw: str) -> str:
+    """Bóc tiền tố nhãn ('Số:', 'số', 'VB tạm nhập', 'bản nháp'...), hậu tố nháp ('.sua'),
+    và tiền tố loại-văn-bản dư ('TT 14/...' -> '14/...'). KHÔNG đổi phần số hiệu thật."""
+    s = str(raw or "").strip()
+    s = _DRAFT_SUFFIX.sub("", s)
+    prev = None
+    while prev != s:                       # bóc lặp phòng nhiều tiền tố chồng
+        prev = s
+        s = _LABEL_PREFIX.sub("", s).strip()
+    s = _TYPE_PREFIX.sub("", s).strip()
+    return s
+
+
+def classify_doc_number(raw: str):
+    """Phân loại doc_number thô → (status, cleaned).
+    - VALID       : số hiệu hợp lệ (đã làm sạch) → dùng canonical.
+    - NO_NUMBER   : văn bản THẬT nhưng không có số ('Không số') → KHÔNG gộp chung; caller cấp khóa thay thế.
+    - CONTAMINATED: rò rỉ tiêu đề/mô tả kỳ họp hoặc không còn chữ số → cách ly, caller fallback.
+    """
+    s = str(raw or "").strip()
+    if not s or s.upper() in _INVALID:
+        return ("CONTAMINATED", "")
+    if _NO_NUMBER.search(s):
+        return ("NO_NUMBER", "")
+    cleaned = _preclean(s)
+    if (not re.search(r"\d", cleaned)) or _DESC_MARKERS.search(cleaned) or len(cleaned) > 40:
+        return ("CONTAMINATED", cleaned)
+    return ("VALID", cleaned)
+
+
 
 def normalize_doc_number(doc_number: str) -> str:
     """Chuẩn hóa doc_number để so khớp/định danh: bỏ dấu, Đ→D, hoa, bỏ mọi khoảng trắng."""
-    s = unicodedata.normalize("NFKD", str(doc_number or "")).strip()
+    s = _preclean(doc_number)
+    s = unicodedata.normalize("NFKD", s).strip()
     s = "".join(c for c in s if not unicodedata.combining(c))
     s = s.replace("Đ", "D").replace("đ", "d")
     s = re.sub(r"\s+", "", s).upper()
@@ -33,7 +72,10 @@ def canonical_doc_id(doc_number: str) -> str:
     Dạng: <slug>-<hash8>, chỉ dùng [A-Z0-9-] (KHÔNG có '_' để không phá lược đồ '_art_' của chunk_id).
     Vd: "72/2026/QĐ-UBND" -> "72-2026-QD-UBND-5d41402a"
     """
-    norm = normalize_doc_number(doc_number)
+    status, cleaned = classify_doc_number(doc_number)
+    if status != "VALID":
+        return ""   # "Không số" & rác tiêu đề KHÔNG gộp chung — caller dùng khóa thay thế/crawler_id
+    norm = normalize_doc_number(cleaned)
     if norm in _INVALID:
         return ""
     slug = re.sub(r"[^A-Z0-9]+", "-", norm).strip("-")

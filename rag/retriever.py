@@ -21,6 +21,22 @@ from configs.paths import ARTIFACTS_DIR, ROOT_DIR
 logger = get_subsystem_logger("rag", "retriever")
 
 
+def load_cross_encoder(name: str):
+    """Nạp Cross-Encoder thật (vd 'BAAI/bge-reranker-v2-m3') để rerank top-N."""
+    from sentence_transformers import CrossEncoder
+    logger.info("Nạp Cross-Encoder rerank: %s", name)
+    return CrossEncoder(name)
+
+
+def resolve_reranker(reranker_model, config_name: str = "", loader=load_cross_encoder):
+    """Quy đổi tham số reranker → instance: chuỗi tên → nạp model; None + config → nạp theo config; else giữ nguyên."""
+    if isinstance(reranker_model, str) and reranker_model.strip():
+        return loader(reranker_model)
+    if reranker_model is None and config_name:
+        return loader(config_name)
+    return reranker_model
+
+
 def _resolve_model_source(name: str) -> str:
     """
     Phân giải nguồn mô hình BỀN VỮNG theo gốc repo (độc lập thư mục làm việc - cwd).
@@ -103,7 +119,7 @@ class LegalHybridRetriever:
         except Exception:
             pass
 
-        self.reranker = reranker_model
+        self.reranker = resolve_reranker(reranker_model, getattr(config, "RERANKER_MODEL", ""))
         self.alpha = alpha_graph if alpha_graph is not None else getattr(config, "GRAPH_ALPHA", 0.2)
 
         # 4. Tự động nạp cache vector đồ thị 128d phục vụ Compile-time Topo Scoring (Tối ưu hóa Vectorized Lazy Loading)

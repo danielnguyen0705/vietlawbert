@@ -12,6 +12,7 @@ import os, json, math, glob, argparse, random
 from pathlib import Path
 from configs.config import config
 from configs.paths import TRIPLETS_DIR, ROOT_DIR
+from configs.global_id import classify_doc_number
 from configs.logging_config import get_subsystem_logger
 
 logger = get_subsystem_logger("tests", "export_collab")
@@ -97,8 +98,17 @@ def export_from_neo4j(out_dir: Path, cochran_n: int):
         # DATA-1: doc_number phân biệt
         dns = [r["dn"] for r in s.run(
             "MATCH (d:LawDocument) WHERE d.doc_number IS NOT NULL RETURN DISTINCT d.doc_number AS dn")]
+        import csv as _csv, collections as _col
+        cat = _col.Counter()
+        with open(out_dir / "doc_numbers_categorized.csv", "w", newline="", encoding="utf-8-sig") as f:
+            w = _csv.writer(f); w.writerow(["doc_number", "status"])
+            for dn in sorted(map(str, dns)):
+                st = classify_doc_number(dn)[0]
+                cat[st] += 1
+                w.writerow([dn, st])
         (out_dir / "doc_numbers_neo4j.txt").write_text("\n".join(sorted(map(str, dns))), encoding="utf-8")
-        logger.info("✓ DATA-1: %d doc_number → doc_numbers_neo4j.txt", len(dns))
+        logger.info("✓ DATA-1: %d doc_number → phân loại VALID=%d · NO_NUMBER=%d · CONTAMINATED=%d → doc_numbers_categorized.csv",
+                    len(dns), cat.get("VALID",0), cat.get("NO_NUMBER",0), cat.get("CONTAMINATED",0))
         # 1.6: mẫu Cochran phân tầng theo doc_type
         rows = s.run(
             "MATCH (d:LawDocument)-[:HAS_CHUNK]->(c:Chunk) "
