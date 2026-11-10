@@ -11,8 +11,8 @@ from __future__ import annotations
 import os, json, math, glob, argparse, random
 from pathlib import Path
 from configs.config import config
-from configs.paths import TRIPLETS_DIR, ROOT_DIR
-from configs.global_id import classify_doc_number
+from configs.paths import TRIPLETS_DIR, ROOT_DIR, BENCHMARK_DIR
+from configs.global_id import classify_doc_number, normalize_doc_number
 from configs.logging_config import get_subsystem_logger
 
 logger = get_subsystem_logger("tests", "export_collab")
@@ -117,6 +117,32 @@ def export_from_neo4j(out_dir: Path, cochran_n: int):
             "coalesce(d.doc_type,'KHAC') AS dtype, c.content AS content"
         ).data()
     drv.close()
+
+    # DATA-1 phụ: câu VLQA "miss" (văn bản đích KHÔNG có trong corpus) → cộng sự tra vbpl.vn
+    vlqa_jsonl = BENCHMARK_DIR / "vietlawbench_vlqa.jsonl"
+    if vlqa_jsonl.exists():
+        neo_norm = {normalize_doc_number(x) for x in dns}
+        miss = []
+        with open(vlqa_jsonl, encoding="utf-8") as vf:
+            for line in vf:
+                line = line.strip()
+                if not line:
+                    continue
+                c = json.loads(line)
+                golds = [g for g in (c.get("ground_truth_doc_numbers") or [c.get("ground_truth_doc_number")]) if g]
+                if golds and not any(normalize_doc_number(x) in neo_norm for x in golds):
+                    miss.append(c)
+        with open(out_dir / "vlqa_miss.csv", "w", newline="", encoding="utf-8-sig") as f:
+            w = _csv.writer(f)
+            w.writerow(["benchmark_id", "law_ids", "query", "phan_loai", "ghi_chu"])
+            for c in miss:
+                w.writerow([c.get("benchmark_id"),
+                            " | ".join(map(str, c.get("ground_truth_doc_numbers") or [])),
+                            (c.get("query") or "")[:120], "", ""])
+        logger.info("✓ DATA-1 (miss): %d câu VLQA có văn bản đích ngoài corpus → vlqa_miss.csv", len(miss))
+    else:
+        logger.info("Bỏ qua phần miss: chưa có %s (chạy `python -m tests._common.datasets.load_vlqa` trước).", vlqa_jsonl)
+
     if not rows:
         logger.warning("Không có chunk để lấy mẫu Cochran."); return
     # phân tầng theo doc_type, tỉ lệ theo quần thể
@@ -136,10 +162,9 @@ def export_from_neo4j(out_dir: Path, cochran_n: int):
     import csv
     with open(out_dir / "cochran_sample_382.csv", "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        w.writerow(["chunk_id", "doc_number", "doc_type", "content",
-                    "nhan_SACH_BAN", "co_OCR", "co_lechnganh", "co_trunglap", "co_catcut", "ly_do"])
+        w.writerow(["chunk_id", "doc_number", "doc_type", "content", "nhan_A", "nhan_B", "ly_do"])
         for r in sample:
-            w.writerow([r["cid"], r["dn"], r["dtype"], str(r["content"])[:1200], "", "", "", "", "", ""])
+            w.writerow([r["cid"], r["dn"], r["dtype"], str(r["content"])[:1200], "", "", ""])
     logger.info("✓ 1.6: mẫu Cochran %d chunk (phân tầng %d loại) → cochran_sample_382.csv",
                 len(sample), len(by))
 
