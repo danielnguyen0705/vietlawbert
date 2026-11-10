@@ -1,0 +1,2 @@
+# MẪU — thay bằng gold thật: python -m evaluation.providers.vlqa_to_promptfoo
+- vars: { query: "VÍ DỤ — thay bằng câu hỏi VLQA", expected_doc: "XX/YYYY/QĐ-UBND" }

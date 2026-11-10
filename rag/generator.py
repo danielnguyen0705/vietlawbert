@@ -218,6 +218,38 @@ class ResilientLLMDispatcher:
         logger.error("Toàn bộ chuỗi Cascade đều thất bại. Lỗi cuối cùng: %s", last_exception)
         return "Lỗi hệ thống: Hiện không thể kết nối tới bất kỳ dịch vụ AI nào để tổng hợp câu trả lời.", "Failed"
 
+    def generate_stream(self, prompt: str, temperature: float = 0.1, max_tokens: int = 1024):
+        """Bản STREAM của generate: yield (delta_text, provider_name) từng mẩu; cascade fallback như generate."""
+        last_exception = None
+        for node in self.cascade_chain:
+            try:
+                client = self._get_client(node)
+                stream = client.chat.completions.create(
+                    model=node.model_id,
+                    messages=[
+                        {"role": "system", "content": LEGAL_SYSTEM_INSTRUCTION},
+                        {"role": "user",   "content": prompt},
+                    ],
+                    temperature=temperature, max_tokens=max_tokens, stream=True,
+                )
+                got = False
+                for chunk in stream:
+                    try:
+                        delta = chunk.choices[0].delta.content or ""
+                    except (AttributeError, IndexError, TypeError):
+                        delta = ""
+                    if delta:
+                        got = True
+                        yield delta, node.name
+                if got:
+                    return
+            except Exception as exc:
+                logger.warning("Stream [%s] lỗi (%s) → tầng kế tiếp.", node.name, exc)
+                last_exception = exc
+                continue
+        logger.error("Cascade stream thất bại toàn bộ: %s", last_exception)
+        yield "Lỗi hệ thống: không thể kết nối dịch vụ AI để tổng hợp câu trả lời.", "Failed"
+
 
 class LegalGenerator:
     """Tầng tạo sinh câu trả lời tích hợp kiểm chứng căn cứ và Cascade Fallback tự động."""
@@ -344,6 +376,30 @@ class LegalGenerator:
 
     def generate_response(self, query: str, top_k: int = 3, contexts: Optional[List[Any]] = None) -> Dict[str, Any]:
         return self.ask(query=query, top_k=top_k, contexts=contexts)
+
+    def ask_stream(self, query: str, top_k: int = 3, contexts: Optional[List[Any]] = None):
+        """STREAM của ask: kiểm guardrail/abstain TRƯỚC, rồi yield dần câu trả lời.
+        Yield dict {type:'token', delta, answer} ... và cuối cùng {type:'done', ...}. Dùng cho Gradio."""
+        clean_query = query.strip()
+        if detect_prompt_injection(clean_query):
+            yield {"type": "done", "refused": True, "model_used": "Guardrail", "contexts": [],
+                   "answer": "Xin lỗi, câu hỏi có dấu hiệu yêu cầu lách luật hoặc vi phạm quy chuẩn pháp lý nên không thể hỗ trợ.",
+                   "attribution_score": 0.0, "citation_ok": False}
+            return
+        retrieved = contexts if contexts is not None else self.retriever.retrieve(clean_query, top_k=top_k)
+        if should_abstain(retrieved, float(getattr(config, "ABSTAIN_MIN_SCORE", 0.0))):
+            yield {"type": "done", "refused": True, "model_used": "None", "contexts": retrieved or [],
+                   "answer": "Cơ sở dữ liệu hiện tại không đủ căn cứ pháp lý để giải đáp thắc mắc này.",
+                   "attribution_score": 0.0, "citation_ok": False}
+            return
+        prompt = LEGAL_PROMPT_TEMPLATE.format(context_blocks=self._format_context(retrieved), query=clean_query)
+        acc, provider = "", "stream"
+        for delta, prov in self.dispatcher.generate_stream(prompt, temperature=self.temperature, max_tokens=self.max_tokens):
+            acc += delta; provider = prov
+            yield {"type": "token", "delta": delta, "answer": acc}
+        attr = self._compute_attribution_score(acc, retrieved)
+        yield {"type": "done", "refused": False, "model_used": provider, "contexts": retrieved,
+               "answer": acc, "attribution_score": attr, "citation_ok": bool(attr > 0.0)}
 
     def close(self) -> None:
         if hasattr(self.retriever, "close"):

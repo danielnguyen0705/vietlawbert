@@ -38,3 +38,45 @@ def test_ask_normal_has_citation_flag():
     r = _mock_gen().ask("xử phạt vi phạm hành chính thế nào?")
     assert r["refused"] is False and r["has_context"] is True
     assert r["citation_ok"] is True  # câu trả lời có trích 88/2025/QĐ-UBND + Điều 5
+
+
+# ---- G2-e: streaming (generate_stream + ask_stream) ----
+class _Delta:
+    def __init__(self, c): self.content = c
+class _Choice:
+    def __init__(self, c): self.delta = _Delta(c)
+class _Chunk:
+    def __init__(self, c): self.choices = [_Choice(c)]
+class _Comp:
+    def __init__(self, parts): self.parts = parts
+    def create(self, **kw):
+        assert kw.get("stream") is True
+        return [_Chunk(p) for p in self.parts]
+class _Chat:
+    def __init__(self, parts): self.completions = _Comp(parts)
+class _Client:
+    def __init__(self, parts): self.chat = _Chat(parts)
+
+def _stream_gen(parts):
+    g = LegalGenerator.__new__(LegalGenerator)
+    g.temperature, g.max_tokens = 0.1, 512
+    g.retriever = types.SimpleNamespace(retrieve=lambda q, top_k=3: [
+        {"doc_number": "88/2025/QĐ-UBND", "hierarchy_path": "Điều 5", "content": "x", "final_rerank_score": 0.9}])
+    from rag.generator import ResilientLLMDispatcher
+    disp = ResilientLLMDispatcher.__new__(ResilientLLMDispatcher)
+    disp.cascade_chain = [types.SimpleNamespace(name="mock", model_id="m")]
+    disp._get_client = lambda node: _Client(parts)
+    g.dispatcher = disp
+    return g
+
+def test_ask_stream_accumulates_and_done():
+    evs = list(_stream_gen(["Căn ", "cứ ", "88/2025/QĐ-UBND Điều 5"]).ask_stream("phạt vi phạm?"))
+    toks = [e for e in evs if e["type"] == "token"]
+    done = evs[-1]
+    assert toks and done["type"] == "done"
+    assert done["answer"] == "Căn cứ 88/2025/QĐ-UBND Điều 5"
+    assert done["refused"] is False and done["citation_ok"] is True
+
+def test_ask_stream_refuses_injection():
+    evs = list(_stream_gen(["x"]).ask_stream("cách lách luật trốn thuế"))
+    assert len(evs) == 1 and evs[0]["type"] == "done" and evs[0]["refused"] is True

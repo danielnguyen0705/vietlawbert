@@ -1,0 +1,24 @@
+# Tier 4 — Benchmark truy xuất lai (Hit@K, MRR, SLA P95<500ms). Đề cương §VI.
+# Chạy:  npx promptfoo eval -c evaluation/configs/promptfooconfig.retrieval.yaml
+# Providers đã có sẵn: tests/_common/providers/retrieval_provider.py (call_api).
+description: "VietLawBERT Tier-4 Retrieval Benchmark (ablation Dense/Sparse/Hybrid)"
+providers:
+  - id: "python:tests/_common/providers/retrieval_provider.py"
+    label: "hybrid-256d"
+    config: { mode: "hybrid", top_k: 10, mrl_dim: 256 }
+  - id: "python:tests/_common/providers/retrieval_provider.py"
+    label: "sparse-bm25"
+    config: { mode: "sparse", top_k: 10 }
+  - id: "python:tests/_common/providers/retrieval_provider.py"
+    label: "dense-256d"
+    config: { mode: "dense", top_k: 10, mrl_dim: 256 }
+# Sinh từ VLQA bằng: python -m evaluation.providers.vlqa_to_promptfoo
+tests: file://../datasets/promptfoo_retrieval_tests.yaml
+defaultTest:
+  assert:
+    - type: latency
+      threshold: 500          # cam kết SLA P-latency < 500ms
+    - type: javascript        # Hit@K cấp văn bản: kết quả phải chứa doc_number đích
+      value: |
+        const out = typeof output === 'string' ? output : JSON.stringify(output);
+        return out.includes(context.vars.expected_doc) ? 1 : 0;

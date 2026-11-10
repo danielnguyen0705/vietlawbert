@@ -16,6 +16,24 @@ from providers.retrieval_provider import call_api
 
 from _common.paths import DATASETS_DIR
 
+
+def _es_gold_coverage(gold_doc_numbers):
+    """Đếm bao nhiêu văn bản gold của mẫu ĐANG có trong ES index.
+    Trả None nếu không kiểm được (ES unreachable) → để test giữ nguyên hành vi gốc."""
+    try:
+        from elasticsearch import Elasticsearch
+        from configs.config import config
+        es = Elasticsearch(config.ES_HOST)
+        if not es.ping():
+            return None
+        terms = [g for g in gold_doc_numbers if g]
+        if not terms:
+            return 0
+        return int(es.count(index=config.ES_INDEX_NAME,
+                            query={"terms": {"doc_number.keyword": terms}})["count"])
+    except Exception:
+        return None
+
 BENCHMARK_FILE = DATASETS_DIR / "demo.json"
 
 # Đăng ký marker Tầng 4 để `pytest -m tier4` chọn được bộ test này.
@@ -108,6 +126,16 @@ class TestHybridRRFAndSLA:
         hit_rate = doc_hits / len(vietlawbench_samples)
         latencies.sort()
         avg_latency = sum(latencies) / len(latencies)
+
+        # Cổng data-aware: nếu KHÔNG văn bản gold nào của mẫu nằm trong index (ES mới ~1.6k doc cũ,
+        # chưa embed đủ corpus — WP1.7), Hit@5 không đo được end-to-end → SKIP thay vì fail giả.
+        # Nếu gold CÓ trong index mà Hit@5 vẫn thấp → đó là lỗi truy xuất thật, vẫn FAIL như cũ.
+        if doc_hits == 0:
+            gold = [str(it["vars"].get("ground_truth_doc_number", "")).strip() for it in vietlawbench_samples]
+            covered = _es_gold_coverage(gold)
+            if covered == 0:
+                pytest.skip("Index chưa chứa văn bản gold của mẫu (WP1.7 chưa embed đủ corpus) — "
+                            "Hit@5 chỉ đo được sau vòng cloud embed.")
 
         print(f"\n[Kết quả Tầng 4] Doc Hit@5 (Zero-shot Baseline): {hit_rate * 100:.1f}% ({doc_hits}/{len(vietlawbench_samples)})")
         print(f"[Kết quả Tầng 4] Độ trễ trung bình trên CPU máy trạm: {avg_latency:.1f}ms")
