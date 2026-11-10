@@ -83,9 +83,27 @@ class HybridASTParser:
         # Khối phụ lục đính kèm (Quyết định 'ban hành kèm theo' QUY CHẾ/QUY ĐỊNH…) — có hệ Điều RIÊNG
         self.re_attached = re.compile(r'^(QUY CHẾ|QUY ĐỊNH|ĐIỀU LỆ|NỘI QUY|QUY TRÌNH|QUY CHUẨN)\b')
 
+    # Ranh giới cấu trúc để khôi phục văn bản bị mất ký tự xuống dòng (HTML phẳng 1 dòng).
+    _RE_FLAT_BOUNDARY = re.compile(r"(?=(?:ĐIỀU|Điều|CHƯƠNG|Chương|MỤC|Mục|PHẦN|Phần)\s+(?:thứ\s+|[IVXLCDM\d]))")
+
+    def _resplit_if_flat(self, text: str) -> str:
+        """Nếu văn bản bị dồn thành 1-2 dòng khổng lồ (crawler trả HTML phẳng), chèn lại
+        ký tự xuống dòng TRƯỚC mỗi mốc Phần/Chương/Mục/Điều để parser dòng-cơ-sở hoạt động.
+        Chỉ kích hoạt khi phát hiện dồn dòng (tránh đụng văn bản bình thường)."""
+        lines = [l for l in text.splitlines() if l.strip()]
+        if not lines:
+            return text
+        longest = max(len(l) for l in lines)
+        flat = (longest > 3000) or (len(lines) <= 2 and len(text) > 1500)
+        if not flat:
+            return text
+        return self._RE_FLAT_BOUNDARY.sub("\n", text)
+
     def parse_document(self, text: str, metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
         if not text or not text.strip():
             return []
+
+        text = self._resplit_if_flat(text)
 
         doc_id = str(metadata.get("doc_id") or metadata.get("item_id") or "UNKNOWN_DOC")
         doc_number = str(metadata.get("doc_number") or metadata.get("docNum") or "N/A")

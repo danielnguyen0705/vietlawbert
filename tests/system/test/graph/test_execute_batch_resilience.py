@@ -57,3 +57,51 @@ def test_permanent_failure_counts_dropped(monkeypatch):
     assert total == 5             # sub-batch sau vẫn nạp được
     assert c.last_dropped == 5    # 5 bản ghi lỗi bị đếm, KHÔNG âm thầm
     assert c._dropped_total == 5
+
+
+# ---- G1-c: drop_database ưu tiên server-side, fallback khi cú pháp cũ ----
+class _Counters:
+    nodes_deleted = 123
+
+class _Summary:
+    counters = _Counters()
+
+class _DropSess:
+    def __init__(self, drv): self.drv = drv
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def run(self, cypher, **kw):
+        self.drv.queries.append(cypher)
+        if "IN TRANSACTIONS" in cypher:
+            if self.drv.server_fails:
+                raise RuntimeError("Neo.ClientError.Statement.SyntaxError: CALL {} IN TRANSACTIONS")
+            return _DropConsume()
+        # fallback loop: xóa hết trong 1 lô rồi 0
+        self.drv.loop_calls += 1
+        n = 5 if self.drv.loop_calls == 1 else 0
+        return _DropSingle(n)
+
+class _DropConsume:
+    def consume(self): return _Summary()
+
+class _DropSingle:
+    def __init__(self, n): self.n = n
+    def single(self): return {"c": self.n}
+
+class _DropDriver:
+    def __init__(self, server_fails): self.server_fails=server_fails; self.queries=[]; self.loop_calls=0
+    def session(self): return _DropSess(self)
+
+def _drop_client(driver):
+    c = Neo4jClient.__new__(Neo4jClient); c.driver = driver; return c
+
+def test_drop_uses_server_side_when_available():
+    d = _DropDriver(server_fails=False)
+    _drop_client(d).drop_database()
+    assert any("IN TRANSACTIONS" in q for q in d.queries)
+    assert d.loop_calls == 0  # KHÔNG rơi vào fallback
+
+def test_drop_falls_back_on_old_neo4j():
+    d = _DropDriver(server_fails=True)
+    _drop_client(d).drop_database()
+    assert d.loop_calls >= 1  # đã fallback vòng lặp client

@@ -51,8 +51,21 @@ class Neo4jClient:
         logger.info("Đã đóng kết nối Neo4j Driver.")
 
     def drop_database(self, batch_size: int = 10000) -> None:
-        # Xóa THEO LÔ (mỗi lô là 1 transaction tự-commit) để tránh OutOfMemory khi graph lớn.
-        logger.warning("Đang dọn sạch toàn bộ Neo4j theo lô (batch=%d)...", batch_size)
+        """Dọn sạch Neo4j. Ưu tiên batch phía SERVER (`CALL {} IN TRANSACTIONS` — nhanh hơn
+        hẳn vòng lặp client, không OOM, chạy cả Community Edition 4.4+). Fallback vòng lặp
+        client nếu bản Neo4j quá cũ không hỗ trợ cú pháp này."""
+        logger.warning("Đang dọn sạch toàn bộ Neo4j (server-side batched, size=%d)...", batch_size)
+        try:
+            with self.driver.session() as session:
+                summary = session.run(
+                    "MATCH (n) CALL { WITH n DETACH DELETE n } IN TRANSACTIONS OF $b ROWS",
+                    b=batch_size,
+                ).consume()
+            deleted = getattr(getattr(summary, "counters", None), "nodes_deleted", "?")
+            logger.info("Đã dọn sạch Neo4j (server-side). Node đã xóa: %s", deleted)
+            return
+        except Exception as exc:
+            logger.warning("CALL{} IN TRANSACTIONS không dùng được (%s) → fallback vòng lặp client.", str(exc)[:80])
         total = 0
         with self.driver.session() as session:
             while True:
@@ -63,7 +76,7 @@ class Neo4jClient:
                 total += c
                 if c == 0:
                     break
-        logger.info("Đã dọn sạch Neo4j: xóa %d node.", total)
+        logger.info("Đã dọn sạch Neo4j (fallback client-loop): xóa %d node.", total)
 
     def create_constraints(self) -> None:
         """Tạo ràng buộc duy nhất và chỉ mục trên LawDocument, Article, Chunk và Relationship."""
