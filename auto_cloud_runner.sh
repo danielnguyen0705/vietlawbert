@@ -11,7 +11,11 @@ set -e
 CLOUD_IP="${1:-159.48.242.34}"
 CLOUD_PORT="${2:-21607}"
 CLOUD_USER="${3:-root}"
-CLOUD_PASS="${4:-rri_4A2pzrbrg2E30sAT}"
+CLOUD_PASS="${4:-${CLOUD_PASS:-}}"
+if [ -z "$CLOUD_PASS" ]; then
+  read -r -s -p "Mat khau cloud (khong hien thi, KHONG commit vao file): " CLOUD_PASS
+  echo
+fi
 REMOTE="${CLOUD_USER}@${CLOUD_IP}"
 
 LOCAL_DIR="/home/dell/Desktop/vietlawbert"
@@ -61,6 +65,7 @@ rsync -avP -e "ssh -p ${CLOUD_PORT} -o StrictHostKeyChecking=no" \
   --exclude "*.gz" \
   --exclude "*.zip" \
   --exclude "benchmark/results" \
+  --exclude "artifacts/triplets" \
   --exclude "artifacts/graph_embeddings_128d.parquet" \
   --exclude "artifacts/triplets/dry_run_triplets.parquet" \
   ${LOCAL_DIR}/ ${REMOTE}:${REMOTE_DIR}/

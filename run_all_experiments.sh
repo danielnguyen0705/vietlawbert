@@ -53,6 +53,41 @@ echo "Thời gian bắt đầu : $(date)"
 echo "=================================================================="
 
 # ==============================================================================
+# PHA DỮ LIỆU (hợp nhất từ run_p0_to_p4.sh) — mặc định BẬT cho máy MỚI.
+#   crawl → ingest(embed Qdrant/ES) → graph(canonical) → gate khóa → re-mine triplet SẠCH.
+#   BUILD_DATA=0 để BỎ QUA (resume khi graph/embed đã có).
+#   YÊU CẦU: Neo4j/Qdrant/ES đang chạy (vd: docker compose up -d).
+# ==============================================================================
+BUILD_DATA="${BUILD_DATA:-1}"
+if [ "$BUILD_DATA" = "1" ]; then
+    echo ">>> [PHA DỮ LIỆU 0/4] Bật hạ tầng lưu trữ (Neo4j/Qdrant/ES) qua docker compose..."
+    if command -v docker &>/dev/null; then
+        (docker compose up -d 2>/dev/null || docker-compose up -d 2>/dev/null) \
+            || echo "  [!] docker compose không chạy được — đảm bảo Neo4j/Qdrant/ES đã bật thủ công."
+        echo "    (chờ 15s cho services sẵn sàng...)"; sleep 15
+    else
+        echo "  [!] Không có docker — đảm bảo Neo4j/Qdrant/ES đã chạy sẵn trước khi tiếp."
+    fi
+
+    echo ">>> [PHA DỮ LIỆU 1/4] crawl → ingest → graph (canonical, từ đầu)..."
+    python3 -u -m main --phase build-data --device "$DEVICE"
+
+    echo ">>> [PHA DỮ LIỆU 2/4] Gate toàn vẹn khóa (no-dup + canonical + cross-store)..."
+    if ! python3 -m pytest tests/system/test/global_id/test_id_consistency.py -q; then
+        echo "✗ Gate khóa ĐỎ — DỪNG trước khi train để tránh phí GPU."
+        exit 1
+    fi
+
+    echo ">>> [PHA DỮ LIỆU 3/4] Nạp VLQA + đo độ phủ..."
+    python3 -u -m tests._common.datasets.load_vlqa || true
+
+    echo ">>> [PHA DỮ LIỆU 4/4] Re-mine triplet SẠCH trên graph mới (xoá bản cũ stale)..."
+    rm -f "$PARQUET_FILE"
+else
+    echo ">>> [PHA DỮ LIỆU] BỎ QUA (BUILD_DATA=0) — dùng graph/triplet sẵn có."
+fi
+
+# ==============================================================================
 # BƯỚC 0: KIỂM TRA VÀ SINH DỮ LIỆU ĐẦU VÀO NẾU CHƯA CÓ
 # ==============================================================================
 if [ ! -f "$PARQUET_FILE" ]; then
@@ -200,6 +235,14 @@ python3 -u -m benchmark.evaluate_rqs \
   --output-dir "$RESULTS_DIR" \
   --device "$DEVICE" \
   --rq "all"
+
+echo ">>> [BƯỚC 4b] Eval NGOẠI VLQA (Hit/MRR/NDCG/MAP@K + P95 + t-test ablation)..."
+python3 -u -m benchmark.evaluate_rqs \
+  --benchmark-dir "$BENCHMARK_DIR" \
+  --checkpoint-path "$TARGET_EVAL_MODEL" \
+  --output-dir "$RESULTS_DIR" \
+  --device "$DEVICE" \
+  --rq vlqa || true
 
 echo "=================================================================="
 echo "✓ HOÀN TẤT 100% QUY TRÌNH THỰC NGHIỆM! CÁC BẢNG ĐIỂM ĐÃ SẴN SÀNG TẠI:"
