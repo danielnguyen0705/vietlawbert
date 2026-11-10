@@ -1,0 +1,5 @@
+dataset,mode,baseline,metric,mean_mode,mean_baseline,mean_diff,t_stat,p_value,n
+vlqa_all_2190,bm25_seg,bm25_plain,NDCG@10,0.3751,0.3360,+0.0391,8.5742,1.8548e-17,2190
+vlqa_all_2190,bm25_seg,bm25_plain,F2@2,0.2625,0.2324,+0.0301,5.4212,6.5730e-08,2190
+vlb_mapped_710,bm25_seg,bm25_plain,NDCG@10,0.4698,0.3891,+0.0807,8.7587,1.4421e-17,710
+vlb_mapped_710,bm25_seg,bm25_plain,F2@2,0.3662,0.2923,+0.0739,6.3787,3.2214e-10,710
