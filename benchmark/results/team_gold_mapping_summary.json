@@ -1,0 +1,58 @@
+{
+  "vlqa": {
+    "total_questions": 2190,
+    "distinct_aids": 2505,
+    "aids_by_decision": {
+      "single": 2326,
+      "split": 33,
+      "missing_doc": 81,
+      "no_match": 39,
+      "weak": 8,
+      "duplicate copies": 18
+    },
+    "questions_by_status": {
+      "overall": {
+        "full": 2066,
+        "unreachable": 109,
+        "partial": 15
+      },
+      "dev": {
+        "full": 468,
+        "unreachable": 28,
+        "partial": 4
+      },
+      "tune": {
+        "full": 1598,
+        "unreachable": 81,
+        "partial": 11
+      }
+    },
+    "questions_with_duplicate_copies": 16,
+    "accepted_mappings_score_distribution": {
+      "P5": 0.9632,
+      "P50": 1.0
+    },
+    "run_time_seconds": 43.1
+  },
+  "vietlawbench": {
+    "total_questions": 729,
+    "questions_by_status": {
+      "mapped": 710,
+      "text_mismatch": 14,
+      "doc_not_found": 5
+    },
+    "questions_by_query_type": {
+      "single_hop": {
+        "mapped": 356,
+        "text_mismatch": 6,
+        "doc_not_found": 2
+      },
+      "multi_hop_candidate": {
+        "mapped": 354,
+        "text_mismatch": 8,
+        "doc_not_found": 3
+      }
+    },
+    "run_time_seconds": 44.7
+  }
+}
