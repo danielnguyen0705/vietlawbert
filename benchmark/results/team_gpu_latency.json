@@ -1,0 +1,28 @@
+{
+  "encode": {
+    "n": 93,
+    "P50_ms": 21.11,
+    "P95_ms": 22.61
+  },
+  "dense": {
+    "n": 93,
+    "P50_ms": 26.64,
+    "P95_ms": 26.72
+  },
+  "rrf": {
+    "n": 93,
+    "P50_ms": 0.16,
+    "P95_ms": 0.18
+  },
+  "rerank": {
+    "n": 93,
+    "P50_ms": 1126.22,
+    "P95_ms": 1156.43
+  },
+  "total_gpu": {
+    "n": 93,
+    "P50_ms": 1175.15,
+    "P95_ms": 1205.01
+  },
+  "note": "GPU = Kaggle T4; BM25 not included (laptop ES, P50 ≈ 42 ms in Task 9C)"
+}
