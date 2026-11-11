@@ -31,6 +31,14 @@ SIGNATURE_PATTERNS = [
     re.compile(r"^\s*Ký\s*(?:như|ngày|tên)\s*[:\.]?", re.IGNORECASE | re.MULTILINE),
 ]
 
+# Mở đầu KHỐI KÝ (biến thể gạch chéo T/M, K/T mà SIGNATURE_PATTERNS cũ bỏ sót; TL./thừa lệnh).
+SIGNATURE_BLOCK_START = re.compile(r"^\s*(?:TM\.|KT\.|TL\.|T\s*/\s*M|K\s*/\s*T|THỪA\s*LỆNH)\b", re.IGNORECASE)
+# Dòng chức danh người ký đứng RIÊNG (chữ ký cuối văn bản: 'PHÓ CHỦ TỊCH', 'BỘ TRƯỞNG'...).
+SIGNATURE_TITLE_LINE = re.compile(
+    r"^\s*(?:CHỦ\s*TỊCH|PHÓ\s*CHỦ\s*TỊCH|THỨ\s*TRƯỞNG|BỘ\s*TRƯỞNG|TỔNG\s*GIÁM\s*ĐỐC|GIÁM\s*ĐỐC"
+    r"|TỔNG\s*CỤC\s*TRƯỞNG|CỤC\s*TRƯỞNG|VỤ\s*TRƯỞNG|CHÁNH\s*ÁN|VIỆN\s*TRƯỞNG)\s*$",
+    re.IGNORECASE)
+
 NOI_NHAN_START_PATTERN = re.compile(r"^\s*(?:[-*]\s*)?Nơi\s*nhận\s*[:\.]?", re.IGNORECASE)
 STRUCTURAL_BOUNDARY_PATTERN = re.compile(
     r"^\s*(?:#{1,6}\s*|Điều\s+\d+[a-zA-Z]?|CHƯƠNG\s+[IVXLCDM\d]+|MỤC\s+\d+|PHẦN\s+[IVXLCDM\d]+)",
@@ -61,6 +69,7 @@ def clean_boilerplate(text: str, keep_preamble: bool = False) -> str:
     lines = text.split("\n")
     cleaned_lines = []
     in_noi_nhan = False
+    in_signature = False
     body_started = False
 
     for line in lines:
@@ -71,6 +80,14 @@ def clean_boilerplate(text: str, keep_preamble: bool = False) -> str:
 
         if STRUCTURAL_BOUNDARY_PATTERN.match(stripped):
             body_started = True
+            in_signature = False   # một Điều/Chương mới → kết thúc khối ký (nếu đang mở)
+
+        # Khối ký: một khi mở, bỏ mọi dòng (chức danh + tên người ký) đến ranh giới cấu trúc kế.
+        if in_signature:
+            continue
+        if SIGNATURE_BLOCK_START.match(stripped) or SIGNATURE_TITLE_LINE.match(stripped):
+            in_signature = True
+            continue
 
         if NOI_NHAN_START_PATTERN.match(stripped):
             in_noi_nhan = True

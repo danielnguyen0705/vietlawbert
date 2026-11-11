@@ -80,8 +80,12 @@ class HybridASTParser:
         self.re_article = re.compile(r'^(?:ĐIỀU|Điều)\s+(\d+[a-zA-Z]?)[\.:\s]*(.*)$', re.MULTILINE)
         self.re_clause = re.compile(r'^(?:[*_]{0,2})(\d+)[\.\)\/][\s\xa0]+(.*)$')
         self.re_point = re.compile(r'^(?:[*_]{0,2})([a-zđ])[\.\)\/][\s\xa0]+(.*)$', re.IGNORECASE)
-        # Khối phụ lục đính kèm (Quyết định 'ban hành kèm theo' QUY CHẾ/QUY ĐỊNH…) — có hệ Điều RIÊNG
-        self.re_attached = re.compile(r'^(QUY CHẾ|QUY ĐỊNH|ĐIỀU LỆ|NỘI QUY|QUY TRÌNH|QUY CHUẨN)\b')
+        # Khối phụ lục đính kèm (Quyết định 'ban hành kèm theo' QUY CHẾ/QUY ĐỊNH…) — có hệ Điều RIÊNG.
+        # Negative lookahead: KHÔNG bắt 'QUY ĐỊNH CHUNG/CỤ THỂ/CHI TIẾT/CHUNG...' vì đó là TIÊU ĐỀ
+        # CHƯƠNG trong chính văn bản, không phải văn bản đính kèm → tránh gán nhãn hierarchy tùy hứng.
+        self.re_attached = re.compile(
+            r'^(QUY CHẾ|QUY ĐỊNH|ĐIỀU LỆ|NỘI QUY|QUY TRÌNH|QUY CHUẨN)\b'
+            r'(?!\s+(?:CHUNG|CỤ\s+THỂ|CHI\s+TIẾT|CHUYÊN))')
 
     # Ranh giới cấu trúc để khôi phục văn bản bị mất ký tự xuống dòng (HTML phẳng 1 dòng).
     _RE_FLAT_BOUNDARY = re.compile(r"(?=(?:ĐIỀU|Điều|CHƯƠNG|Chương|MỤC|Mục|PHẦN|Phần)\s+(?:thứ\s+|[IVXLCDM\d]))")
@@ -151,12 +155,14 @@ class HybridASTParser:
             m_part = self.re_part.match(line)
             if m_part:
                 flush_article_buffer()
+                current_art_num = None   # ranh giới Phần ĐÓNG điều trước: không gán dòng sau vào số Điều cũ
                 tracker.reset_part(f"Phần {m_part.group(1)}")
                 continue
 
             m_chap = self.re_chapter.match(line)
             if m_chap:
                 flush_article_buffer()
+                current_art_num = None   # ranh giới Chương ĐÓNG điều trước (sửa lỗi 'art_4 nhưng nội dung Điều 5')
                 chap_title = m_chap.group(2).strip()
                 tracker.reset_chapter(f"Chương {m_chap.group(1)}" + (f" - {chap_title}" if chap_title else ""))
                 continue
@@ -164,6 +170,7 @@ class HybridASTParser:
             m_sec = self.re_section.match(line)
             if m_sec:
                 flush_article_buffer()
+                current_art_num = None   # ranh giới Mục ĐÓNG điều trước
                 sec_title = m_sec.group(2).strip()
                 tracker.reset_section(f"Mục {m_sec.group(1)}" + (f" - {sec_title}" if sec_title else ""))
                 continue
@@ -180,8 +187,9 @@ class HybridASTParser:
 
             if current_art_num:
                 current_article_lines.append(line)
-            else:
-                if len(line) > 40:
+            elif len(line) > 40:
+                if not seen_article:
+                    # Tiền văn THẬT (trước Điều đầu tiên) = căn cứ ban hành.
                     raw_text_chunk = f"{meta_header}[HIERARCHY] Căn cứ pháp lý\n[CONTENT] {line}"
                     chunks.append({
                         "chunk_id": f"{doc_id}_preamble_{len(chunks)}",
@@ -191,6 +199,23 @@ class HybridASTParser:
                         "article_num": "",
                         "macro_label": "CAN_CU",
                         "hierarchy_path": "Lời mở đầu / Căn cứ ban hành",
+                        "text": raw_text_chunk,
+                        "content": raw_text_chunk,
+                        "metadata": metadata,
+                    })
+                else:
+                    # Dòng mồ côi SAU tiêu đề chương/mục (không còn Điều hiện hành) — KHÔNG phải căn cứ.
+                    # Gắn đúng ngữ cảnh chương hiện tại thay vì dán nhãn 'Căn cứ pháp lý' tùy hứng.
+                    h_path = tracker.get_hierarchy_path()
+                    raw_text_chunk = f"{meta_header}[HIERARCHY] {h_path}\n[CONTENT] {line}"
+                    chunks.append({
+                        "chunk_id": f"{doc_id}_section_{len(chunks)}",
+                        "doc_id": doc_id,
+                        "doc_number": doc_number,
+                        "article_id": "",
+                        "article_num": "",
+                        "macro_label": tracker.get_macro_label(),
+                        "hierarchy_path": h_path,
                         "text": raw_text_chunk,
                         "content": raw_text_chunk,
                         "metadata": metadata,

@@ -20,6 +20,25 @@ from configs.paths import RAW_HTML_DIR, PROCESSED_DIR, get_log_path
 logger = get_subsystem_logger("preprocess", "html_to_md")
 
 
+def tables_to_markdown(soup):
+    """Chuyển mỗi <table> thành bảng Markdown dạng pipe (giữ hàng/cột) rồi thay node bảng bằng
+    text đã định dạng. Chạy TRƯỚC get_text()/html2text để bảng không bị dẹt thành các dòng token rời
+    (lỗi ca 16/2026/QĐ-UBND: STT/Hạng mục/Cơ cấu% tách dòng, số lìa khỏi nhãn)."""
+    from bs4 import NavigableString
+    for table in soup.find_all("table"):
+        rows_md = []
+        for i, tr in enumerate(table.find_all("tr")):
+            cells = tr.find_all(["td", "th"])
+            if not cells:
+                continue
+            vals = [re.sub(r"\s+", " ", c.get_text(" ", strip=True)).replace("|", r"\|") for c in cells]
+            rows_md.append("| " + " | ".join(vals) + " |")
+            if len(rows_md) == 1:   # tách header sau hàng đầu → bảng Markdown hợp lệ
+                rows_md.append("| " + " | ".join(["---"] * len(vals)) + " |")
+        table.replace_with(NavigableString("\n" + "\n".join(rows_md) + "\n" if rows_md else ""))
+    return soup
+
+
 class HTMLConverter:
     def __init__(self):
         self.h2t = html2text.HTML2Text()
@@ -44,7 +63,10 @@ class HTMLConverter:
             or soup.find("div", class_="content")
             or soup.find("body")
         )
-        return str(main_content) if main_content else html_content
+        if main_content:
+            tables_to_markdown(main_content)   # bảo toàn bảng trước khi html2text dẹt
+            return str(main_content)
+        return html_content
 
     @staticmethod
     def normalize_legal_markdown(text: str) -> str:

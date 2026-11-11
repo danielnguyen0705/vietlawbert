@@ -27,6 +27,37 @@ from crawler.shard_runner import write_json_atomic
 
 logger = get_subsystem_logger("crawler", "ocr_runner")
 
+# --- Cổng chất lượng OCR: chặn text vỡ (encoding/scan kém: "O6i vOi t6 chric") lọt vào corpus ---
+_VI_VOWELS = set("aeiouyàáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵ"
+                 "AEIOUYÀÁẢÃẠĂẰẮẲẴẶÂẦẤẨẪẬÈÉẺẼẸÊỀẾỂỄỆÌÍỈĨỊÒÓỎÕỌÔỒỐỔỖỘƠỜỚỞỠỢÙÚỦŨỤƯỪỨỬỮỰỲÝỶỸỴ")
+_GARBAGE = set("€£¥©®•‡†¢¤§¶<>|\\~^`")
+
+
+def ocr_broken_ratio(text: str) -> float:
+    """Tỉ lệ token 'vỡ': chứa ký tự rác, hoặc chữ-số-chữ (O6i), hoặc token thường >=3 chữ KHÔNG
+    có nguyên âm (sd, phdp, lflp). Dùng để quyết định cách ly tái-OCR."""
+    import re as _re
+    toks = [t for t in _re.findall(r"\S+", text or "") if any(c.isalpha() for c in t)]
+    if not toks:
+        return 0.0
+    broken = 0
+    for t in toks:
+        core = t.strip(".,;:()[]{}\"'…–—-/")
+        if any(c in _GARBAGE for c in t):
+            broken += 1; continue
+        if _re.search(r"\d+\s*[/\-]", core) or core.replace(",", "").replace(".", "").isdigit():
+            continue
+        if _re.search(r"[A-Za-zÀ-ỹ]\d[A-Za-zÀ-ỹ]", core):
+            broken += 1; continue
+        alpha = [c for c in core if c.isalpha()]
+        if len(alpha) >= 3 and not core.isupper() and not _re.match(r"^[IVXLCDM]+$", core, _re.I) \
+                and not any(c in _VI_VOWELS for c in core):
+            broken += 1
+    return broken / len(toks)
+
+
+OCR_BROKEN_THRESHOLD = float(getattr(config, "OCR_BROKEN_THRESHOLD", 0.12))
+
 
 def pending_records(path: Path) -> List[Dict[str, Any]]:
     if not path.exists():
@@ -64,7 +95,7 @@ def perform_tesseract_ocr(pdf_bytes: bytes, max_pages: int = 50) -> str:
         total_pages = min(len(doc), max_pages)
         for page_idx in range(total_pages):
             page = doc[page_idx]
-            pix = page.get_pixmap(dpi=200)
+            pix = page.get_pixmap(dpi=300)   # 200→300: nhận dạng tiếng Việt có dấu tốt hơn, giảm text vỡ
             img = Image.open(io.BytesIO(pix.tobytes("png")))
             text = pytesseract.image_to_string(img, lang="vie")
             if text.strip():
@@ -93,17 +124,28 @@ def process_quarantine_record(record: Dict[str, Any]) -> Dict[str, Any]:
             pdf_data = response.read()
 
         extracted_text = perform_tesseract_ocr(pdf_data)
-        if len(extracted_text.strip()) >= 100:
-            rec["html_status"] = "VALID"
-            rec["ocr_status"] = "OCR_COMPLETED"
-            rec["rescue_status"] = "OCR_RECOVERED"
-            rec["content_source"] = "tesseract_ocr"
-            clean_html = "<html><body><pre>" + html_lib.escape(extracted_text) + "</pre></body></html>"
-            rec["html_raw"] = clean_html
-            rec["full_text"] = extracted_text
-            rec["text"] = extracted_text
-        else:
+        if len(extracted_text.strip()) < 100:
             rec["ocr_status"] = "OCR_EMPTY_RESULT"
+            return rec
+
+        broken = ocr_broken_ratio(extracted_text)
+        if broken > OCR_BROKEN_THRESHOLD:
+            # Text vỡ (encoding/scan kém) — KHÔNG nạp vào corpus; cách ly để tái-OCR (engine mạnh hơn).
+            rec["ocr_status"] = "OCR_LOW_QUALITY"
+            rec["ocr_broken_ratio"] = round(broken, 4)
+            logger.warning("OCR vỡ %.1f%% (ngưỡng %.0f%%) — cách ly %s để tái-OCR",
+                           broken * 100, OCR_BROKEN_THRESHOLD * 100, rec.get("item_id"))
+            return rec
+
+        rec["html_status"] = "VALID"
+        rec["ocr_status"] = "OCR_COMPLETED"
+        rec["rescue_status"] = "OCR_RECOVERED"
+        rec["content_source"] = "tesseract_ocr"
+        rec["ocr_broken_ratio"] = round(broken, 4)
+        clean_html = "<html><body><pre>" + html_lib.escape(extracted_text) + "</pre></body></html>"
+        rec["html_raw"] = clean_html
+        rec["full_text"] = extracted_text
+        rec["text"] = extracted_text
     except Exception as exc:
         logger.warning("Không thể OCR tài liệu %s: %s", rec.get("item_id"), exc)
         rec["ocr_status"] = "OCR_NETWORK_ERROR"

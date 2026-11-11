@@ -282,6 +282,11 @@ class LegalOntologyMappingPipeline:
         if not item.get("text") and item.get("html_raw"):
             try:
                 soup = BeautifulSoup(item["html_raw"], "html.parser")
+                try:
+                    from preprocess.html_to_md import tables_to_markdown
+                    tables_to_markdown(soup)   # giữ bảng dạng pipe TRƯỚC get_text (chống dẹt bảng)
+                except Exception:
+                    pass
                 raw_text = soup.get_text("\n", strip=True)
                 del soup
                 item["text"] = raw_text
