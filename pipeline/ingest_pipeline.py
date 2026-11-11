@@ -27,7 +27,7 @@ except Exception:
 from sentence_transformers import SentenceTransformer
 
 from configs.config import config
-from configs.global_id import canonical_doc_id, normalize_doc_number
+from configs.global_id import canonical_doc_id, normalize_doc_number, compute_record_doc_id
 from configs.paths import RAW_SHARDS_DIR
 from preprocess.ast_parser import HybridASTParser
 from database.qdrant_client import QdrantClientWrapper
@@ -205,8 +205,8 @@ class IngestPipelineWorker:
                         or "N/A"
                     )
                     _crawler_id = str(doc_record.get("doc_id") or doc_record.get("item_id") or f"doc_{line_idx}")
-                    # KHÓA TOÀN CỤC: doc_id tất định từ doc_number (đồng nhất Neo4j/Qdrant/ES).
-                    doc_id = canonical_doc_id(doc_number) or _crawler_id
+                    # KHÓA TOÀN CỤC: doc_id tất định từ bản ghi (có version cho VBHN; DÙNG CHUNG với build_graph).
+                    doc_id = compute_record_doc_id(doc_record) or _crawler_id
 
                     # Nạp CÓ MỤC TIÊU: chỉ giữ doc nằm trong tập mục tiêu (nếu được set).
                     if getattr(self, "only_docs", None) is not None and normalize_doc_number(doc_number) not in self.only_docs:

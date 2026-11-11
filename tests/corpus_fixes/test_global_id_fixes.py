@@ -1,6 +1,11 @@
 # -*- coding: utf-8 -*-
 """Kiểm doc_type_and_rank (quét toàn ký hiệu + cứu tiêu đề) và canonical_doc_id disambiguator."""
-from configs.global_id import doc_type_and_rank, canonical_doc_id, detect_collisions
+from configs.global_id import (doc_type_and_rank, canonical_doc_id, detect_collisions,
+                               compute_record_doc_id, resolve_target_id, is_collision_prone)
+
+
+def _rec(dn, issue="", org=""):
+    return {"doc_number": dn, "issue_date": issue, "co_quan": org}
 
 
 # --- doc_type: các ca ĐÃ xác minh tay trên mẫu Cochran bị gán sai 'Khác' ---
@@ -53,6 +58,36 @@ def test_canonical_disambiguator_tach_ban_trung_so_hieu():
     b = canonical_doc_id("30/VBHN-NHNN", sign_date="2016-07-09", issuer="NHNN")
     assert a != b                                  # cùng số hiệu, khác ngày → KHÁC id (không gộp)
     assert a.startswith("30-VBHN-NHNN-") and b.startswith("30-VBHN-NHNN-")  # slug đọc được giữ nguyên
+
+def test_is_collision_prone_chi_vbhn():
+    assert is_collision_prone("30/VBHN-NHNN")
+    assert not is_collision_prone("03/2015/TT-BYT")
+
+
+def test_compute_record_vbhn_hai_ban_khac_ngay_khac_id():
+    a = compute_record_doc_id(_rec("30/VBHN-NHNN", "2024-08-21", "NHNN"))
+    b = compute_record_doc_id(_rec("30/VBHN-NHNN", "2016-07-09", "NHNN"))
+    assert a and b and a != b                        # 2 bản VBHN KHÔNG gộp
+
+
+def test_compute_record_non_vbhn_tuong_thich_nguoc():
+    # số hiệu thường: version KHÔNG ảnh hưởng → id y hệt canonical trần ⇒ không phá khớp cạnh/ES cũ
+    rid = compute_record_doc_id(_rec("03/2015/TT-BYT", "2015-04-29", "Bộ Y tế"))
+    assert rid == canonical_doc_id("03/2015/TT-BYT")
+
+
+def test_resolve_vbhn_tro_ban_moi_nhat():
+    newer = compute_record_doc_id(_rec("30/VBHN-NHNN", "2024-08-21", "NHNN"))
+    older = compute_record_doc_id(_rec("30/VBHN-NHNN", "2016-07-09", "NHNN"))
+    slug = newer.rsplit("-", 1)[0]
+    latest = {slug: newer}
+    got = resolve_target_id("30/VBHN-NHNN", {}, latest)   # cạnh chỉ có số hiệu trần
+    assert got == newer and got != older                  # trỏ bản mới nhất, không phải bản cũ/plain
+
+
+def test_resolve_non_vbhn_khong_doi():
+    assert resolve_target_id("03/2015/TT-BYT", {}, {"x": "y"}) == canonical_doc_id("03/2015/TT-BYT")
+
 
 def test_detect_collisions_bat_so_hieu_lap():
     recs = [

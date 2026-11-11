@@ -45,7 +45,8 @@ def save_hin_checkpoint(completed: Set[str]) -> None:
         logger.warning("Không thể lưu HIN checkpoint: %s", exc)
 
 
-from configs.global_id import canonical_doc_id, resolve_target_id, doc_type_and_rank
+from configs.global_id import (canonical_doc_id, resolve_target_id, doc_type_and_rank,
+                               compute_record_doc_id, is_collision_prone, _record_fields)
 
 
 class HINGraphBuilder:
@@ -83,7 +84,9 @@ class HINGraphBuilder:
             d.org = doc.org,
             d.issue_date = doc.issue_date,
             d.doc_type = doc.doc_type,
-            d.legal_rank = doc.legal_rank
+            d.legal_rank = doc.legal_rank,
+            d.version = doc.version,
+            d.canonical_group = doc.canonical_group
         """
         return self.client.execute_batch(cypher, docs, batch_size=batch_size)
 
@@ -123,8 +126,10 @@ class HINGraphBuilder:
         """
         return self.client.execute_batch(cypher, relations, batch_size=batch_size)
 
-    def _scan_id_map(self, file_path: Path) -> Dict[str, str]:
-        """Lượt 1: dựng map crawler_id -> doc_number (để canonical hóa đầu ĐÍCH của quan hệ)."""
+    def _scan_id_map(self, file_path: Path, vbhn_acc: Optional[Dict[str, tuple]] = None) -> Dict[str, str]:
+        """Lượt 1: dựng map crawler_id -> doc_number (để canonical hóa đầu ĐÍCH của quan hệ).
+        Nếu truyền vbhn_acc: tích lũy {slug: (sign_date, doc_id)} giữ bản NGÀY KÝ LỚN NHẤT cho các
+        số hiệu lặp (VBHN) — dùng để resolve cạnh về bản mới nhất TOÀN CỤC."""
         op = gzip.open(file_path, "rt", encoding="utf-8") if file_path.suffix == ".gz" else open(file_path, "r", encoding="utf-8")
         m: Dict[str, str] = {}
         with op as f:
@@ -141,13 +146,29 @@ class HINGraphBuilder:
                 dn = str(it.get("doc_number") or md.get("docNum") or ma.get("docNum") or "").strip()
                 if cid and dn:
                     m[cid] = dn
+                if vbhn_acc is not None and dn and is_collision_prone(dn):
+                    did = compute_record_doc_id(it)
+                    if did:
+                        _, sign, _ = _record_fields(it)
+                        slug = did.rsplit("-", 1)[0]
+                        prev = vbhn_acc.get(slug)
+                        if prev is None or str(sign) > str(prev[0]):   # ISO date so sánh chuỗi là đủ
+                            vbhn_acc[slug] = (sign, did)
         logger.info("Khóa toàn cục: quét %d ánh xạ crawler_id→doc_number.", len(m))
         return m
 
-    def build_from_stream(self, file_path: Path, parse_chunks: bool = True, id_map: Optional[Dict[str, str]] = None) -> None:
+    def build_from_stream(self, file_path: Path, parse_chunks: bool = True,
+                          id_map: Optional[Dict[str, str]] = None,
+                          latest_vbhn: Optional[Dict[str, str]] = None) -> None:
         logger.info("Đang nạp dữ liệu đồ thị từ tệp: %s...", file_path.name)
         # Dùng map TOÀN CỤC (mọi shard) nếu được truyền; nếu không, quét riêng file này.
-        self._id_map = id_map if id_map is not None else self._scan_id_map(file_path)
+        if id_map is not None:
+            self._id_map = id_map
+            self._latest_vbhn = latest_vbhn or {}
+        else:
+            _acc: Dict[str, tuple] = {}
+            self._id_map = self._scan_id_map(file_path, vbhn_acc=_acc)
+            self._latest_vbhn = {slug: did for slug, (sign, did) in _acc.items()}
         opener = gzip.open(file_path, "rt", encoding="utf-8") if file_path.suffix == ".gz" else open(file_path, "r", encoding="utf-8")
 
         docs_buffer: List[Dict[str, Any]] = []
@@ -174,8 +195,8 @@ class HINGraphBuilder:
                     or "N/A"
                 )
                 _crawler_id = str(item.get("doc_id") or item.get("item_id") or "")
-                # KHÓA TOÀN CỤC: doc_id tất định từ doc_number (idempotent; đồng nhất xuyên kho).
-                doc_id = canonical_doc_id(doc_number) or _crawler_id or "UNKNOWN"
+                # KHÓA TOÀN CỤC: doc_id tất định từ bản ghi (có version cho VBHN; hàm DÙNG CHUNG với ingest).
+                doc_id = compute_record_doc_id(item) or _crawler_id or "UNKNOWN"
                 title = str(item.get("title") or meta_detail.get("title") or meta_api.get("title") or "")
                 effective_date = str(
                     item.get("effective_date") or meta_detail.get("effFrom") or meta_api.get("effFrom") or ""
@@ -193,7 +214,9 @@ class HINGraphBuilder:
                     or "N/A"
                 )
 
-                _doc_type, _legal_rank = doc_type_and_rank(doc_number)
+                _doc_type, _legal_rank = doc_type_and_rank(doc_number, title)
+                _is_vbhn = is_collision_prone(doc_number)
+                _, _sign, _ = _record_fields(item)
                 metadata = {
                     "doc_id": doc_id,
                     "doc_number": doc_number,
@@ -204,6 +227,8 @@ class HINGraphBuilder:
                     "status": status_raw,
                     "org": org,
                     "issue_date": str(meta_detail.get("issueDate") or meta_api.get("issueDate") or ""),
+                    "version": _sign if _is_vbhn else "",                       # ngày ký (bản VBHN)
+                    "canonical_group": (doc_id.rsplit("-", 1)[0] if _is_vbhn else ""),  # slug gom các bản cùng số hiệu
                 }
                 docs_buffer.append(metadata)
 
@@ -211,7 +236,7 @@ class HINGraphBuilder:
                 if item.get("relationships") and isinstance(item["relationships"], list):
                     for rel in item["relationships"]:
                         _tgt_raw = str(rel.get("target_id") or "").strip()
-                        tgt_id = resolve_target_id(_tgt_raw, self._id_map) or _tgt_raw
+                        tgt_id = resolve_target_id(_tgt_raw, self._id_map, self._latest_vbhn) or _tgt_raw
                         rel_type = str(rel.get("edge_type") or "").strip().upper().replace(" ", "_") or "UNMAPPED"
                         direction = rel.get("direction", "OUTGOING")
                         if tgt_id and tgt_id != doc_id:
@@ -235,7 +260,7 @@ class HINGraphBuilder:
                                     if isinstance(doc_list, list):
                                         for d_entry in doc_list:
                                             _tgt_raw = str(d_entry.get("id") or "").strip()
-                                            tgt = resolve_target_id(_tgt_raw, self._id_map) or _tgt_raw
+                                            tgt = resolve_target_id(_tgt_raw, self._id_map, self._latest_vbhn) or _tgt_raw
                                             if tgt and tgt != doc_id:
                                                 relations_buffer.append({
                                                     "source_id": tgt if is_incoming else doc_id,
@@ -317,16 +342,19 @@ def run_build_hin(
             if not f.name.endswith(".quarantine.jsonl") and not f.name.endswith(".corrupted")
         ])
         logger.info("Tìm thấy %d shards (Đã nạp HIN trước đó: %d).", len(files), len(completed))
-        # Lượt TOÀN CỤC: gộp map crawler_id->doc_number của MỌI shard (để canonical hóa target liên-shard)
+        # Lượt TOÀN CỤC: gộp map crawler_id->doc_number + map bản MỚI NHẤT của mỗi nhóm VBHN (liên-shard)
         global_id_map: Dict[str, str] = {}
+        global_vbhn_acc: Dict[str, tuple] = {}
         for f in files:
-            global_id_map.update(builder._scan_id_map(f))
-        logger.info("Khóa toàn cục (mọi shard): %d ánh xạ crawler_id->doc_number.", len(global_id_map))
+            global_id_map.update(builder._scan_id_map(f, vbhn_acc=global_vbhn_acc))
+        latest_vbhn = {slug: did for slug, (sign, did) in global_vbhn_acc.items()}
+        logger.info("Khóa toàn cục (mọi shard): %d ánh xạ crawler_id->doc_number; %d nhóm VBHN lặp (resolve cạnh về bản mới nhất).",
+                    len(global_id_map), len(latest_vbhn))
         for f in files:
             if f.name in completed:
                 logger.info("[HIN SKIP] Bỏ qua Shard đã nạp: %s", f.name)
                 continue
-            builder.build_from_stream(f, parse_chunks=parse_chunks, id_map=global_id_map)
+            builder.build_from_stream(f, parse_chunks=parse_chunks, id_map=global_id_map, latest_vbhn=latest_vbhn)
             completed.add(f.name)
             save_hin_checkpoint(completed)
     else:
