@@ -48,6 +48,21 @@ def test_preamble_truoc_dieu_dau_van_la_can_cu():
     assert pre and "Căn cứ pháp lý" in pre[0]["content"]    # tiền văn thật vẫn là căn cứ
 
 
+def test_khong_phat_node_dieu_rong():
+    # 'Điều 1.' trơ trọi (không thân) KHÔNG được tạo thành chunk cụt
+    text = ("Điều 1.\nChương II\nĐiều 2. Giải thích\nTrong Thông tư này các từ ngữ được hiểu như sau.\n")
+    chunks = _parse(text)
+    assert all(c["content"].rstrip().endswith("Điều 1.") is False for c in chunks), "không được giữ node 'Điều 1.' rỗng"
+    # vẫn phải có Điều 2 (có thân)
+    assert any(c["article_num"] == "2" for c in chunks)
+
+
+def test_dieu_ngan_co_than_van_duoc_giu():
+    text = ("Điều 3. Hiệu lực thi hành\nThông tư này có hiệu lực kể từ ngày 01 tháng 01 năm 2026.\n")
+    chunks = _parse(text)
+    assert any(c["article_num"] == "3" for c in chunks)   # điều ngắn nhưng CÓ thân → giữ
+
+
 def test_re_attached_khong_nuot_quy_dinh_chung():
     text = ("Điều 1. Ban hành kèm theo Quyết định này Quy định về quản lý.\n"
             "QUY ĐỊNH CHUNG\n"

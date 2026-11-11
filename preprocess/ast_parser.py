@@ -263,6 +263,12 @@ class HybridASTParser:
         doc_number = metadata.get("doc_number", "N/A")
 
         if not clauses:
+            # Chốt chặn node CỤT: nếu bỏ nhãn 'Điều N.' mà phần thực < 10 ký tự (vd chỉ 'Điều 1.'),
+            # KHÔNG phát node rỗng (tránh chunk vô nghĩa làm nhiễu embedding & rớt gate Tier-1).
+            body_only = re.sub(r"^\s*Điều\s+\d+[a-zA-Z]?\s*[\.:]?\s*", "", art_body.strip()).strip()
+            if len(body_only) < 10:
+                logger.debug("Bỏ node điều rỗng (chỉ nhãn/tiêu đề): %s Điều %s", doc_id, art_num)
+                return sub_chunks   # [] — không phát
             h_path = tracker.get_hierarchy_path()
             raw_text_chunk = f"{meta_header}[HIERARCHY] {h_path}\n[CONTENT] {art_body.strip()}"
             sub_chunks.append({

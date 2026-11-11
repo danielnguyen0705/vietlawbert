@@ -66,18 +66,26 @@ def normalize_doc_number(doc_number: str) -> str:
     return s
 
 
+def _slug_of(norm: str) -> str:
+    """Slug đọc được từ doc_number đã chuẩn hóa (phần trước -hash8)."""
+    return re.sub(r"[^A-Z0-9]+", "-", norm or "").strip("-")
+
+
+def is_collision_prone(doc_number: str) -> bool:
+    """Số hiệu LẶP được (đánh lại theo năm) → cần phân biệt bằng version. Hiện gồm VBHN.
+    CHỈ nhóm này mới trộn ngày ký vào khóa; mọi số hiệu khác giữ id CŨ (tương thích ngược tuyệt đối)."""
+    return "VBHN" in (normalize_doc_number(doc_number) or "").upper()
+
+
 def canonical_doc_id(doc_number: str, sign_date: str = "", issuer: str = "") -> str:
     """
     doc_id tất định từ doc_number. Trả "" nếu doc_number không hợp lệ (để caller xử lý riêng).
     Dạng: <slug>-<hash8>, chỉ dùng [A-Z0-9-] (KHÔNG có '_' để không phá lược đồ '_art_' của chunk_id).
-    Vd: "72/2026/QĐ-UBND" -> "72-2026-QD-UBND-5d41402a"
 
-    sign_date/issuer (TÙY CHỌN): khóa phân biệt cho số hiệu LẶP (vd VBHN đánh lại theo năm —
-    "30/VBHN-NHNN" có nhiều bản khác ngày/cơ quan). KHI được cấp, chúng được trộn vào hash để
-    hai bản cùng số hiệu KHÔNG gộp về một node. Mặc định rỗng → hành vi CŨ (tương thích ngược:
-    hash chỉ theo slug) để không phá khả năng khớp cạnh (relation target chỉ có số hiệu).
-    CẢNH BÁO tích hợp: chỉ bật disambiguator khi ĐỒNG THỜI có cơ chế resolve cạnh về đúng bản
-    (xem detect_collisions + ghi chú bên dưới), nếu không cạnh trỏ số hiệu trần sẽ lệch node.
+    Với số hiệu LẶP (is_collision_prone, vd VBHN): sign_date (+issuer) được trộn vào hash → mỗi bản
+    một node riêng (KHÔNG gộp mất bản). Với mọi số hiệu khác: sign_date/issuer bị BỎ QUA → id y hệt
+    hành vi cũ (hash theo slug) ⇒ KHÔNG đổi id, KHÔNG phá khớp cạnh. Cạnh trỏ VBHN (chỉ có số hiệu trần)
+    được resolve_target_id đưa về bản MỚI NHẤT.
     """
     status, cleaned = classify_doc_number(doc_number)
     if status != "VALID":
@@ -85,15 +93,34 @@ def canonical_doc_id(doc_number: str, sign_date: str = "", issuer: str = "") -> 
     norm = normalize_doc_number(cleaned)
     if norm in _INVALID:
         return ""
-    slug = re.sub(r"[^A-Z0-9]+", "-", norm).strip("-")
+    slug = _slug_of(norm)
     if not slug:
         return ""
     key = slug
-    disamb = "|".join(str(x).strip() for x in (sign_date, issuer) if x and str(x).strip() not in _INVALID)
-    if disamb:
-        key = f"{slug}|{disamb}"
-    h = hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]  # hash KEY → quote/rác không tách id
+    if is_collision_prone(norm):   # CHỈ VBHN mới trộn version
+        disamb = "|".join(str(x).strip() for x in (sign_date, issuer) if x and str(x).strip() not in _INVALID)
+        if disamb:
+            key = f"{slug}|{disamb}"
+    h = hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
     return f"{slug}-{h}"
+
+
+def _record_fields(record: dict):
+    """Trích (doc_number, sign_date, issuer) từ bản ghi thô — DÙNG CHUNG cho ingest & build_graph
+    để doc_id tính ra Y HỆT ở cả hai (ES/Qdrant/Neo4j không lệch khóa)."""
+    md = record.get("metadata_detail") or {}
+    ma = record.get("metadata_api") or {}
+    doc_number = str(record.get("doc_number") or md.get("docNum") or ma.get("docNum") or "N/A")
+    sign_date = str(record.get("issue_date") or md.get("issueDate") or ma.get("issueDate")
+                    or record.get("effective_date") or md.get("effFrom") or ma.get("effFrom") or "")
+    issuer = str(record.get("co_quan") or md.get("agencyName") or ma.get("agencyName") or "")
+    return doc_number, sign_date, issuer
+
+
+def compute_record_doc_id(record: dict) -> str:
+    """doc_id canonical của một bản ghi (có version cho VBHN). Cả ingest lẫn build_graph gọi hàm NÀY."""
+    doc_number, sign_date, issuer = _record_fields(record)
+    return canonical_doc_id(doc_number, sign_date, issuer)
 
 
 def detect_collisions(records):
@@ -116,21 +143,22 @@ def detect_collisions(records):
     return {slug: rows[slug] for slug, vs in buckets.items() if len(vs) > 1}
 
 
-def resolve_target_id(raw_target: str, crawlerid_to_docnum: dict) -> str:
+def resolve_target_id(raw_target: str, crawlerid_to_docnum: dict, latest_version_map: dict = None) -> str:
     """
     Canonical hóa đầu ĐÍCH của một quan hệ. raw_target có thể là crawler-id hoặc doc_number.
     Ưu tiên tra map crawler_id→doc_number; nếu không có, thử coi raw_target chính là doc_number.
-    Trả "" nếu không giải được (đích ngoài corpus) để caller quyết định giữ raw hay bỏ.
+    Với số hiệu LẶP (VBHN): cạnh chỉ có số hiệu TRẦN (không ngày) → trỏ về bản MỚI NHẤT qua
+    latest_version_map {slug: doc_id}. Trả "" nếu không giải được (đích ngoài corpus).
     """
     raw = str(raw_target or "").strip()
     if not raw:
         return ""
-    dn = crawlerid_to_docnum.get(raw)
-    if dn:
-        return canonical_doc_id(dn)
-    # raw_target có thể vốn đã là doc_number
-    cid = canonical_doc_id(raw)
-    return cid
+    doc_number = crawlerid_to_docnum.get(raw) or raw
+    if latest_version_map and is_collision_prone(doc_number):
+        slug = _slug_of(normalize_doc_number(doc_number))
+        if slug in latest_version_map:
+            return latest_version_map[slug]     # bản mới nhất còn trong corpus
+    return canonical_doc_id(doc_number)
 
 
 # Bậc hiệu lực pháp lý theo Luật Ban hành VBQPPL 2025 (1=cao nhất). Suy tất định từ ký hiệu doc_number.
