@@ -17,11 +17,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import List
 
-logger = get_subsystem_logger("crawler", "shard_runner")
-
 from configs.paths import ROOT_DIR, RAW_SHARDS_DIR
 from configs.config import config
 from configs.logging_config import get_subsystem_logger
+
+logger = get_subsystem_logger("crawler", "shard_runner")   # SAU import (trước đây gọi trước import → NameError)
 
 
 @dataclass(frozen=True)
