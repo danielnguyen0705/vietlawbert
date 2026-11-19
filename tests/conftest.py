@@ -13,9 +13,11 @@ import pytest
 
 TESTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TESTS_DIR.parent
+SRC_DIR = REPO_ROOT / "src"
+SCRIPTS_DIR = REPO_ROOT / "scripts"
 COMMON_DIR = TESTS_DIR / "_common"   # chứa package `providers` dùng chung
 
-for _p in (REPO_ROOT, TESTS_DIR, COMMON_DIR):
+for _p in (REPO_ROOT, SRC_DIR, SCRIPTS_DIR, TESTS_DIR, COMMON_DIR):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 

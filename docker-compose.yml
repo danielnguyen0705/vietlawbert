@@ -11,7 +11,7 @@ services:
       - ${DATA_STORAGE_ROOT:-./data}:/app/data
     working_dir: /app
     environment:
-      - PYTHONPATH=/app
+      - PYTHONPATH=/app/src:/app
       - DATA_STORAGE_ROOT=/app/data
       - MONGO_URI=mongodb://db:27017/
       - NEO4J_URI=bolt://neo4j:7687

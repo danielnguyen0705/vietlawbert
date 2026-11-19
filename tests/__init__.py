@@ -2,7 +2,9 @@
 import sys
 from pathlib import Path
 
-# Tự động ghim thư mục gốc dự án vào sys.path
+# Tự động ghim thư mục gốc dự án và src/ vào sys.path
 ROOT_DIR = Path(__file__).resolve().parent.parent
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+SRC_DIR = ROOT_DIR / "src"
+for _p in (str(ROOT_DIR), str(SRC_DIR)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)

@@ -1,6 +1,6 @@
 """Tầng-1 unit test khóa toàn cục: tất định, idempotent, bất biến chuẩn hóa dấu."""
 import importlib.util, pathlib
-_p = pathlib.Path(__file__).resolve().parents[4] / "configs" / "global_id.py"
+_p = pathlib.Path(__file__).resolve().parents[4] / "src" / "configs" / "global_id.py"
 spec = importlib.util.spec_from_file_location("global_id", _p)
 G = importlib.util.module_from_spec(spec); spec.loader.exec_module(G)
 

@@ -4,7 +4,7 @@ Chạy:  pytest tests/system/test/parser/test_ast_per_doctype.py -q
 Parser thuần regex (không service) → test nhanh, tất định.
 """
 import importlib.util, pathlib
-_p = pathlib.Path(__file__).resolve().parents[4] / "preprocess" / "ast_parser.py"
+_p = pathlib.Path(__file__).resolve().parents[4] / "src" / "preprocess" / "ast_parser.py"
 _s = importlib.util.spec_from_file_location("ast_parser", _p)
 AST = importlib.util.module_from_spec(_s); _s.loader.exec_module(AST)
 

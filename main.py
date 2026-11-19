@@ -25,7 +25,19 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
-from configs.paths import ROOT_DIR, RAW_SHARDS_DIR, MODELS_DIR, BENCHMARK_DIR, ARTIFACTS_DIR
+_SRC_DIR = Path(__file__).resolve().parent / "src"
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+
+from configs.paths import (
+    ROOT_DIR,
+    SRC_DIR,
+    RAW_SHARDS_DIR,
+    MODELS_DIR,
+    BENCHMARK_DIR,
+    BENCHMARK_RESULTS_DIR,
+    ARTIFACTS_DIR,
+)
 from configs.config import config
 from configs.logging_config import setup_hierarchical_logging, get_subsystem_logger
 
@@ -65,7 +77,7 @@ def run_subcommand(command: list[str], description: str, extra_env: dict[str, st
     logger.info("==================================================")
 
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(ROOT_DIR)
+    env["PYTHONPATH"] = f"{SRC_DIR}{os.pathsep}{ROOT_DIR}"
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONUTF8"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
@@ -243,7 +255,7 @@ def cmd_benchmark(checkpoint_path: str | None = None, device: str = config.EMBED
             return False
 
     model_ckpt = checkpoint_path or str(MODELS_DIR / "vietlawbert_mrl_final")
-    results_dir = ROOT_DIR / "benchmark" / "results"
+    results_dir = BENCHMARK_RESULTS_DIR
 
     comp_ok = run_subcommand(
         [

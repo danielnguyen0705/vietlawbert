@@ -25,7 +25,7 @@ os.environ["TRANSFORMERS_OFFLINE"] = "1"
 # -----------------------------------------------------------------------------
 # 1. CẤU HÌNH GỐC DỰ ÁN & BỘ PHÂN GIẢI ĐƯỜNG DẪN (PATH RESOLVER)
 # -----------------------------------------------------------------------------
-PROJECT_ROOT = Path(os.environ.get("VIETLAWBERT_ROOT") or next((str(p) for p in Path(__file__).resolve().parents if (p / "rag").is_dir()), str(Path(__file__).resolve().parent)))
+PROJECT_ROOT = Path(os.environ.get("VIETLAWBERT_ROOT") or next((str(p) for p in Path(__file__).resolve().parents if (p / "src" / "rag").is_dir() or (p / "rag").is_dir()), str(Path(__file__).resolve().parent)))
 EVAL_DIR = Path(__file__).resolve().parent
 EMB_CACHE_DIR = EVAL_DIR / ".cache_promptfoo_embeddings"
 EMB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -43,6 +43,7 @@ def resolve_existing_path(path_str: str | None) -> str | None:
     # 2. Duyệt qua các vị trí neo khả dĩ
     candidates = [
         PROJECT_ROOT / raw_path,
+        PROJECT_ROOT / "outputs" / raw_path,
         Path.cwd() / raw_path,
         Path(__file__).resolve().parent / raw_path,
         Path(__file__).resolve().parent.parent / "vietlawbert" / raw_path,
@@ -59,9 +60,10 @@ CORPUS_FILE_CANDIDATES = [
     # Ưu tiên bộ SẠCH đã có trong datasets/ (729 câu) — candidate pool nhất quán với tập test
     Path(__file__).resolve().parent.parent / "datasets" / "vietlawbench_clean.jsonl",
     Path(__file__).resolve().parent.parent / "datasets" / "vietlawbench_1000.jsonl",
-    # Dự phòng: file gốc ở benchmark/
+    # Dự phòng: file gốc ở outputs/benchmark/
+    PROJECT_ROOT / "outputs" / "benchmark" / "vietlawbench_1000.jsonl",
     PROJECT_ROOT / "benchmark" / "vietlawbench_1000.jsonl",
-    Path("/home/dell/Desktop/vietlawbert/benchmark/vietlawbench_1000.jsonl"),
+    Path("/home/dell/Desktop/vietlawbert/outputs/benchmark/vietlawbench_1000.jsonl"),
     Path(__file__).resolve().parent / "vietlawbench_1000.jsonl",
     Path.cwd() / "vietlawbench_1000.jsonl",
 ]

@@ -3,7 +3,7 @@ import yaml
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
-CFG = ROOT / "evaluation" / "configs"
+CFG = ROOT / "tests" / "evaluation" / "configs"
 
 
 def _load(name):

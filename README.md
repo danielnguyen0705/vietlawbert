@@ -45,7 +45,7 @@ docker compose up -d qdrant elasticsearch neo4j db redis
 cp .env.example .env     # rồi điền khoá (xem mục 4)
 ```
 
-GPU: dự án chạy được trên CPU (mặc định an toàn). Nếu dùng GPU cũ (vd GTX 1050 Ti, CC 6.1) không tương thích bản `torch` mặc định, cài bản khớp: `pip install torch --index-url https://download.pytorch.org/whl/cu126`. Thí nghiệm quy mô lớn nên thuê Cloud GPU (xem `auto_cloud_runner.sh`, `cloud_entrypoint.py`).
+GPU: dự án chạy được trên CPU (mặc định an toàn). Nếu dùng GPU cũ (vd GTX 1050 Ti, CC 6.1) không tương thích bản `torch` mặc định, cài bản khớp: `pip install torch --index-url https://download.pytorch.org/whl/cu126`. Thí nghiệm quy mô lớn nên thuê Cloud GPU (xem `scripts/auto_cloud_runner.sh`, `scripts/cloud_entrypoint.py`).
 
 ---
 
@@ -68,7 +68,7 @@ python main.py --phase all         # toàn trình Pha 1 → 5
 python main.py --ask "Đi xe máy trên vỉa hè bị phạt bao nhiêu?" --top-k 3
 ```
 
-Chạy toàn bộ thực nghiệm (có thuê GPU): `bash run_all_experiments.sh`.
+Chạy toàn bộ thực nghiệm (có thuê GPU): `bash scripts/run_all_experiments.sh`.
 
 ---
 
@@ -113,21 +113,43 @@ promptfoo eval -c promptfooconfig.generation.yaml -o ../out/eval-generation.json
 
 ## 6. Cấu trúc thư mục
 
-```
+```text
 vietlawbert/
+├── src/                    # Toàn bộ mã nguồn lõi (KHÔNG lẫn test hay dữ liệu runtime)
+│   ├── configs/            # config.py, paths.py, logging_config.py, global_id.py
+│   ├── crawler/            # Pha 1: Scrapy spider + shard runner + OCR
+│   ├── preprocess/         # Pha 2a: AST parser, text cleaner, html→md, phục hồi PDF/font
+│   ├── quality/            # Pha 2b: kiểm định corpus + kiểm toán crawl/pipeline
+│   ├── pipeline/           # Pha 2c: luồng ingest đa kho
+│   ├── database/           # Pha 3: Neo4j HIN, Qdrant client, Cypher templates
+│   ├── training/           # Pha 4: HIN triplets, train MRL, graph embeddings
+│   ├── rag/                # Pha 5a: hybrid retriever, es retriever, generator (cascade)
+│   ├── benchmark/          # Pha 5b: VietLawBench, evaluate_rrf, evaluate_rqs, llm_judge
+│   ├── artifacts/          # tiện ích đọc/chuẩn hóa/gộp shard JSONL (chỉ mã nguồn)
+│   ├── mcp_servers/        # giao thức MCP cho AI Agents
+│   ├── demo/               # giao diện web Gradio Demo
+│   └── cli/                # wrapper lệnh con (crawl, ocr, audit, verify, ...)
+├── tests/                  # Toàn bộ kiểm thử & đánh giá tự động (pytest + promptfoo)
+│   ├── unit/               # unit tests (preprocess, corpus_audit, corpus_fixes, scripts)
+│   ├── system/             # kiểm thử hệ thống 5 tầng & promptfoo RAG
+│   ├── model/              # kiểm thử mô hình MRL & HIN triplets
+│   ├── evaluation/         # cấu hình & bộ test promptfoo Tier 4/5
+│   └── _common/            # hạ tầng dùng chung (paths, datasets, assertions, providers, tools)
+├── scripts/                # Kịch bản tự động hóa (run_all_experiments.sh, auto_cloud_runner.sh, ...)
+├── outputs/                # Dữ liệu runtime, báo cáo, log, checkpoints & trọng số mô hình
+│   ├── artifacts/          # parquet triplets, graph embeddings, crawler_status
+│   ├── benchmark/          # dữ liệu Zalo/VLQA & bảng kết quả (.csv, .tex)
+│   ├── checkpoints/        # checkpoint các backbone
+│   ├── models/             # mô hình VietLawBERT-MRL hoàn thiện
+│   ├── reports/            # báo cáo kiểm định corpus & manifest
+│   ├── logs/               # nhật ký thực nghiệm
+│   └── flagging/           # nhật ký tương tác & phản hồi Gradio
+├── docs/                   # Tài liệu thiết kế & phân rã công việc
 ├── main.py                 # CLI điều phối toàn trình
-├── cli/                    # wrapper lệnh con (crawl, ingest, ocr, audit, verify, ...)
-├── configs/                # config.py, paths.py, logging_config.py (hub cấu hình)
-├── crawler/                # Scrapy spider + shard runner + OCR
-├── preprocess/             # AST parser, text cleaner, html→md
-├── quality/                # bộ lọc chất lượng + kiểm toán crawl/pipeline
-├── pipeline/               # ingest, ast batch, neo4j batch loader
-├── database/               # neo4j/qdrant client, build HIN graph, cypher templates
-├── training/               # HIN triplets, train MRL, graph embeddings
-├── rag/                    # hybrid retriever, es retriever, generator (cascade)
-├── benchmark/              # build VietLawBench, evaluate_rrf, evaluate_rqs, llm_judge
-├── tests/                  # system/ · model/ · _common/ (pytest + promptfoo; xem tests/README.md)
+├── pyproject.toml          # Cấu hình package (src/ layout) & pytest
 ├── docker-compose.yml      # Qdrant, Elasticsearch, Neo4j+APOC, MongoDB, Redis
+├── Dockerfile
+├── scrapy.cfg
 └── requirements.txt
 ```
 

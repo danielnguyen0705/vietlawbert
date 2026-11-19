@@ -2,7 +2,7 @@ FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH=/app
+    PYTHONPATH=/app/src:/app
 
 WORKDIR /app
 

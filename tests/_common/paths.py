@@ -11,18 +11,23 @@ from pathlib import Path
 
 def _autodetect_root() -> Path:
     for p in Path(__file__).resolve().parents:
-        if (p / "rag").is_dir() and (p / "preprocess").is_dir():
+        if ((p / "src" / "rag").is_dir() and (p / "src" / "preprocess").is_dir()) or (
+            (p / "rag").is_dir() and (p / "preprocess").is_dir()
+        ):
             return p
     return Path(__file__).resolve().parents[2]
 
 
 REPO_ROOT = Path(os.environ.get("VIETLAWBERT_ROOT") or _autodetect_root())
-CHECKPOINTS_DIR = Path(os.environ.get("VIETLAWBERT_CKPT") or (REPO_ROOT / "checkpoints"))
+SRC_DIR = REPO_ROOT / "src"
+OUTPUTS_DIR = REPO_ROOT / "outputs"
+CHECKPOINTS_DIR = Path(os.environ.get("VIETLAWBERT_CKPT") or (OUTPUTS_DIR / "checkpoints"))
 
 # Dùng chính configs.paths của repo làm nguồn sự thật cho gốc dữ liệu lớn
 try:
-    if str(REPO_ROOT) not in sys.path:
-        sys.path.insert(0, str(REPO_ROOT))
+    for _p in (str(REPO_ROOT), str(SRC_DIR)):
+        if _p not in sys.path:
+            sys.path.insert(0, _p)
     from configs import paths as _P  # noqa: E402
     DATA_ROOT = Path(_P.DATA_STORAGE_ROOT)
     RAW_SHARDS = Path(_P.RAW_SHARDS_DIR)

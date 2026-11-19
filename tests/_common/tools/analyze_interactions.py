@@ -29,7 +29,7 @@ from collections import defaultdict
 from typing import Any, Dict, List
 
 REPO_ROOT = Path(__file__).resolve().parents[3]  # tests/_common/tools/ -> gốc repo
-DEFAULT_LOG = REPO_ROOT / "flagging" / "interactions.jsonl"
+DEFAULT_LOG = REPO_ROOT / "outputs" / "flagging" / "interactions.jsonl"
 
 
 # ─── Helpers thống kê (stdlib) ──────────────────────────────────────────────

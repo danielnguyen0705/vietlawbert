@@ -25,10 +25,11 @@ EVAL_DIR = Path(__file__).resolve().parent.parent
 if str(EVAL_DIR) not in sys.path:
     sys.path.insert(0, str(EVAL_DIR))
 
-# 2. Thêm thư mục vietlawbert vào sys.path
-VIETLAWBERT_ROOT = Path(os.environ.get("VIETLAWBERT_ROOT") or next((str(p) for p in Path(__file__).resolve().parents if (p / "rag").is_dir()), str(Path(__file__).resolve().parent)))
-if str(VIETLAWBERT_ROOT) not in sys.path:
-    sys.path.insert(0, str(VIETLAWBERT_ROOT))
+# 2. Thêm thư mục vietlawbert và src/ vào sys.path
+VIETLAWBERT_ROOT = Path(os.environ.get("VIETLAWBERT_ROOT") or next((str(p) for p in Path(__file__).resolve().parents if (p / "src" / "rag").is_dir() or (p / "rag").is_dir()), str(Path(__file__).resolve().parent)))
+for _p in (str(VIETLAWBERT_ROOT), str(VIETLAWBERT_ROOT / "src")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from providers.retrieval_provider import get_retriever, _extract_doc_info
 

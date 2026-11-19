@@ -10,7 +10,7 @@ import pytest
 
 pytestmark = pytest.mark.tier2
 _ROOT = pathlib.Path(__file__).resolve().parents[4]
-_g = importlib.util.spec_from_file_location("global_id", _ROOT / "configs" / "global_id.py")
+_g = importlib.util.spec_from_file_location("global_id", _ROOT / "src" / "configs" / "global_id.py")
 G = importlib.util.module_from_spec(_g); _g.loader.exec_module(G)
 
 

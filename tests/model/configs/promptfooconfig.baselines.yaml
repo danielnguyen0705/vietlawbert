@@ -23,31 +23,31 @@ providers:
   # 1. XLM-RoBERTa
   - id: "file://../../_common/providers/provider.py"
     label: "XLM-RoBERTa (Base Vanilla @ 768d)"
-    config: { model_path: "checkpoints/xlm-roberta-base", checkpoint_pt: null, dimension: 768, top_k: 5 }
+    config: { model_path: "outputs/checkpoints/xlm-roberta-base", checkpoint_pt: null, dimension: 768, top_k: 5 }
   - id: "file://../../_common/providers/provider.py"
     label: "XLM-RoBERTa (Ours-MRL @ 256d)"
-    config: { model_path: "checkpoints/xlm-roberta-base", checkpoint_pt: "checkpoints/xlm-roberta-base/vietlawbert_mrl.pt", dimension: 256, top_k: 5 }
+    config: { model_path: "outputs/checkpoints/xlm-roberta-base", checkpoint_pt: "outputs/checkpoints/xlm-roberta-base/vietlawbert_mrl.pt", dimension: 256, top_k: 5 }
   # 2. BGE-M3
   - id: "file://../../_common/providers/provider.py"
     label: "BGE-M3 (Base Vanilla @ 1024d)"
-    config: { model_path: "checkpoints/BAAI_bge-m3", checkpoint_pt: null, dimension: 1024, top_k: 5 }
+    config: { model_path: "outputs/checkpoints/BAAI_bge-m3", checkpoint_pt: null, dimension: 1024, top_k: 5 }
   - id: "file://../../_common/providers/provider.py"
     label: "BGE-M3 (Ours-MRL @ 256d)"
-    config: { model_path: "checkpoints/BAAI_bge-m3", checkpoint_pt: "checkpoints/BAAI_bge-m3/vietlawbert_mrl.pt", dimension: 256, top_k: 5 }
+    config: { model_path: "outputs/checkpoints/BAAI_bge-m3", checkpoint_pt: "outputs/checkpoints/BAAI_bge-m3/vietlawbert_mrl.pt", dimension: 256, top_k: 5 }
   # 3. PhoBERT v2
   - id: "file://../../_common/providers/provider.py"
     label: "PhoBERT-v2 (Base Vanilla @ 768d)"
-    config: { model_path: "checkpoints/vinai_phobert-base-v2", checkpoint_pt: null, dimension: 768, top_k: 5 }
+    config: { model_path: "outputs/checkpoints/vinai_phobert-base-v2", checkpoint_pt: null, dimension: 768, top_k: 5 }
   - id: "file://../../_common/providers/provider.py"
     label: "PhoBERT-v2 (Ours-MRL @ 256d)"
-    config: { model_path: "checkpoints/vinai_phobert-base-v2", checkpoint_pt: "checkpoints/vinai_phobert-base-v2/vietlawbert_mrl.pt", dimension: 256, top_k: 5 }
+    config: { model_path: "outputs/checkpoints/vinai_phobert-base-v2", checkpoint_pt: "outputs/checkpoints/vinai_phobert-base-v2/vietlawbert_mrl.pt", dimension: 256, top_k: 5 }
   # 4. Multilingual-E5
   - id: "file://../../_common/providers/provider.py"
     label: "mE5-Base (Base Vanilla @ 768d)"
-    config: { model_path: "checkpoints/intfloat_multilingual-e5-base", checkpoint_pt: null, dimension: 768, top_k: 5 }
+    config: { model_path: "outputs/checkpoints/intfloat_multilingual-e5-base", checkpoint_pt: null, dimension: 768, top_k: 5 }
   - id: "file://../../_common/providers/provider.py"
     label: "mE5-Base (Ours-MRL @ 256d)"
-    config: { model_path: "checkpoints/intfloat_multilingual-e5-base", checkpoint_pt: "checkpoints/intfloat_multilingual-e5-base/vietlawbert_mrl.pt", dimension: 256, top_k: 5 }
+    config: { model_path: "outputs/checkpoints/intfloat_multilingual-e5-base", checkpoint_pt: "outputs/checkpoints/intfloat_multilingual-e5-base/vietlawbert_mrl.pt", dimension: 256, top_k: 5 }
 
 defaultTest:
   assert:

@@ -92,6 +92,7 @@ class IngestPipelineWorkerTests(unittest.TestCase):
         doc_record = {
             "doc_id": "TEST_DOC_FALLBACK",
             "doc_number": "01/2026/TT-BTP",
+            "content_source": "fallback_html",  # bản ghi crawl thật luôn có nguồn; thiếu -> gate coi là rỗng
             "html_raw": "<html><body><h1>Điều 1. Quy định</h1><p>Nội dung quy định chi tiết kiểm thử pipeline trung gian.</p></body></html>",
             "metadata_detail": {"title": "Thông tư mẫu"}
         }

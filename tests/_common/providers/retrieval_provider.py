@@ -30,9 +30,10 @@ os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-VIETLAWBERT_ROOT = Path(os.environ.get("VIETLAWBERT_ROOT") or next((str(p) for p in Path(__file__).resolve().parents if (p / "rag").is_dir()), str(Path(__file__).resolve().parent)))
-if str(VIETLAWBERT_ROOT) not in sys.path:
-    sys.path.insert(0, str(VIETLAWBERT_ROOT))
+VIETLAWBERT_ROOT = Path(os.environ.get("VIETLAWBERT_ROOT") or next((str(p) for p in Path(__file__).resolve().parents if (p / "src" / "rag").is_dir() or (p / "rag").is_dir()), str(Path(__file__).resolve().parent)))
+for _p in (str(VIETLAWBERT_ROOT), str(VIETLAWBERT_ROOT / "src")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 _GLOBAL_RETRIEVER = None
 
