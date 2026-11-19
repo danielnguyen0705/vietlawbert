@@ -157,6 +157,10 @@ class QdrantClientWrapper:
                     "macro_label": macro_label,
                     "is_effective": is_effective,
                     "content": content,
+                    # Quan hệ cha–con phụ lục: giữ lại để lọc/truy hồi, nếu không embed xong mất liên kết.
+                    "is_appendix": bool(item.get("is_appendix", meta.get("is_appendix", False))),
+                    "parent_doc_id": str(item.get("parent_doc_id") or meta.get("parent_doc_id") or ""),
+                    "appendix_sources": item.get("appendix_sources") or meta.get("appendix_sources") or [],
                 }
 
                 point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, chunk_id))
