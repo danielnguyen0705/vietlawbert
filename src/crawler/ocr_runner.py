@@ -95,7 +95,7 @@ def perform_tesseract_ocr(pdf_bytes: bytes, max_pages: int = 50) -> str:
         total_pages = min(len(doc), max_pages)
         for page_idx in range(total_pages):
             page = doc[page_idx]
-            pix = page.get_pixmap(dpi=300)   # 200→300: nhận dạng tiếng Việt có dấu tốt hơn, giảm text vỡ
+            pix = page.get_pixmap(dpi=int(getattr(config, "OCR_DPI", 300)))   # 1 nguồn chỉnh DPI (config.OCR_DPI=300), khớp cả spider inline OCR
             img = Image.open(io.BytesIO(pix.tobytes("png")))
             text = pytesseract.image_to_string(img, lang="vie")
             if text.strip():

@@ -18,6 +18,9 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, Any, List, Set, Optional, Tuple, Iterator
 
+from crawler.appendix_download import save_appendix_zip
+from configs.paths import RAW_SHARDS_DIR
+
 import scrapy
 from scrapy import signals
 from bs4 import BeautifulSoup
@@ -682,6 +685,14 @@ class LawSpider(scrapy.Spider):
                 },
             )
             files = self._decode_action_value(result_text)
+            # Phụ lục: nếu danh sách file có zip (presignedUrl tươi), tải về + set appendix_zip_path
+            # → ingest tự bóc/khử trùng/nhúng chunk con. Không có zip → no-op. Lỗi tải không chặn luồng.
+            try:
+                saved = save_appendix_zip(files, item, os.path.join(str(RAW_SHARDS_DIR), "appendices"))
+                if saved:
+                    self.logger.info("[PHỤ LỤC] Đã tải zip cho %s → %s", item.get("item_id"), saved)
+            except Exception as ap_exc:
+                self.logger.warning("[PHỤ LỤC] Bỏ qua tải zip %s: %s", item.get("item_id"), ap_exc)
             candidates = sorted(
                 [
                     f for f in files
