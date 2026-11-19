@@ -43,6 +43,11 @@ class RescueSpider(LawSpider):
         self.cli_doc_ids = [v.strip() for v in doc_ids.split(',') if v.strip()]
         self.pending_rescue_records: Dict[str, dict] = {}
 
+    async def start(self):
+        """Scrapy 2.13+ gọi start() (async) thay cho start_requests(); shim back-compat."""
+        for req in self.start_requests():
+            yield req
+
     def start_requests(self):
         self.logger.info("=== BẮT ĐẦU CHIẾN DỊCH CỨU HỘ VĂN BẢN PHÁP LUẬT (VIETLAWBERT RESCUE) ===")
 
