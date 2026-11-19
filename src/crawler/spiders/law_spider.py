@@ -161,6 +161,11 @@ class LawSpider(scrapy.Spider):
 
         return 0
 
+    async def start(self):
+        """Scrapy 2.13+ gọi start() (async) thay cho start_requests(); shim back-compat."""
+        for req in self.start_requests():
+            yield req
+
     def start_requests(self) -> Iterator[scrapy.Request]:
         """Entrypoint chuẩn hóa theo chuẩn Scrapy Engine."""
         if self.requested_doc_ids:
@@ -556,7 +561,12 @@ class LawSpider(scrapy.Spider):
                 yield self._rescue_browser_request(item)
             return
 
-        yield self._diagram_request(item)
+        # Nội dung chính OK nhưng văn bản CÓ phụ lục zip → fetch file-list (Playwright) để tải phụ lục,
+        # rồi tiếp tục diagram bình thường (không đụng nội dung chính đã hợp lệ).
+        if self._doc_has_appendix(item):
+            yield self._appendix_browser_request(item)
+        else:
+            yield self._diagram_request(item)
 
     @staticmethod
     def _playwright_rescue_meta() -> dict:
@@ -619,6 +629,58 @@ class LawSpider(scrapy.Spider):
             cb_kwargs={"item": item, "rescue_attempt": attempt},
             dont_filter=True,
         )
+
+    @staticmethod
+    def _doc_has_appendix(item: dict) -> bool:
+        rel = (item.get("metadata_detail") or {}).get("documentRelatedList") or []
+        return any(str(r.get("fileName") or "").lower().endswith(".zip") for r in rel)
+
+    def _appendix_browser_request(self, item: dict):
+        return scrapy.Request(
+            url=HOME_URL,
+            meta=self._playwright_rescue_meta(),
+            callback=self.fetch_appendix_in_browser,
+            errback=self.handle_appendix_failure,
+            cb_kwargs={"item": item},
+            dont_filter=True,
+        )
+
+    async def fetch_appendix_in_browser(self, response, item: dict):
+        """Chỉ lấy danh sách file + tải ZIP PHỤ LỤC (giữ nội dung chính đã hợp lệ), rồi sang diagram."""
+        page = response.meta.get("playwright_page")
+        try:
+            result_text = await page.evaluate(
+                """async ({action, routerTree, body}) => {
+                    const res = await fetch("https://vbpl.vn/", {
+                        method: "POST",
+                        headers: {
+                            "accept": "text/x-component",
+                            "content-type": "text/plain;charset=UTF-8",
+                            "next-action": action,
+                            "next-router-state-tree": routerTree
+                        },
+                        body
+                    });
+                    const text = await res.text();
+                    if (!res.ok) throw new Error(`files HTTP ${res.status}: ${text.slice(0, 200)}`);
+                    return text;
+                }""",
+                {"action": FILES_ACTION, "routerTree": ROUTER_TREE, "body": json.dumps([item["item_id"], None])},
+            )
+            files = self._decode_action_value(result_text)
+            saved = save_appendix_zip(files, item, os.path.join(str(RAW_SHARDS_DIR), "appendices"))
+            if saved:
+                self.logger.info("[PHỤ LỤC] Đã tải zip cho %s → %s", item.get("item_id"), saved)
+        except Exception as exc:
+            self.logger.warning("[PHỤ LỤC] Bỏ qua tải phụ lục %s: %s", item.get("item_id"), exc)
+        finally:
+            if page is not None:
+                await page.close()
+        yield self._diagram_request(item)
+
+    def handle_appendix_failure(self, failure):
+        item = failure.request.cb_kwargs["item"]
+        yield self._diagram_request(item)
 
     def _diagram_request(self, item: dict):
         doc_id = item["item_id"]
