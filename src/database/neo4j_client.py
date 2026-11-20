@@ -50,7 +50,7 @@ class Neo4jClient:
         self.driver.close()
         logger.info("Đã đóng kết nối Neo4j Driver.")
 
-    def drop_database(self, batch_size: int = 10000) -> None:
+    def drop_database(self, batch_size: int = 1000) -> None:
         """Dọn sạch Neo4j. Ưu tiên batch phía SERVER (`CALL {} IN TRANSACTIONS` — nhanh hơn
         hẳn vòng lặp client, không OOM, chạy cả Community Edition 4.4+). Fallback vòng lặp
         client nếu bản Neo4j quá cũ không hỗ trợ cú pháp này."""

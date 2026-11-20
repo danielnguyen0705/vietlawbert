@@ -185,6 +185,11 @@ class HINGraphBuilder:
                 except json.JSONDecodeError:
                     continue
 
+                # Chỉ nạp bản ghi nội dung HỢP LỆ vào graph; bỏ EMPTY/OCR_PENDING và file .quarantine
+                # (nếu không graph dính node rác + nạp trùng). OCR-rescued được đặt html_status=VALID.
+                if str(item.get("html_status") or "") != "VALID":
+                    continue
+
                 meta_detail = item.get("metadata_detail") or {}
                 meta_api = item.get("metadata_api") or {}
 
