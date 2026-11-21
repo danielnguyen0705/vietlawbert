@@ -7,6 +7,7 @@ Xuất đầy đủ định danh article_id chuẩn hóa phục vụ liên kết
 from __future__ import annotations
 
 import re
+import unicodedata
 import logging
 from configs.logging_config import get_subsystem_logger
 from typing import Dict, Any, List, Optional, Tuple
@@ -19,6 +20,7 @@ class LegalHierarchyTracker:
     def __init__(self):
         self.current_part: str = ""
         self.current_chapter: str = ""
+        self.current_chapter_id: str = ""   # P3: định danh chương first-class (doc/chương/điều/khoản)
         self.current_section: str = ""
         self.current_article: str = ""
         self.current_article_title: str = ""
@@ -27,12 +29,14 @@ class LegalHierarchyTracker:
     def reset_part(self, part_name: str):
         self.current_part = part_name
         self.current_chapter = ""
+        self.current_chapter_id = ""
         self.current_section = ""
         self.current_article = ""
         self.current_article_title = ""
 
-    def reset_chapter(self, chapter_name: str):
+    def reset_chapter(self, chapter_name: str, chapter_id: str = ""):
         self.current_chapter = chapter_name
+        self.current_chapter_id = chapter_id
         self.current_section = ""
         self.current_article = ""
         self.current_article_title = ""
@@ -89,6 +93,18 @@ class HybridASTParser:
 
     # Ranh giới cấu trúc để khôi phục văn bản bị mất ký tự xuống dòng (HTML phẳng 1 dòng).
     _RE_FLAT_BOUNDARY = re.compile(r"(?=(?:ĐIỀU|Điều|CHƯƠNG|Chương|MỤC|Mục|PHẦN|Phần)\s+(?:thứ\s+|[IVXLCDM\d]))")
+    # P5: prefix rác 'Document Content' do crawler chèn ở ĐẦU văn bản (~19% bản ghi VALID).
+    _RE_DOC_PREFIX = re.compile(r"\A\s*Document Content\s*\n?")
+
+    def _normalize_text(self, text: str) -> str:
+        """P5: chuẩn hóa tối thiểu trước khi parse — KHÔNG ghép-từ (data HTML sạch không có
+        lỗi 'Qu y đị nh'; chỉ OCR mới có, pipeline khác). NFKC gộp NBSP(\\xa0)→space + chuẩn
+        bề rộng ký tự; cắt prefix 'Document Content'; gộp chuỗi space NGANG, GIỮ '\\n' cho
+        parser dòng-cơ-sở."""
+        text = unicodedata.normalize("NFKC", text)
+        text = self._RE_DOC_PREFIX.sub("", text)
+        text = re.sub(r"[^\S\n]{2,}", " ", text)
+        return text
 
     def _resplit_if_flat(self, text: str) -> str:
         """Nếu văn bản bị dồn thành 1-2 dòng khổng lồ (crawler trả HTML phẳng), chèn lại
@@ -107,6 +123,7 @@ class HybridASTParser:
         if not text or not text.strip():
             return []
 
+        text = self._normalize_text(text)
         text = self._resplit_if_flat(text)
 
         doc_id = str(metadata.get("doc_id") or metadata.get("item_id") or "UNKNOWN_DOC")
@@ -164,7 +181,10 @@ class HybridASTParser:
                 flush_article_buffer()
                 current_art_num = None   # ranh giới Chương ĐÓNG điều trước (sửa lỗi 'art_4 nhưng nội dung Điều 5')
                 chap_title = m_chap.group(2).strip()
-                tracker.reset_chapter(f"Chương {m_chap.group(1)}" + (f" - {chap_title}" if chap_title else ""))
+                tracker.reset_chapter(
+                    f"Chương {m_chap.group(1)}" + (f" - {chap_title}" if chap_title else ""),
+                    chapter_id=f"{doc_id}_ch_{m_chap.group(1)}",
+                )
                 continue
 
             m_sec = self.re_section.match(line)
@@ -197,6 +217,8 @@ class HybridASTParser:
                         "doc_number": doc_number,
                         "article_id": "",
                         "article_num": "",
+                        "chapter_id": "",
+                        "clause_id": "",
                         "macro_label": "CAN_CU",
                         "hierarchy_path": "Lời mở đầu / Căn cứ ban hành",
                         "text": raw_text_chunk,
@@ -214,6 +236,8 @@ class HybridASTParser:
                         "doc_number": doc_number,
                         "article_id": "",
                         "article_num": "",
+                        "chapter_id": tracker.current_chapter_id,
+                        "clause_id": "",
                         "macro_label": tracker.get_macro_label(),
                         "hierarchy_path": h_path,
                         "text": raw_text_chunk,
@@ -277,6 +301,8 @@ class HybridASTParser:
                 "doc_number": doc_number,
                 "article_id": canonical_art_id,
                 "article_num": str(art_num),
+                "chapter_id": tracker.current_chapter_id,
+                "clause_id": "",
                 "macro_label": macro_label,
                 "hierarchy_path": h_path,
                 "text": raw_text_chunk,
@@ -294,6 +320,8 @@ class HybridASTParser:
                 "doc_number": doc_number,
                 "article_id": canonical_art_id,
                 "article_num": str(art_num),
+                "chapter_id": tracker.current_chapter_id,
+                "clause_id": "",
                 "macro_label": macro_label,
                 "hierarchy_path": h_path,
                 "text": raw_text_chunk,
@@ -311,6 +339,8 @@ class HybridASTParser:
                 "doc_number": doc_number,
                 "article_id": canonical_art_id,
                 "article_num": str(art_num),
+                "chapter_id": tracker.current_chapter_id,
+                "clause_id": f"{canonical_art_id}_cl_{cl_num}",
                 "macro_label": macro_label,
                 "hierarchy_path": h_path,
                 "text": raw_text_chunk,

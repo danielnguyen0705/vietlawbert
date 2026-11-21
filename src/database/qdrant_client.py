@@ -154,6 +154,10 @@ class QdrantClientWrapper:
                     "doc_id": doc_id,
                     "doc_number": doc_number,
                     "hierarchy_path": hierarchy_path,
+                    # P3: định danh 4 tầng (doc/chương/điều/khoản) để lọc truy hồi theo Điều/Khoản.
+                    "article_id": str(item.get("article_id") or meta.get("article_id") or ""),
+                    "chapter_id": str(item.get("chapter_id") or meta.get("chapter_id") or ""),
+                    "clause_id": str(item.get("clause_id") or meta.get("clause_id") or ""),
                     "macro_label": macro_label,
                     "is_effective": is_effective,
                     "content": content,
