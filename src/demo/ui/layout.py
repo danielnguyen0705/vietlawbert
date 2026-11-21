@@ -84,9 +84,9 @@ def build_demo() -> gr.Blocks:
                 chatbot = gr.Chatbot(
                     elem_id="vietlawbert-chatbot",
                     label="Hội thoại pháp lý",
+                    # Gradio 6.x: định dạng messages [{role,content}] là MẶC ĐỊNH, không có tham số type=.
                     height=440,
                     avatar_images=(None, "https://img.icons8.com/color/48/scales--v1.png"),
-                    # Gradio 6.x: show_copy_button và bubble_full_width đã bị xóa
                 )
 
                 with gr.Row():
@@ -151,17 +151,18 @@ def build_demo() -> gr.Blocks:
         submit_inputs  = [txt_input, history_state, meta_state, dd_mode, sl_topk]
         submit_outputs = [chatbot, history_state, meta_state, txt_input, evidence_html, metrics_html]
 
-        btn_send.click(
-            fn=handle_submit,
-            inputs=submit_inputs,
-            outputs=submit_outputs,
+        # Polish: khóa nút Gửi trong lúc chạy để tránh gửi chồng, mở lại khi xong.
+        _lock   = lambda: gr.update(interactive=False)
+        _unlock = lambda: gr.update(interactive=True)
+
+        btn_send.click(_lock, None, btn_send).then(
+            fn=handle_submit, inputs=submit_inputs, outputs=submit_outputs,
             api_name="chat",   # WP12 — gradio_client endpoint
-        )
-        txt_input.submit(
-            fn=handle_submit,
-            inputs=submit_inputs,
-            outputs=submit_outputs,
-        )
+        ).then(_unlock, None, btn_send)
+
+        txt_input.submit(_lock, None, btn_send).then(
+            fn=handle_submit, inputs=submit_inputs, outputs=submit_outputs,
+        ).then(_unlock, None, btn_send)
 
         btn_clear.click(
             fn=handle_clear,
@@ -169,11 +170,11 @@ def build_demo() -> gr.Blocks:
             outputs=[chatbot, history_state, meta_state, evidence_html, metrics_html],
         )
 
-        btn_retry.click(
+        btn_retry.click(_lock, None, btn_send).then(
             fn=handle_retry,
             inputs=[history_state, meta_state, dd_mode, sl_topk],
-            outputs=[chatbot, history_state, meta_state, evidence_html, metrics_html],
-        )
+            outputs=submit_outputs,   # 6 outputs khớp handle_retry (stream)
+        ).then(_unlock, None, btn_send)
 
         chatbot.like(
             fn=handle_feedback,

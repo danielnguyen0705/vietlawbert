@@ -143,3 +143,47 @@ def generate(
             "mock"              : False,
             "error"             : str(exc),
         }
+
+
+def generate_stream(
+    query: str,
+    docs: List[Dict[str, Any]],
+    mode: str = "Full (+ Graph Rerank)",
+    use_mock: bool = False,
+    temperature: float = 0.1,
+    max_tokens: int = 1024,
+):
+    """Bản STREAM của generate: yield dần {'answer', 'done', 'model_used', 'attribution_score',
+    'latency_ms', 'mock'}. Dùng cho chatbox chảy chữ (Gradio generator handler)."""
+    t0 = time.perf_counter()
+
+    if use_mock:
+        full = _mock_generate(query, docs, mode)
+        acc = ""
+        for word in full["answer"].split(" "):
+            acc = (acc + " " + word).strip()
+            time.sleep(0.01)
+            yield {**full, "answer": acc, "done": False}
+        yield {**full, "done": True}
+        return
+
+    generator = _get_generator()
+    acc, provider, attr = "", "Unknown", 0.0
+    try:
+        for ev in generator.ask_stream(query=query, top_k=len(docs) or 3, contexts=docs if docs else None):
+            if ev.get("type") == "token":
+                acc = ev.get("answer", acc)
+                yield {"answer": acc, "done": False, "model_used": provider,
+                       "attribution_score": 0.0, "latency_ms": round((time.perf_counter() - t0) * 1000, 1),
+                       "mock": False}
+            elif ev.get("type") == "done":
+                acc = ev.get("answer", acc) or acc
+                provider = ev.get("model_used", provider)
+                attr = ev.get("attribution_score", 0.0)
+        yield {"answer": acc, "done": True, "model_used": provider, "attribution_score": attr,
+               "latency_ms": round((time.perf_counter() - t0) * 1000, 1), "mock": False}
+    except Exception as exc:
+        logger.error("Generation stream thất bại: %s", exc)
+        yield {"answer": f"Lỗi hệ thống khi tổng hợp câu trả lời: {exc}", "done": True,
+               "model_used": "Error", "attribution_score": 0.0,
+               "latency_ms": round((time.perf_counter() - t0) * 1000, 1), "mock": False}

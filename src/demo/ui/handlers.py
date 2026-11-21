@@ -81,72 +81,65 @@ def handle_submit(
     meta_state: SessionMeta,
     mode: str,
     top_k: int,
-) -> Tuple[ChatHistory, ChatHistory, SessionMeta, str, str, str]:
+):
     """
-    Xử lý sự kiện Gửi câu hỏi.
-
-    Returns (chatbot, history_state, meta_state, txt_clear, evidence_html, metrics_html)
+    Xử lý Gửi câu hỏi — GENERATOR streaming (chatbox chảy chữ).
+    Mỗi lần yield: (chatbot, history_state, meta_state, txt_clear, evidence_html, metrics_html).
+    history_state chỉ cập nhật ở yield CUỐI → không hỏng state giữa chừng.
     """
     empty_evidence = render_evidence([])
     empty_metrics  = render_metrics()
 
     if not message.strip():
-        return history, history, meta_state, "", empty_evidence, empty_metrics
+        yield history, history, meta_state, "", empty_evidence, empty_metrics
+        return
 
     query = message.strip()
+    is_mock = USE_MOCK_BACKEND
     logger.info("Nhận câu hỏi: '%.80s'", query)
 
-    answer, docs, retr_lat, gen_lat, model_used, attribution_score, is_mock = _run_pipeline(
-        query, mode, int(top_k)
-    )
-
-    # Gradio 6.x: append từng message riêng với role
-    new_history = history + [
-        _msg("user", query),
-        _msg("assistant", answer),
-    ]
-
-    # Lưu metadata lượt này để feedback_service dùng
-    # index = số lượt đã có (trước khi append lượt mới này)
-    turn_index = len(meta_state)
-    new_meta = meta_state + [{
-        "query"      : query,
-        "answer"     : answer,
-        "mode"       : mode,
-        "top_k"      : int(top_k),
-        "model_used" : model_used,
-        "turn_index" : turn_index,
-    }]
-
+    # ① Retrieval (blocking) → hiện Evidence ngay trước khi câu trả lời chảy ra
+    retr = retrieval_service.retrieve(query=query, top_k=int(top_k), mode=mode, use_mock=is_mock)
+    docs     = retr["docs"]
+    retr_lat = retr["latency_ms"]
     evidence = render_evidence(docs)
-    metrics  = render_metrics(
-        retrieval_latency_ms  = retr_lat,
-        generation_latency_ms = gen_lat,
-        n_docs                = len(docs),
-        mode                  = mode,
-        top_k                 = int(top_k),
-        attribution_score     = attribution_score,
-        model_used            = model_used,
-        is_mock               = is_mock,
+    streaming_metrics = render_metrics(
+        retrieval_latency_ms=retr_lat, n_docs=len(docs), mode=mode,
+        top_k=int(top_k), is_mock=is_mock,
     )
 
-    # Ghi log đầy đủ lượt này (query + answer + top-k evidence + metrics)
-    # phục vụ phân tích định lượng và viết test hồi quy. An toàn, không làm hỏng UI.
+    base = history + [_msg("user", query)]
+    # Hiện bong bóng "đang soạn…" + Evidence, xoá ô nhập; GIỮ history_state cũ
+    yield base + [_msg("assistant", "⏳ Đang soạn…")], history, meta_state, "", evidence, streaming_metrics
+
+    # ② Generation — stream token
+    answer, model_used, attribution_score, gen_lat = "", "Unknown", 0.0, 0.0
+    for ev in generation_service.generate_stream(query, docs, mode, is_mock):
+        answer            = ev.get("answer", answer)
+        model_used        = ev.get("model_used", model_used)
+        attribution_score = ev.get("attribution_score", attribution_score)
+        gen_lat           = ev.get("latency_ms", gen_lat)
+        yield base + [_msg("assistant", answer or "…")], history, meta_state, "", evidence, streaming_metrics
+
+    # ③ Chốt lượt: cập nhật history_state + meta + metrics đầy đủ + log
+    new_history = base + [_msg("assistant", answer)]
+    turn_index  = len(meta_state)
+    new_meta = meta_state + [{
+        "query": query, "answer": answer, "mode": mode,
+        "top_k": int(top_k), "model_used": model_used, "turn_index": turn_index,
+    }]
+    metrics = render_metrics(
+        retrieval_latency_ms=retr_lat, generation_latency_ms=gen_lat,
+        n_docs=len(docs), mode=mode, top_k=int(top_k),
+        attribution_score=attribution_score, model_used=model_used, is_mock=is_mock,
+    )
     interaction_service.log_interaction(
-        query                 = query,
-        answer                = answer,
-        docs                  = docs,
-        mode                  = mode,
-        top_k                 = int(top_k),
-        model_used            = model_used,
-        attribution_score     = attribution_score,
-        retrieval_latency_ms  = retr_lat,
-        generation_latency_ms = gen_lat,
-        is_mock               = is_mock,
-        turn_index            = turn_index,
+        query=query, answer=answer, docs=docs, mode=mode, top_k=int(top_k),
+        model_used=model_used, attribution_score=attribution_score,
+        retrieval_latency_ms=retr_lat, generation_latency_ms=gen_lat,
+        is_mock=is_mock, turn_index=turn_index,
     )
-
-    return new_history, new_history, new_meta, "", evidence, metrics
+    yield new_history, new_history, new_meta, "", evidence, metrics
 
 
 def handle_clear() -> Tuple[ChatHistory, ChatHistory, SessionMeta, str, str]:
@@ -159,15 +152,12 @@ def handle_retry(
     meta_state: SessionMeta,
     mode: str,
     top_k: int,
-) -> Tuple[ChatHistory, ChatHistory, SessionMeta, str, str, str]:
-    """
-    Gửi lại câu hỏi cuối cùng trong lịch sử.
-    Gradio 6.x: mỗi lượt = 2 entries (user + assistant) trong history list.
-    """
+):
+    """Gửi lại câu hỏi cuối — GENERATOR (stream như handle_submit). 6 outputs khớp submit."""
     if not history:
-        return history, history, meta_state, "", render_evidence([]), render_metrics()
+        yield history, history, meta_state, "", render_evidence([]), render_metrics()
+        return
 
-    # Tìm user message cuối cùng
     last_user_msg = None
     for msg in reversed(history):
         if msg.get("role") == "user":
@@ -175,13 +165,13 @@ def handle_retry(
             break
 
     if not last_user_msg:
-        return history, history, meta_state, "", render_evidence([]), render_metrics()
+        yield history, history, meta_state, "", render_evidence([]), render_metrics()
+        return
 
-    # Cắt bỏ lượt cuối (2 entries: user + assistant)
+    # Cắt lượt cuối (2 entries: user + assistant) rồi chạy lại streaming
     trimmed_history = history[:-2] if len(history) >= 2 else []
     trimmed_meta    = meta_state[:-1] if meta_state else []
-
-    return handle_submit(last_user_msg, trimmed_history, trimmed_meta, mode, top_k)
+    yield from handle_submit(last_user_msg, trimmed_history, trimmed_meta, mode, top_k)
 
 
 def handle_feedback(
