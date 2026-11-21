@@ -34,6 +34,7 @@ from preprocess.ast_parser import HybridASTParser
 from preprocess.appendix_extract import build_appendix_chunks
 from quality.corpus_audit.corpus_gate import CorpusIngestGate
 from database.qdrant_client import QdrantClientWrapper
+from database.mongo_client import MongoDocStore, build_doc_record
 from rag.es_retriever import LegalElasticsearchRetriever
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | [%(levelname)s] | %(message)s")
@@ -125,6 +126,13 @@ class IngestPipelineWorker:
             logger.warning("Sử dụng collection Qdrant hiện có: %s", init_err)
 
         self.es = LegalElasticsearchRetriever(hosts=[self.es_host], index_name=config.ES_INDEX_NAME)
+
+        # Document Store (toàn văn + metadata). Chịu lỗi: Mongo chết thì bỏ qua, không chặn nạp vector.
+        try:
+            self.mongo: Optional[MongoDocStore] = MongoDocStore()
+        except Exception as mongo_err:
+            logger.warning("Không kết nối được MongoDB (%s) — bỏ qua Document Store.", str(mongo_err)[:120])
+            self.mongo = None
 
         self.device = resolve_safe_device(device)
         logger.info("Đang nạp mô hình %s trên [%s]...", self.model_name, self.device)
@@ -287,6 +295,13 @@ class IngestPipelineWorker:
                         "co_quan": org,
                     }
 
+                    # Document Store: 1 record/văn bản = toàn văn + metadata (gồm người ký) theo doc_id.
+                    if self.mongo is not None:
+                        try:
+                            self.mongo.upsert_doc(build_doc_record(doc_record, doc_id, raw_text))
+                        except Exception as mex:
+                            logger.warning("Bỏ qua lỗi nạp Mongo doc %s: %s", doc_id, str(mex)[:120])
+
                     try:
                         ast_chunks = self.parser.parse_document(raw_text, metadata)
                     except Exception as parse_err:
@@ -413,6 +428,9 @@ def main():
         try: worker.es.client.indices.delete(index=config.ES_INDEX_NAME, ignore_unavailable=True)
         except Exception as e: logger.info("ES delete: %s", e)
         worker.es._ensure_index_and_analyzer()
+        if worker.mongo is not None:
+            try: worker.mongo.wipe()
+            except Exception as e: logger.info("Mongo wipe: %s", e)
 
     completed_shards = load_checkpoint()
     p = Path(args.shard_path)

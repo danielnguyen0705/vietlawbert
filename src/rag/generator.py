@@ -25,6 +25,7 @@ from openai import OpenAI
 from configs.config import config
 from configs.logging_config import get_subsystem_logger
 from rag.retriever import LegalHybridRetriever
+from database.mongo_client import MongoDocStore
 
 logger = get_subsystem_logger("rag", "generator")
 
@@ -263,6 +264,12 @@ class LegalGenerator:
         # FIX: Dùng "is not None" thay vì "or" để tránh tạo retriever mới
         # khi retriever được truyền vào nhưng có giá trị falsy khác
         self.retriever = retriever if retriever is not None else LegalHybridRetriever()
+        # Document Store: bốc tách toàn văn + metadata hành chính (người ký, tình trạng...) theo doc_id.
+        try:
+            self.doc_store: Optional[MongoDocStore] = MongoDocStore()
+        except Exception as mongo_err:
+            logger.warning("Không kết nối MongoDB (%s) — tạo sinh dùng metadata từ payload.", str(mongo_err)[:120])
+            self.doc_store = None
         self.dispatcher = ResilientLLMDispatcher()
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -280,14 +287,25 @@ class LegalGenerator:
             h_path   = c.get("hierarchy_path") or c.get("article") or "Điều khoản liên quan"
             content  = (c.get("content") or c.get("text") or "").strip()
 
-            block = (
-                f"TÀI LIỆU [{i}]:\n"
-                f"- Số hiệu: {doc_num}\n"
-                f"- Hiệu lực: {eff_date}\n"
-                f"- Phân vị: {h_path}\n"
-                f"- Nội dung: {content}"
-            )
-            context_blocks.append(block)
+            # Bốc tách metadata chuẩn từ Document Store (Mongo) theo doc_id — nguồn chính xác hơn payload.
+            md = self.doc_store.get_doc(c.get("doc_id") or "") if self.doc_store is not None else None
+
+            lines = [f"TÀI LIỆU [{i}]:", f"- Số hiệu: {doc_num}"]
+            if md:
+                if md.get("doc_type"):   lines.append(f"- Loại văn bản: {md['doc_type']}")
+                if md.get("issuer"):     lines.append(f"- Cơ quan ban hành: {md['issuer']}")
+                if md.get("signer"):
+                    _sg = md["signer"] + (f" ({md['signer_title']})" if md.get("signer_title") else "")
+                    lines.append(f"- Người ký: {_sg}")
+                if md.get("legal_fields"): lines.append(f"- Lĩnh vực: {', '.join(md['legal_fields'])}")
+                _status = md.get("eff_status") or eff_date
+                _eff = _status + (f" (từ {md['effective_from']})" if md.get("effective_from") else "")
+                lines.append(f"- Hiệu lực: {_eff}")
+            else:
+                lines.append(f"- Hiệu lực: {eff_date}")
+            lines.append(f"- Phân vị: {h_path}")
+            lines.append(f"- Nội dung: {content}")
+            context_blocks.append("\n".join(lines))
 
         return "\n\n".join(context_blocks)
 
@@ -404,6 +422,8 @@ class LegalGenerator:
     def close(self) -> None:
         if hasattr(self.retriever, "close"):
             self.retriever.close()
+        if getattr(self, "doc_store", None) is not None:
+            self.doc_store.close()
 
 
 LegalAnswerGenerator = LegalGenerator
