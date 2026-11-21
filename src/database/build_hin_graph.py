@@ -82,6 +82,8 @@ class HINGraphBuilder:
             d.effective_date = doc.effective_date,
             d.status = doc.status,
             d.org = doc.org,
+            d.signer = doc.signer,
+            d.signer_title = doc.signer_title,
             d.issue_date = doc.issue_date,
             d.doc_type = doc.doc_type,
             d.legal_rank = doc.legal_rank,
@@ -222,6 +224,9 @@ class HINGraphBuilder:
                 _doc_type, _legal_rank = doc_type_and_rank(doc_number, title)
                 _is_vbhn = is_collision_prone(doc_number)
                 _, _sign, _ = _record_fields(item)
+                # Người ký (thuộc tính hành chính của node VanBanPhapLuat) — từ documentIssues[0].
+                _issues = meta_detail.get("documentIssues") or []
+                _first_issue = _issues[0] if isinstance(_issues, list) and _issues else {}
                 metadata = {
                     "doc_id": doc_id,
                     "doc_number": doc_number,
@@ -231,6 +236,8 @@ class HINGraphBuilder:
                     "effective_date": effective_date,
                     "status": status_raw,
                     "org": org,
+                    "signer": str(_first_issue.get("personName") or ""),          # NGƯỜI KÝ
+                    "signer_title": str(_first_issue.get("jobTitleName") or ""),   # chức danh người ký
                     "issue_date": str(meta_detail.get("issueDate") or meta_api.get("issueDate") or ""),
                     "version": _sign if _is_vbhn else "",                       # ngày ký (bản VBHN)
                     "canonical_group": (doc_id.rsplit("-", 1)[0] if _is_vbhn else ""),  # slug gom các bản cùng số hiệu
