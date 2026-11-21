@@ -7,6 +7,7 @@ Khóa doc_id dùng chung với Qdrant/Neo4j → 4 CSDL join được qua 1 đị
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 from pymongo import MongoClient
@@ -40,8 +41,9 @@ def build_doc_record(doc_record: Dict[str, Any], doc_id: str, full_text: str) ->
 
     issues = md.get("documentIssues") or []
     first_issue = issues[0] if isinstance(issues, list) and issues else {}
-    signer = str(first_issue.get("personName") or "").strip() or None
-    signer_title = str(first_issue.get("jobTitleName") or "").strip() or None
+    _clean = lambda s: re.sub(r"\s+", " ", str(s or "")).strip()   # gộp space thừa ("Phó  Chủ tịch")
+    signer = _clean(first_issue.get("personName")) or None
+    signer_title = _clean(first_issue.get("jobTitleName")) or None
 
     def _date(*vals):
         for v in vals:

@@ -227,6 +227,7 @@ class HINGraphBuilder:
                 # Người ký (thuộc tính hành chính của node VanBanPhapLuat) — từ documentIssues[0].
                 _issues = meta_detail.get("documentIssues") or []
                 _first_issue = _issues[0] if isinstance(_issues, list) and _issues else {}
+                _clean_sp = lambda s: re.sub(r"\s+", " ", str(s or "")).strip()   # gộp space thừa
                 metadata = {
                     "doc_id": doc_id,
                     "doc_number": doc_number,
@@ -236,8 +237,8 @@ class HINGraphBuilder:
                     "effective_date": effective_date,
                     "status": status_raw,
                     "org": org,
-                    "signer": str(_first_issue.get("personName") or ""),          # NGƯỜI KÝ
-                    "signer_title": str(_first_issue.get("jobTitleName") or ""),   # chức danh người ký
+                    "signer": _clean_sp(_first_issue.get("personName")),          # NGƯỜI KÝ
+                    "signer_title": _clean_sp(_first_issue.get("jobTitleName")),   # chức danh người ký
                     "issue_date": str(meta_detail.get("issueDate") or meta_api.get("issueDate") or ""),
                     "version": _sign if _is_vbhn else "",                       # ngày ký (bản VBHN)
                     "canonical_group": (doc_id.rsplit("-", 1)[0] if _is_vbhn else ""),  # slug gom các bản cùng số hiệu

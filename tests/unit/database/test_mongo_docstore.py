@@ -44,6 +44,14 @@ def test_build_doc_record_trich_du_truong_va_nguoi_ky():
     assert r["full_text"] == "TOÀN VĂN ..."
 
 
+def test_build_doc_record_gop_space_thua_trong_nguoi_ky():
+    rec = dict(_REC)
+    rec["metadata_detail"] = dict(_REC["metadata_detail"])
+    rec["metadata_detail"]["documentIssues"] = [{"personName": "Lâm  Văn Bi", "jobTitleName": "Phó  Chủ tịch"}]
+    r = build_doc_record(rec, "D3", "")
+    assert r["signer"] == "Lâm Văn Bi" and r["signer_title"] == "Phó Chủ tịch"  # gộp space thừa
+
+
 def test_build_doc_record_truong_thieu_thi_null_khong_bia():
     bare = {"doc_id": "D2", "doc_number": "02/2026", "metadata_detail": {}}
     r = build_doc_record(bare, "D2", "")
