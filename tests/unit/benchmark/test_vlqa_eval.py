@@ -114,6 +114,40 @@ def test_judges_voi_client_gia():
     assert r2["correctness"] == 0.9
 
 
+# ───── Multi-source: set-recall + completeness ─────
+
+def test_set_recall_va_completeness():
+    m = V.retrieval_metrics(["A", "B", "C"], {"A", "C"}, ks=(1, 3))
+    assert m["set_recall@3"] == 1.0 and m["set_recall@1"] == 0.5     # top1 chỉ có A trong 2 gold
+    assert m["completeness@3"] == 1.0 and m["completeness@1"] == 0.0  # đủ cả {A,C} chỉ ở top3
+
+
+# ───── Drift labeling (status_map tổng hợp) ─────
+
+def test_label_drift():
+    smap = {
+        "A": {"in_corpus": True, "superseded": True,  "expired": False, "status": ""},
+        "B": {"in_corpus": True, "superseded": False, "expired": True,  "status": "Hết hiệu lực"},
+        "C": {"in_corpus": True, "superseded": False, "expired": False, "status": "Còn hiệu lực"},
+        # D không có trong corpus
+    }
+    assert V.label_drift({"A", "C"}, smap)["is_drifted"] is True     # A đã thay thế
+    assert V.label_drift({"B"}, smap)["is_drifted"] is True          # B hết hiệu lực
+    stable = V.label_drift({"C"}, smap)
+    assert stable["is_stable"] is True and stable["is_drifted"] is False
+    assert V.label_drift({"D"}, smap)["is_stable"] is False          # không gold trong corpus
+
+
+# ───── Calibration judge↔người ─────
+
+def test_spearman_va_kappa():
+    assert V.spearman([0.1, 0.5, 0.9], [0.2, 0.6, 0.95]) == 1.0       # đồng biến hoàn toàn
+    assert V.spearman([0.1, 0.5, 0.9], [0.9, 0.5, 0.1]) == -1.0       # nghịch biến
+    assert V.cohen_kappa([1, 1, 0, 0], [1, 1, 0, 0]) == 1.0           # khớp hoàn toàn
+    cal = V.judge_calibration([0.1, 0.5, 0.9, 0.8], [0.2, 0.6, 0.95, 0.75])
+    assert cal["spearman_rho"] == 1.0 and cal["trustworthy"] is True
+
+
 # ───── Smoke trên VLQA thật (skip nếu thiếu) ─────
 
 _VLQA = "/home/dell/Desktop/VLQA"

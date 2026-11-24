@@ -172,15 +172,75 @@ def ndcg_at_k(ranked: List[str], gold: Set[str], k: int) -> float:
     return dcg / ideal if ideal > 0 else 0.0
 
 
+def set_recall_at_k(ranked: List[str], gold: Set[str], k: int) -> float:
+    """Multi-source: lấy được BAO NHIÊU trong tập nguồn gold ở top-k (0..1). Với câu nhiều VB đáp án."""
+    if not gold:
+        return 0.0
+    return len(gold & set(ranked[:k])) / len(gold)
+
+
+def completeness_at_k(ranked: List[str], gold: Set[str], k: int) -> float:
+    """Lấy ĐỦ toàn bộ nguồn gold ở top-k chưa (tòa căn cứ nhiều VB → cần đủ, không chỉ 1)."""
+    return 1.0 if gold and gold <= set(ranked[:k]) else 0.0
+
+
 def retrieval_metrics(ranked_keys: List[str], gold: Set[str], ks: Tuple[int, ...] = (1, 3, 5, 10)) -> Dict[str, float]:
-    """Toàn bộ metric cho 1 câu. ranked_keys đã theo thứ hạng; dedup giữ hạng tốt nhất."""
+    """Toàn bộ metric cho 1 câu. ranked_keys đã theo thứ hạng; dedup giữ hạng tốt nhất.
+    Gồm metric đơn-nguồn (hit/mrr/ndcg/map) và đa-nguồn (set_recall/completeness)."""
     ranked = _dedup_rank(ranked_keys)
     out: Dict[str, float] = {"mrr": reciprocal_rank(ranked, gold)}
     for k in ks:
         out[f"hit@{k}"] = hit_at_k(ranked, gold, k)
         out[f"ndcg@{k}"] = ndcg_at_k(ranked, gold, k)
         out[f"map@{k}"] = average_precision_at_k(ranked, gold, k)
+        out[f"set_recall@{k}"] = set_recall_at_k(ranked, gold, k)
+        out[f"completeness@{k}"] = completeness_at_k(ranked, gold, k)
     return out
+
+
+# ───────────────────────── Temporal drift (tách stable/drifted) ─────────────────────────
+
+_DRIFT_REL = ("THAY_THE", "BAI_BO", "DINH_CHI_THI_HANH")
+
+
+def fetch_law_status(neo4j_client, gold_docnums: Set[str]) -> Dict[str, Dict[str, Any]]:
+    """I/O: {doc_number(norm) -> {status, superseded, expired, in_corpus}} cho gold.
+    CHUẨN HÓA 2 PHÍA (Neo4j lưu doc_number dạng thô, gold đã chuẩn hóa → exact-match sẽ hụt)."""
+    norm2raw, norm2status = {}, {}
+    for r in neo4j_client.execute_query(
+        "MATCH (d:LawDocument) WHERE d.doc_number IS NOT NULL AND d.doc_number<>'N/A' "
+        "RETURN d.doc_number AS dn, d.status AS st"
+    ):
+        n = _norm(r["dn"]); norm2raw[n] = r["dn"]; norm2status[n] = r["st"] or ""
+    in_corpus = gold_docnums & set(norm2raw)
+    raw = [norm2raw[n] for n in in_corpus]
+    superseded: Set[str] = set()
+    if raw:
+        for r in neo4j_client.execute_query(
+            "UNWIND $d AS dn MATCH (x:LawDocument {doc_number: dn}) "
+            "MATCH (:LawDocument)-[rel:LEGAL_RELATION]->(x) WHERE rel.type IN $t "
+            "RETURN DISTINCT dn AS dn", {"d": raw, "t": list(_DRIFT_REL)}
+        ):
+            superseded.add(_norm(r["dn"]))
+    out: Dict[str, Dict[str, Any]] = {}
+    for n in in_corpus:
+        st = norm2status.get(n, "")
+        out[n] = {"status": st, "superseded": n in superseded,
+                  "expired": "hết hiệu lực" in st.lower(), "in_corpus": True}
+    return out
+
+
+def label_drift(gold_docnums: Set[str], status_map: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """THUẦN: gắn cờ 1 câu là stable/drifted. drifted = có gold-luật (trong corpus) đã
+    bị thay thế/bãi bỏ HOẶC hết hiệu lực. status_map từ fetch_law_status (inject được → test)."""
+    in_corp = {d for d in gold_docnums if status_map.get(d, {}).get("in_corpus")}
+    drifted = {d for d in in_corp if status_map[d]["superseded"] or status_map[d]["expired"]}
+    return {
+        "in_corpus_golds": in_corp,
+        "drifted_golds": drifted,
+        "is_drifted": bool(drifted),
+        "is_stable": bool(in_corp) and not drifted,
+    }
 
 
 # ───────────────────────── LLM Judges ─────────────────────────
@@ -263,10 +323,77 @@ def _call_judge(client, model: str, prompt: str) -> Dict[str, Any]:
         return {"error": str(exc)[:160]}
 
 
+# ───────────────────────── Calibration judge↔người ─────────────────────────
+
+def _rank(xs: List[float]) -> List[float]:
+    """Hạng trung bình (xử lý đồng hạng) — cho Spearman không cần scipy."""
+    order = sorted(range(len(xs)), key=lambda i: xs[i])
+    ranks = [0.0] * len(xs)
+    i = 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and xs[order[j + 1]] == xs[order[i]]:
+            j += 1
+        avg = (i + j) / 2 + 1
+        for k in range(i, j + 1):
+            ranks[order[k]] = avg
+        i = j + 1
+    return ranks
+
+
+def _pearson(a: List[float], b: List[float]) -> float:
+    n = len(a)
+    if n < 2:
+        return 0.0
+    ma, mb = sum(a) / n, sum(b) / n
+    cov = sum((a[i] - ma) * (b[i] - mb) for i in range(n))
+    va = sum((x - ma) ** 2 for x in a) ** 0.5
+    vb = sum((x - mb) ** 2 for x in b) ** 0.5
+    return cov / (va * vb) if va > 0 and vb > 0 else 0.0
+
+
+def spearman(human: List[float], judge: List[float]) -> float:
+    """Tương quan hạng Spearman ρ giữa điểm người và judge."""
+    if len(human) != len(judge) or len(human) < 2:
+        return 0.0
+    return round(_pearson(_rank(human), _rank(judge)), 4)
+
+
+def cohen_kappa(human: List[float], judge: List[float], thr: float = 0.5) -> float:
+    """Cohen's κ sau khi nhị phân hóa ở ngưỡng (đạt/không) — mức đồng thuận hơn ngẫu nhiên."""
+    n = len(human)
+    if n == 0 or n != len(judge):
+        return 0.0
+    ha = [x >= thr for x in human]
+    hb = [x >= thr for x in judge]
+    po = sum(1 for i in range(n) if ha[i] == hb[i]) / n
+    pa, pb = sum(ha) / n, sum(hb) / n
+    pe = pa * pb + (1 - pa) * (1 - pb)
+    return round((po - pe) / (1 - pe), 4) if pe < 1 else 1.0
+
+
+def judge_calibration(human: List[float], judge: List[float], thr: float = 0.5,
+                      min_rho: float = 0.8) -> Dict[str, Any]:
+    """Báo cáo mức tin cậy của judge so với nhãn người: ρ, κ, và có ĐỦ tin để dùng tự động không."""
+    rho = spearman(human, judge)
+    return {
+        "n": len(human),
+        "spearman_rho": rho,
+        "cohen_kappa": cohen_kappa(human, judge, thr),
+        "trustworthy": rho >= min_rho,   # lit: chỉ dùng judge tự động khi ρ đủ cao
+    }
+
+
 # ───────────────────────── Orchestrator ─────────────────────────
 
 def _mean(vals: List[float]) -> float:
     return sum(vals) / len(vals) if vals else 0.0
+
+
+def _agg_metrics(per_q: List[Dict[str, float]]) -> Dict[str, float]:
+    if not per_q:
+        return {}
+    return {key: round(_mean([p[key] for p in per_q]), 4) for key in per_q[0]}
 
 
 def evaluate_vlqa(
@@ -274,6 +401,7 @@ def evaluate_vlqa(
     vlqa_path: str | Path,
     corpus_path: str | Path,
     corpus_docnums: Optional[Set[str]] = None,
+    neo4j_client=None,
     top_k: int = 10,
     limit: Optional[int] = None,
     generator=None,
@@ -281,19 +409,28 @@ def evaluate_vlqa(
     judge_model: str = "",
     article_level: bool = True,
 ) -> Dict[str, Any]:
-    """Chạy eval VLQA. retriever.retrieve(q, top_k)->list[dict] (có doc_number[, content,...]).
-    generator (tùy chọn) cho câu trả lời để judge; judge_client (tùy chọn) để chấm LLM.
-    Trả về metric trung bình + coverage. Chỉ chấm câu có gold phủ trong corpus."""
+    """Chạy eval VLQA, TÁCH stable/drifted (~76% câu có gold đã thay thế/hết hiệu lực).
+    retriever.retrieve(q, top_k)->list[dict] (có doc_number[, content,...]).
+    neo4j_client (tùy chọn) → gắn cờ drift; generator+judge_client (tùy chọn) → chấm LLM.
+    Metric tất định báo theo 3 nhóm: all / stable / drifted. Judge-1 (hiệu lực) nhắm nhóm drifted."""
     aid_index = build_aid_index(corpus_path)
     data = load_vlqa_split(vlqa_path)
     if limit:
         data = data[:limit]
 
-    per_q: List[Dict[str, float]] = []
+    # Gắn cờ drift (nếu có Neo4j): lấy status cho toàn bộ gold doc_number 1 lần
+    status_map: Dict[str, Dict[str, Any]] = {}
+    if neo4j_client is not None:
+        all_gold: Set[str] = set()
+        for q in data:
+            all_gold |= question_gold(q, aid_index)["gold_docnums"]
+        status_map = fetch_law_status(neo4j_client, all_gold)
+
+    buckets: Dict[str, List[Dict[str, float]]] = {"all": [], "stable": [], "drifted": []}
     art_hits: List[float] = []
-    j1: List[float] = []
-    j2: List[float] = []
-    n_eval = 0
+    j1_drift: List[float] = []
+    j2_all: List[float] = []
+    n_eval = n_drift = 0
 
     for q in data:
         g = question_gold(q, aid_index)
@@ -305,36 +442,43 @@ def evaluate_vlqa(
 
         retrieved = retriever.retrieve(q["question"], top_k=top_k)
         ranked_dn = [_norm(c.get("doc_number") or "") for c in retrieved]
-        per_q.append(retrieval_metrics(ranked_dn, g["gold_docnums"]))
+        m = retrieval_metrics(ranked_dn, g["gold_docnums"])
+        buckets["all"].append(m)
 
-        # Điều-level: có khớp được chunk truy xuất với điều gold không
+        drift = label_drift(g["gold_docnums"], status_map) if status_map else None
+        is_drift = bool(drift and drift["is_drifted"])
+        if status_map:
+            buckets["drifted" if is_drift else "stable"].append(m)
+            if is_drift:
+                n_drift += 1
+
         if article_level and g["gold_articles"]:
-            matched = False
-            for ga in g["gold_articles"]:
-                cands = [c for c in retrieved if _norm(c.get("doc_number") or "") == ga["doc_number"]]
-                if match_article(ga["text"], cands):
-                    matched = True
-                    break
+            matched = any(
+                match_article(ga["text"], [c for c in retrieved if _norm(c.get("doc_number") or "") == ga["doc_number"]])
+                for ga in g["gold_articles"]
+            )
             art_hits.append(1.0 if matched else 0.0)
 
-        # Judges (tùy chọn)
         if generator is not None and judge_client is not None:
             ans = generator.ask(q["question"], contexts=retrieved).get("answer", "")
-            r1 = judge_effectivity_hop(judge_client, judge_model, q["question"], ans, retrieved)
             r2 = judge_answer_correctness(judge_client, judge_model, q["question"], ans, q.get("answer", ""))
-            if "cites_effective" in r1:
-                j1.append(_mean([r1.get("cites_effective", 0), r1.get("avoids_superseded", 0), r1.get("relation_correct", 0)]))
             if "correctness" in r2:
-                j2.append(r2.get("correctness", 0.0))
+                j2_all.append(r2.get("correctness", 0.0))
+            if is_drift:   # Judge-1 (hiệu lực/hop) chỉ ý nghĩa ở nhóm drifted
+                r1 = judge_effectivity_hop(judge_client, judge_model, q["question"], ans, retrieved)
+                if "cites_effective" in r1:
+                    j1_drift.append(_mean([r1.get("cites_effective", 0), r1.get("avoids_superseded", 0), r1.get("relation_correct", 0)]))
 
-    agg: Dict[str, Any] = {"n_evaluated": n_eval}
-    if per_q:
-        for key in per_q[0]:
-            agg[key] = round(_mean([p[key] for p in per_q]), 4)
+    agg: Dict[str, Any] = {"n_evaluated": n_eval, "n_drifted": n_drift,
+                           "drift_rate": round(n_drift / n_eval, 4) if n_eval else 0.0}
+    agg["retrieval_all"] = _agg_metrics(buckets["all"])
+    if status_map:
+        agg["retrieval_stable"] = _agg_metrics(buckets["stable"])
+        agg["retrieval_drifted"] = _agg_metrics(buckets["drifted"])
     if art_hits:
         agg["article_match_rate"] = round(_mean(art_hits), 4)
-    if j1:
-        agg["judge1_graph_score"] = round(_mean(j1), 4)
-    if j2:
-        agg["judge2_correctness"] = round(_mean(j2), 4)
+    if j1_drift:
+        agg["judge1_effectivity_drifted"] = round(_mean(j1_drift), 4)
+    if j2_all:
+        agg["judge2_correctness"] = round(_mean(j2_all), 4)
     return agg
