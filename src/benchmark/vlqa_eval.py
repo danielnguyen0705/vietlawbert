@@ -482,3 +482,60 @@ def evaluate_vlqa(
     if j2_all:
         agg["judge2_correctness"] = round(_mean(j2_all), 4)
     return agg
+
+
+def _corpus_docnums_from_neo4j(client) -> Set[str]:
+    return {
+        _norm(r["dn"]) for r in client.execute_query(
+            "MATCH (d:LawDocument) WHERE d.doc_number IS NOT NULL AND d.doc_number<>'N/A' "
+            "RETURN DISTINCT d.doc_number AS dn"
+        )
+    }
+
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Đánh giá VLQA (drift-aware, 3 tầng)")
+    parser.add_argument("--vlqa", default="/home/dell/Desktop/VLQA/train.json")
+    parser.add_argument("--corpus", default="/home/dell/Desktop/VLQA/legal_corpus.json")
+    parser.add_argument("--top-k", type=int, default=10)
+    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--no-drift", action="store_true", help="Bỏ gắn cờ drift (không cần Neo4j)")
+    parser.add_argument("--judge", action="store_true", help="Bật Judge-1/Judge-2 (cần EVAL_API_KEY)")
+    parser.add_argument("--out", default="outputs/benchmark/results/vlqa_eval.json")
+    args = parser.parse_args()
+
+    # Import nặng chỉ khi chạy thật (giữ module nhẹ cho unit-test).
+    from rag.retriever import LegalHybridRetriever
+    from database.neo4j_client import Neo4jClient
+
+    retriever = LegalHybridRetriever()
+    neo = None if args.no_drift else Neo4jClient()
+    corpus_dns = _corpus_docnums_from_neo4j(neo) if neo is not None else None
+
+    gen = jclient = None
+    jmodel = ""
+    if args.judge:
+        from rag.generator import LegalGenerator
+        from benchmark.llm_judge import LegalLLMJudge
+        gen = LegalGenerator(retriever=retriever)
+        _j = LegalLLMJudge()
+        jclient, jmodel = _j.client, _j.model
+
+    res = evaluate_vlqa(
+        retriever=retriever, vlqa_path=args.vlqa, corpus_path=args.corpus,
+        corpus_docnums=corpus_dns, neo4j_client=neo, top_k=args.top_k, limit=args.limit,
+        generator=gen, judge_client=jclient, judge_model=jmodel,
+    )
+    if neo is not None:
+        neo.close()
+
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(res, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info("Đã ghi kết quả VLQA eval → %s", out)
+    print(json.dumps(res, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()
