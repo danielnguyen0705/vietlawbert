@@ -17,6 +17,7 @@ from configs.logging_config import get_subsystem_logger
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
+import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -32,6 +33,7 @@ from transformers import (
 
 from configs.config import config
 from configs.paths import MODELS_DIR, ARTIFACTS_DIR
+from eval_utils import mrr_at_k
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | [%(levelname)s] | %(name)s - %(message)s")
 logger = get_subsystem_logger("training", "train_mrl")
@@ -287,7 +289,8 @@ def train(args):
 
     out_dir = Path(args.output_dir)
     best_dir = out_dir / "best_model"
-    best_val_loss = float("inf")
+    best_val_mrr = -1.0
+    eval_dim = min(256, model.hidden_size)   # chọn checkpoint theo MRR@10 ở lát triển khai d=256
 
     global_step = 0
     for epoch in range(args.epochs):
@@ -321,24 +324,32 @@ def train(args):
                 if global_step % args.logging_steps == 0:
                     logger.info("Epoch [%d/%d] | Step [%d/%d] | Train Loss: %.4f", epoch + 1, args.epochs, global_step, total_steps, loss.item() * accum_steps)
 
-        # Đánh giá Validation định kỳ sau mỗi epoch
+        # Đánh giá Validation định kỳ sau mỗi epoch: chọn checkpoint theo MRR@10 (findings A2),
+        # không còn lưu mù theo val-loss. Pool gold = chính các positive trong tập validation.
         model.eval()
         val_loss = 0.0
+        a_reps, p_reps = [], []
         with torch.no_grad():
             for a_tok, p_tok, n_tok, labels in val_loader:
                 a_tok = {k: v.to(device) for k, v in a_tok.items()}
                 p_tok = {k: v.to(device) for k, v in p_tok.items()}
                 n_tok = {k: v.to(device) for k, v in n_tok.items()}
                 labels = labels.to(device)
-                v_l = criterion(model(**a_tok), model(**p_tok), model(**n_tok), hierarchy_labels=labels)
-                val_loss += v_l.item()
+                a_rep, p_rep = model(**a_tok), model(**p_tok)
+                val_loss += criterion(a_rep, p_rep, model(**n_tok), hierarchy_labels=labels).item()
+                a_reps.append(F.normalize(a_rep[:, :eval_dim], p=2, dim=-1).float().cpu().numpy())
+                p_reps.append(F.normalize(p_rep[:, :eval_dim], p=2, dim=-1).float().cpu().numpy())
 
         avg_val_loss = val_loss / max(1, len(val_loader))
-        logger.info("=== Epoch %d: Train Loss: %.4f | Val Loss: %.4f ===", epoch + 1, epoch_loss / len(train_loader), avg_val_loss)
+        # MRR@10 trên tập validation (gold của anchor i là positive i). Positive trùng lặp có thể
+        # gây hòa hạng nhẹ — chấp nhận được vì chỉ dùng để XẾP HẠNG checkpoint, không báo cáo.
+        val_mrr = mrr_at_k(np.dot(np.vstack(a_reps), np.vstack(p_reps).T), k=10) if a_reps else 0.0
+        logger.info("=== Epoch %d: Train Loss: %.4f | Val Loss: %.4f | Val MRR@10: %.4f ===",
+                    epoch + 1, epoch_loss / len(train_loader), avg_val_loss, val_mrr)
 
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
-            logger.info("★ Tìm thấy Checkpoint tối ưu mới (Val Loss: %.4f). Đang lưu vào: %s", best_val_loss, best_dir)
+        if val_mrr > best_val_mrr:
+            best_val_mrr = val_mrr
+            logger.info("★ Checkpoint tối ưu mới (Val MRR@10: %.4f). Đang lưu vào: %s", best_val_mrr, best_dir)
             save_checkpoint(model, tokenizer, best_dir)
 
     # Lưu checkpoint cuối cùng

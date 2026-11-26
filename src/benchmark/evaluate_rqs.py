@@ -30,6 +30,7 @@ from configs.paths import BENCHMARK_DIR, BENCHMARK_RESULTS_DIR, CHECKPOINTS_DIR,
 from configs.config import config
 from benchmark.evaluate_rrf import load_benchmark, evaluate_query, retrieve_by_mode
 from benchmark.llm_judge import LegalLLMJudge
+from eval_utils import ALL_DIMS, build_candidate_pool
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | [%(levelname)s] | %(message)s")
 logger = get_subsystem_logger("benchmark", "eval_rqs")
@@ -162,6 +163,29 @@ class MultiModelBaselineComparator:
             sig = "Chênh lệch không đáng kể"
         return p_val, sig
 
+    @staticmethod
+    def _sweep_dims(wrap, test_samples, pool_dicts, pool_texts, dims):
+        """Quét các lát cắt d cho một encoder: encode full một lần rồi cắt từng d (findings C2,
+        mở rộng cho cả zero-shot). Trả {d: (metrics_dict, ndcg10_vector)}."""
+        q_full = wrap.encode([s["query"] for s in test_samples], is_query=True)
+        c_full = wrap.encode(pool_texts, is_query=False)
+        out = {}
+        for d in dims:
+            if d > q_full.shape[1]:
+                continue
+            qd = q_full[:, :d]; qd = qd / (np.linalg.norm(qd, axis=1, keepdims=True) + 1e-9)
+            cd = c_full[:, :d]; cd = cd / (np.linalg.norm(cd, axis=1, keepdims=True) + 1e-9)
+            sim = np.dot(qd, cd.T)
+            scores, ndcg = [], []
+            for idx, s in enumerate(test_samples):
+                cands = [pool_dicts[i] for i in np.argsort(-sim[idx])[:10]]
+                m = evaluate_query(cands, s, [1, 5, 10])
+                scores.append(m); ndcg.append(m.get("NDCG@10", 0.0))
+            t = len(scores) or 1
+            agg = {k: round(sum(x[k] for x in scores) / t, 4) for k in scores[0].keys() if k != "is_valid_query"}
+            out[d] = (agg, ndcg)
+        return out
+
     def compare_all(self, output_dir: Path | str = BENCHMARK_RESULTS_DIR):
         out_path = Path(output_dir)
         out_path.mkdir(parents=True, exist_ok=True)
@@ -169,9 +193,8 @@ class MultiModelBaselineComparator:
         from rag.es_retriever import LegalElasticsearchRetriever
         es = LegalElasticsearchRetriever(hosts=[config.ES_HOST], index_name=config.ES_INDEX_NAME)
 
-        # Danh sách so sánh đồng số chiều đầy đủ (full dim) trước khi nén MRL
+        # Danh sách so sánh baseline (findings A3: bỏ Chau/VNLawBERT đã gỡ khỏi HuggingFace Hub)
         raw_backbones = [
-            ("VNLawBERT (Chau et al., 2020)", "Chau/VNLawBERT", False, 768),
             ("vinai/phobert-base-v2", "vinai/phobert-base-v2", False, 768),
             ("vinai/phobert-large", "vinai/phobert-large", False, 1024),
             ("intfloat/multilingual-e5-base", "intfloat/multilingual-e5-base", True, 768),
@@ -187,23 +210,12 @@ class MultiModelBaselineComparator:
             test_samples = samples[:200]
             logger.info("=== ĐỐI CHUẨN MASTER BENCHMARK: %s (%d MẪU) ===", ds_name.upper(), len(test_samples))
 
-            # Xây dựng kho ứng viên toàn diện đồng nhất cho tất cả các mô hình
-            candidate_pool_dicts = []
-            seen_chunks = set()
-            for s in test_samples:
-                c_id = s.get("ground_truth_chunk") or str(len(seen_chunks))
-                if c_id not in seen_chunks:
-                    seen_chunks.add(c_id)
-                    candidate_pool_dicts.append({
-                        "chunk_id": c_id,
-                        "doc_number": s.get("ground_truth_doc_number", ""),
-                        "article": s.get("ground_truth_article", ""),
-                        "content": s.get("raw_content") or s.get("evidence_text", "N/A")
-                    })
-
+            # Kho ứng viên có hard-negative BM25 cùng chủ đề (findings C1) — chống bão hòa điểm 1.0.
+            candidate_pool_dicts = build_candidate_pool(test_samples, es=es, per_query_hard=20)
             candidate_texts = [c["content"] for c in candidate_pool_dicts]
             eval_results = {}
             ndcg_vectors = {}
+            meta = {}   # {label: {backbone, variant, d}} — để xuất CSV tách cột cho từng backbone
 
             # 1. Đánh giá BM25 trên Elasticsearch
             bm25_scores, bm25_ndcg = [], []
@@ -215,72 +227,59 @@ class MultiModelBaselineComparator:
             t = len(bm25_scores) if bm25_scores else 1
             eval_results["BM25 (Elasticsearch)"] = {k: round(sum(x[k] for x in bm25_scores) / t, 4) for k in bm25_scores[0].keys() if k != "is_valid_query"}
             ndcg_vectors["BM25 (Elasticsearch)"] = bm25_ndcg
+            meta["BM25 (Elasticsearch)"] = {"backbone": "BM25 (Elasticsearch)", "variant": "Sparse", "d": "-"}
 
-            # 2. Đánh giá các Dense Backbones ở CÙNG SỐ CHIỀU GỐC
+            # 2. Quét 6 lát cắt d cho CẢ bản gốc (Zero-shot) VÀ bản Fine-tuned trên cùng pool khó
+            #    → chọn (model, bản, d) tốt nhất & ổn định nhất (findings C2 mở rộng).
             for display_name, model_id, is_e5, full_dim in raw_backbones:
-                label_zero = f"{display_name} (Zero-shot @ d={full_dim})"
+                dims = [d for d in ALL_DIMS if d <= full_dim]
                 try:
                     wrap_zero = UniversalEncoderWrapper(model_id, device=self.device, is_e5=is_e5)
-                    q_z = wrap_zero.encode([s["query"] for s in test_samples], is_query=True)
-                    c_z = wrap_zero.encode(candidate_texts, is_query=False)
-                    sim_z = np.dot(q_z, c_z.T)
-
-                    scores_z, ndcg_z = [], []
-                    for idx, s in enumerate(test_samples):
-                        top_idx = np.argsort(-sim_z[idx])[:10]
-                        cands = [candidate_pool_dicts[i] for i in top_idx]
-                        m = evaluate_query(cands, s, [1, 5, 10])
-                        scores_z.append(m)
-                        ndcg_z.append(m.get("NDCG@10", 0.0))
-
-                    t_z = len(scores_z) if scores_z else 1
-                    eval_results[label_zero] = {k: round(sum(x[k] for x in scores_z) / t_z, 4) for k in scores_z[0].keys() if k != "is_valid_query"}
-                    ndcg_vectors[label_zero] = ndcg_z
+                    for d, (agg, vec) in self._sweep_dims(wrap_zero, test_samples, candidate_pool_dicts, candidate_texts, dims).items():
+                        lbl = f"{display_name} (Zero-shot @ d={d})"
+                        eval_results[lbl] = agg; ndcg_vectors[lbl] = vec
+                        meta[lbl] = {"backbone": display_name, "variant": "Zero-shot", "d": d}
                 except Exception as ex:
-                    logger.warning("Bỏ qua bản gốc [%s]: %s", label_zero, ex)
+                    logger.warning("Bỏ qua bản gốc [%s]: %s", display_name, ex)
 
-                # Đánh giá bản Fine-tuned (nếu có checkpoint) ở CÙNG SỐ CHIỀU GỐC trước
                 safe_name = model_id.replace("/", "_")
                 ckpt_path = self.checkpoints_dir / safe_name
                 if ckpt_path.exists():
-                    label_ft_full = f"{display_name} (Ours-MRL Full @ d={full_dim})"
-                    label_ft_256 = f"{display_name} (Ours-MRL Slice @ d=256)"
-                    for lbl, s_dim in [(label_ft_full, full_dim), (label_ft_256, 256)]:
-                        try:
-                            wrap_ft = UniversalEncoderWrapper(str(ckpt_path), device=self.device, slice_dim=s_dim, is_e5=is_e5)
-                            q_ft = wrap_ft.encode([s["query"] for s in test_samples], is_query=True)
-                            c_ft = wrap_ft.encode(candidate_texts, is_query=False)
-                            sim_ft = np.dot(q_ft, c_ft.T)
+                    try:
+                        wrap_ft = UniversalEncoderWrapper(str(ckpt_path), device=self.device, is_e5=is_e5)
+                        for d, (agg, vec) in self._sweep_dims(wrap_ft, test_samples, candidate_pool_dicts, candidate_texts, dims).items():
+                            lbl = f"{display_name} (Ours-MRL @ d={d})"
+                            eval_results[lbl] = agg; ndcg_vectors[lbl] = vec
+                            meta[lbl] = {"backbone": display_name, "variant": "Ours-MRL", "d": d}
+                    except Exception as ex:
+                        logger.warning("Lỗi fine-tune sweep [%s]: %s", display_name, ex)
 
-                            scores_ft, ndcg_ft = [], []
-                            for idx, s in enumerate(test_samples):
-                                top_idx = np.argsort(-sim_ft[idx])[:10]
-                                cands = [candidate_pool_dicts[i] for i in top_idx]
-                                m = evaluate_query(cands, s, [1, 5, 10])
-                                scores_ft.append(m)
-                                ndcg_ft.append(m.get("NDCG@10", 0.0))
-
-                            t_ft = len(scores_ft) if scores_ft else 1
-                            eval_results[lbl] = {k: round(sum(x[k] for x in scores_ft) / t_ft, 4) for k in scores_ft[0].keys() if k != "is_valid_query"}
-                            ndcg_vectors[lbl] = ndcg_ft
-                        except Exception as ex:
-                            logger.warning("Lỗi đánh giá bản fine-tune [%s]: %s", lbl, ex)
-
-            # Cố định Proposed Model để đối chứng: BGE-M3 (Ours-MRL Full)
-            proposed_key = next((k for k in eval_results if "Ours-MRL Full" in k), None) or list(eval_results.keys())[-1]
+            # Proposed Model để đối chứng ý nghĩa: bản Fine-tuned ở lát triển khai d=256
+            proposed_key = (next((k for k in eval_results if "Ours-MRL @ d=256" in k), None)
+                            or next((k for k in eval_results if "Ours-MRL" in k), None)
+                            or list(eval_results.keys())[-1])
             proposed_vec = ndcg_vectors[proposed_key]
 
             for k in eval_results.keys():
                 m = eval_results[k]
+                mm = meta.get(k, {"backbone": k, "variant": "-", "d": "-"})
                 p_val, sig = self.compute_significance(ndcg_vectors[k], proposed_vec) if k != proposed_key else (0.0, "Mô hình đề xuất (Ours)")
                 summary_rows.append({
                     "Dataset": ds_name,
-                    "Mo_Hinh_Embedding": k,
+                    "Backbone": mm["backbone"],
+                    "Ban": mm["variant"],           # Zero-shot | Ours-MRL | Sparse
+                    "Chieu_d": mm["d"],
                     "Hit@1": m.get("Hit@1", 0.0),
                     "Hit@5": m.get("Hit@5", 0.0),
                     "Hit@10": m.get("Hit@10", 0.0),
+                    "MRR@1": m.get("MRR@1", 0.0),
+                    "MRR@5": m.get("MRR@5", 0.0),
                     "MRR@10": m.get("MRR@10", 0.0),
+                    "NDCG@1": m.get("NDCG@1", 0.0),
+                    "NDCG@5": m.get("NDCG@5", 0.0),
                     "NDCG@10": m.get("NDCG@10", 0.0),
+                    "MAP@10": m.get("MAP@10", 0.0),
+                    "Evidence_Coverage": m.get("Evidence_Coverage", 0.0),
                     "P_Value_vs_Proposed": f"{p_val:.2e}" if p_val > 0 else "-",
                     "Kiem_Dinh_Y_Nghia": sig
                 })
@@ -288,8 +287,10 @@ class MultiModelBaselineComparator:
         sum_file = out_path / "master_baseline_comparison.csv"
         with open(sum_file, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.DictWriter(f, fieldnames=[
-                "Dataset", "Mo_Hinh_Embedding", "Hit@1", "Hit@5", "Hit@10",
-                "MRR@10", "NDCG@10", "P_Value_vs_Proposed", "Kiem_Dinh_Y_Nghia"
+                "Dataset", "Backbone", "Ban", "Chieu_d",
+                "Hit@1", "Hit@5", "Hit@10", "MRR@1", "MRR@5", "MRR@10",
+                "NDCG@1", "NDCG@5", "NDCG@10", "MAP@10", "Evidence_Coverage",
+                "P_Value_vs_Proposed", "Kiem_Dinh_Y_Nghia"
             ])
             w.writeheader()
             w.writerows(summary_rows)
@@ -319,19 +320,14 @@ class ScientificBenchmarkRunner:
         self.device = device
         self.encoder = UniversalEncoderWrapper(self.model_path, device=self.device, is_e5=("e5" in str(self.model_path).lower()))
 
-        # Chuẩn bị kho ứng viên đồng nhất
-        self.candidate_pool_dicts = []
-        seen_chunks = set()
-        for s in self.samples[:300]:
-            c_id = s.get("ground_truth_chunk") or str(len(seen_chunks))
-            if c_id not in seen_chunks:
-                seen_chunks.add(c_id)
-                self.candidate_pool_dicts.append({
-                    "chunk_id": c_id,
-                    "doc_number": s.get("ground_truth_doc_number", ""),
-                    "article": s.get("ground_truth_article", ""),
-                    "content": s.get("raw_content") or s.get("evidence_text", "")
-                })
+        # Kho ứng viên có hard-negative BM25 cùng chủ đề (findings C1) — chống bão hòa điểm 1.0 ở RQ1/RQ2.
+        es_hard = None
+        try:
+            from rag.es_retriever import LegalElasticsearchRetriever
+            es_hard = LegalElasticsearchRetriever(hosts=[config.ES_HOST], index_name=config.ES_INDEX_NAME)
+        except Exception as ex:
+            logger.warning("Không kết nối ES cho hard-negative pool (%s) — nguy cơ bão hòa còn.", ex)
+        self.candidate_pool_dicts = build_candidate_pool(self.samples[:300], es=es_hard, per_query_hard=15)
         self.candidate_texts = [c["content"] for c in self.candidate_pool_dicts]
 
     def evaluate_rq1_negative_mining(self, out_path: Path):

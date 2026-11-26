@@ -29,6 +29,7 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 from configs.config import config
 from configs.paths import ARTIFACTS_DIR
+from eval_utils import minmax_norm
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | [%(levelname)s] | %(message)s")
 logger = get_subsystem_logger("training", "generate_hin_triplets")
@@ -119,7 +120,7 @@ class HINTripletMiner:
                coalesce(c1.content, '') AS a_text,
                c2.chunk_id AS p_id,
                coalesce(c2.content, '') AS p_text,
-               coalesce(d.doc_number, 'CHUNG') AS macro
+               coalesce(c1.chapter_id, c1.macro_label, d.doc_number, c1.chunk_id) AS macro
         LIMIT $limit
         """
 
@@ -140,7 +141,7 @@ class HINTripletMiner:
                coalesce(c1.content, '') AS a_text,
                c2.chunk_id AS p_id,
                coalesce(c2.content, '') AS p_text,
-               coalesce(d1.doc_number, 'LIEN_VAN_BAN') AS macro
+               coalesce(c1.chapter_id, c1.macro_label, d1.doc_number, c1.chunk_id) AS macro
         LIMIT $limit
         """
 
@@ -186,7 +187,7 @@ class HINTripletMiner:
     RETURN ca.chunk_id AS anchor_id, coalesce(ca.content,'') AS anchor_text,
            cp.chunk_id AS positive_id, coalesce(cp.content,'') AS positive_text,
            cn.chunk_id AS negative_id, coalesce(cn.content,'') AS negative_text,
-           coalesce(a.doc_number,'POLARITY') AS hierarchy_label
+           coalesce(ca.chapter_id, ca.macro_label, a.doc_number, ca.chunk_id) AS hierarchy_label
     LIMIT $limit
     """
 
@@ -317,8 +318,10 @@ class HINTripletMiner:
             max_hardness = -float("inf")
 
             candidates = self._query_candidate_negatives(query_tokens, a_id, p_id, top_k=top_neg_candidates)
+            # Chuẩn hóa Min-Max điểm BM25 theo TỪNG truy vấn (findings B2), thay cho clamp /25 cố định.
+            bm_norms = minmax_norm([c[2] for c in candidates])
 
-            for cand_id, cand_text, bm25_score in candidates:
+            for (cand_id, cand_text, bm25_score), norm_bm25 in zip(candidates, bm_norms):
                 # LOẠI TRỪ FALSE NEGATIVE: Không được trùng anchor và không được trùng positive
                 if cand_text.strip() == p_text.strip() or cand_text.strip() == a_text.strip():
                     continue
@@ -327,7 +330,6 @@ class HINTripletMiner:
                 if p_id in self.graph_embeddings and cand_id in self.graph_embeddings:
                     s_p = max(0.0, float(np.dot(self.graph_embeddings[p_id], self.graph_embeddings[cand_id])))
 
-                norm_bm25 = min(bm25_score / 25.0, 1.0)
                 # Hardness cao: Lexical match cao (dễ nhầm chữ) nhưng Graph similarity thấp (khác chế tài/nhánh luật)
                 hardness = beta * norm_bm25 + (1.0 - beta) * (1.0 - s_p)
 

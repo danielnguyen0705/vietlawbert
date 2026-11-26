@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# VIETLAWBERT: MASTER EXPERIMENT AUTOMATION HARNESS (13 BACKBONES)
+# VIETLAWBERT: MASTER EXPERIMENT AUTOMATION HARNESS (7 BACKBONES SẠCH)
 # Vị trí: scripts/run_all_experiments.sh (tự chuyển về gốc repo khi chạy)
 # Tự động hóa: Kiểm tra dữ liệu -> Sinh Triplet/Benchmark -> Huấn luyện MRL
 #              -> Đo RQ2 Pareto -> Đối chuẩn Master -> Đo RQ1, RQ3, RQ4
@@ -117,21 +117,17 @@ else
     echo "✓ Đã có sẵn tập kiểm chuẩn tại: $BENCHMARK_DIR"
 fi
 
-# Danh mục đầy đủ 13 mô hình backbone nghiên cứu
+# Danh mục 7 Encoder có công bố khoa học chuẩn mực (findings A3): đã loại các kiến trúc Seq2Seq
+# không tương thích (ViT5, BARTpho), model lỗi tokenizer (vi-electra, videberta) và định danh đã bị
+# gỡ khỏi HuggingFace (Chau/VNLawBERT), bert-base-multilingual-cased (không phải bi-encoder).
 MODELS=(
   "BAAI/bge-m3"
-  "bert-base-multilingual-cased"
-  "xlm-roberta-base"
-  "bkai-foundation-models/vietnamese-bi-encoder"
-  "intfloat/multilingual-e5-base"
   "intfloat/multilingual-e5-large"
-  "vinai/phobert-base-v2"
+  "intfloat/multilingual-e5-base"
   "vinai/phobert-large"
-  "Fsoft-AIC/vi-electra-base-generator"
-  "bkai-foundation-models/videberta-base"
-  "vinai/bartpho-syllable"
-  "VietAI/vit5-base"
-  "Chau/VNLawBERT"
+  "vinai/phobert-base-v2"
+  "bkai-foundation-models/vietnamese-bi-encoder"
+  "xlm-roberta-base"
 )
 
 TOTAL=${#MODELS[@]}
