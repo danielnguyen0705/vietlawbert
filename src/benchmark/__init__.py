@@ -14,7 +14,6 @@ from .evaluate_rrf import (
     run_benchmark_evaluation,
     retrieve_by_mode,
 )
-from .build_vietlawbench import VietLawBenchBuilder
 from .evaluate_rqs import (
     ScientificBenchmarkRunner,
     MultiModelBaselineComparator,
@@ -31,7 +30,6 @@ __all__ = [
     "extract_article_number",
     "run_benchmark_evaluation",
     "retrieve_by_mode",
-    "VietLawBenchBuilder",
     "BaselineComparator",
     "MultiModelBaselineComparator",
     "ScientificBenchmarkRunner",

@@ -104,23 +104,17 @@ def run_phase_train():
 
 
 def run_phase_benchmark_generation():
-    """Pha 3: Khởi tạo tập kiểm chuẩn phân tầng VietLawBench."""
+    """Pha 3: Dùng tập kiểm chuẩn VLQA (sinh ở Pha dữ liệu / load_vlqa)."""
     logger.info("=" * 70)
-    logger.info("PHA 3: TẠO LẬP BỘ KIỂM CHUẨN VIETLAWBENCH (ZERO LEXICAL LEAKAGE)")
+    logger.info("PHA 3: KIỂM TẬP KIỂM CHUẨN VLQA")
     logger.info("=" * 70)
 
-    bench_file = BENCH_DIR / "vietlawbench_1000.jsonl"
-    if bench_file.exists():
-        logger.info("✓ Đã có sẵn tập kiểm chuẩn tại %s. Bỏ qua tạo lại.", BENCH_DIR)
-        return
-
-    from benchmark.build_vietlawbench import VietLawBenchBuilder
-    builder = VietLawBenchBuilder()
-    try:
-        builder.build_master_benchmark(total_target=1000)
-    finally:
-        builder.close()
-    logger.info("✓ Hoàn tất Pha 3: Đã xuất tập kiểm chuẩn tại %s", BENCH_DIR)
+    vlqa_file = BENCH_DIR / "vietlawbench_vlqa.jsonl"
+    if not vlqa_file.exists():
+        raise FileNotFoundError(
+            f"Thiếu {vlqa_file}. Chạy Pha dữ liệu (load_vlqa) để sinh tập VLQA trước."
+        )
+    logger.info("✓ Pha 3: Dùng tập VLQA tại %s", vlqa_file)
 
 
 def run_phase_evaluation():

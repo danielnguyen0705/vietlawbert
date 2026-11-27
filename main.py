@@ -244,15 +244,11 @@ def cmd_train(
 
 def cmd_benchmark(checkpoint_path: str | None = None, device: str = config.EMBED_DEVICE) -> bool:
     bench_dir = ARTIFACTS_DIR / "benchmark"
-    bench_file = bench_dir / "vietlawbench_1000.jsonl"
-    
+    bench_file = bench_dir / "vietlawbench_vlqa.jsonl"
+
     if not bench_file.exists():
-        bench_ok = run_subcommand(
-            [sys.executable, "-u", "-m", "benchmark.build_vietlawbench", "--total-size", "1000"],
-            "Sinh tập kiểm chuẩn Ground-Truth VietLawBench (1.000 mẫu chuẩn mực)",
-        )
-        if not bench_ok:
-            return False
+        print(f"✗ Thiếu {bench_file}. Chạy '--phase build-data' (load_vlqa) để sinh tập VLQA trước.")
+        return False
 
     model_ckpt = checkpoint_path or str(MODELS_DIR / "vietlawbert_mrl_final")
     results_dir = BENCHMARK_RESULTS_DIR

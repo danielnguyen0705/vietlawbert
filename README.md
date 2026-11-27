@@ -138,7 +138,7 @@ vietlawbert/
 ├── scripts/                # Kịch bản tự động hóa (run_all_experiments.sh, auto_cloud_runner.sh, ...)
 ├── outputs/                # Dữ liệu runtime, báo cáo, log, checkpoints & trọng số mô hình
 │   ├── artifacts/          # parquet triplets, graph embeddings, crawler_status
-│   ├── benchmark/          # dữ liệu Zalo/VLQA & bảng kết quả (.csv, .tex)
+│   ├── benchmark/          # dữ liệu VLQA & bảng kết quả (.csv, .tex)
 │   ├── checkpoints/        # checkpoint các backbone
 │   ├── models/             # mô hình VietLawBERT-MRL hoàn thiện
 │   ├── reports/            # báo cáo kiểm định corpus & manifest

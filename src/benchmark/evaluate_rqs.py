@@ -137,10 +137,10 @@ class MultiModelBaselineComparator:
         self.device = device
         self.datasets = load_benchmark(self.benchmark_dir)
         if not self.datasets:
-            from benchmark.build_vietlawbench import VietLawBenchBuilder
-            builder = VietLawBenchBuilder()
-            builder.build_master_benchmark(total_target=1000)
-            self.datasets = load_benchmark(self.benchmark_dir)
+            raise RuntimeError(
+                f"Không có benchmark trong {self.benchmark_dir}. Chạy Pha dữ liệu (load_vlqa) để sinh "
+                f"vietlawbench_vlqa.jsonl (+ multihop) trước khi đánh giá."
+            )
 
     @staticmethod
     def compute_significance(baseline_scores: List[float], proposed_scores: List[float]) -> Tuple[float, str]:
@@ -313,10 +313,10 @@ class ScientificBenchmarkRunner:
         self.benchmark_dir = Path(benchmark_dir)
         self.datasets = load_benchmark(self.benchmark_dir)
         if not self.datasets:
-            from benchmark.build_vietlawbench import VietLawBenchBuilder
-            builder = VietLawBenchBuilder()
-            builder.build_master_benchmark(total_target=1000)
-            self.datasets = load_benchmark(self.benchmark_dir)
+            raise RuntimeError(
+                f"Không có benchmark trong {self.benchmark_dir}. Chạy Pha dữ liệu (load_vlqa) để sinh "
+                f"vietlawbench_vlqa.jsonl (+ multihop) trước khi đánh giá."
+            )
 
         self.samples = self.datasets.get("vietlawbench_1000") or (
             self.datasets.get("single_hop", []) + self.datasets.get("multi_hop", [])
