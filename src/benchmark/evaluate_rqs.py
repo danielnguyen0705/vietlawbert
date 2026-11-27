@@ -193,12 +193,18 @@ class MultiModelBaselineComparator:
         from rag.es_retriever import LegalElasticsearchRetriever
         es = LegalElasticsearchRetriever(hosts=[config.ES_HOST], index_name=config.ES_INDEX_NAME)
 
-        # Danh sách so sánh baseline (findings A3: bỏ Chau/VNLawBERT đã gỡ khỏi HuggingFace Hub)
+        # So sánh baseline: 7 backbone fine-tune (hiện Zero-shot + Ours-MRL) + mBERT CHỈ zero-shot
+        # (thay VNLawBERT — không có trọng số công khai; nền của nó là BERT-Base/mBERT). mBERT không có
+        # checkpoint fine-tune → nhánh ckpt_path.exists() tự bỏ qua, chỉ ra điểm zero-shot.
         raw_backbones = [
-            ("vinai/phobert-base-v2", "vinai/phobert-base-v2", False, 768),
-            ("vinai/phobert-large", "vinai/phobert-large", False, 1024),
-            ("intfloat/multilingual-e5-base", "intfloat/multilingual-e5-base", True, 768),
             ("BAAI/bge-m3", "BAAI/bge-m3", False, 1024),
+            ("intfloat/multilingual-e5-large", "intfloat/multilingual-e5-large", True, 1024),
+            ("intfloat/multilingual-e5-base", "intfloat/multilingual-e5-base", True, 768),
+            ("vinai/phobert-large", "vinai/phobert-large", False, 1024),
+            ("vinai/phobert-base-v2", "vinai/phobert-base-v2", False, 768),
+            ("bkai-foundation-models/vietnamese-bi-encoder", "bkai-foundation-models/vietnamese-bi-encoder", False, 768),
+            ("xlm-roberta-base", "xlm-roberta-base", False, 768),
+            ("mBERT (VNLawBERT-base)", "bert-base-multilingual-cased", False, 768),
         ]
 
         summary_rows = []
