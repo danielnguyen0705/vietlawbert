@@ -237,14 +237,19 @@ TRIP_BM25="outputs/artifacts/triplets/triplets_bm25.parquet"
 [ -f "$TRIP_BM25" ]   || python3 -u -m training.generate_hin_triplets --neg-strategy bm25   --output "$TRIP_BM25"   --limit 50000
 
 train_variant() {  # $1=output-dir  $2=train-parquet  $3=extra-flags
-    if [ -f "$1/vietlawbert_mrl.pt" ] || [ -f "$1/best_model/vietlawbert_mrl.pt" ]; then
-        echo "    -> [RESUME] biến thể đã có: $1"; return 0
+    if [ ! -f "$1/best_model/vietlawbert_mrl.pt" ] && [ ! -f "$1/vietlawbert_mrl.pt" ]; then
+        python3 -u -m training.train_mrl --model-name "BAAI/bge-m3" --train-parquet "$2" \
+            --output-dir "$1" --epochs 3 --batch-size 32 --gradient-accumulation-steps 1 \
+            --freeze-layers 0 --lr 2e-5 --precision bf16 --num-workers 4 $3 \
+            > "${LOG_DIR}/$(basename "$1").log" 2>&1 \
+            && echo "    ✓ xong biến thể: $1" || { echo "    ✗ lỗi biến thể $1 (xem log)."; return 0; }
+    else
+        echo "    -> [RESUME] biến thể đã có: $1"
     fi
-    python3 -u -m training.train_mrl --model-name "BAAI/bge-m3" --train-parquet "$2" \
-        --output-dir "$1" --epochs 3 --batch-size 32 --gradient-accumulation-steps 1 \
-        --freeze-layers 0 --lr 2e-5 --precision bf16 --num-workers 4 $3 \
-        > "${LOG_DIR}/$(basename "$1").log" 2>&1 \
-        && echo "    ✓ xong biến thể: $1" || echo "    ✗ lỗi biến thể $1 (xem log)."
+    # train_mrl lưu best vào best_model/ — đưa lên gốc để UniversalEncoderWrapper nhận diện (giống vòng chính).
+    if [ -f "$1/best_model/vietlawbert_mrl.pt" ] && [ ! -f "$1/vietlawbert_mrl.pt" ]; then
+        cp -n "$1/best_model/"* "$1/" 2>/dev/null || true
+    fi
 }
 echo ">>> [BƯỚC 2.5] Train 3 biến thể bge-m3 (RQ1 random, RQ1 bm25, RQ2 FlatMRL)..."
 train_variant "${CHECKPOINTS_DIR}/bge-m3_rq1_random"  "$TRIP_RANDOM"  ""

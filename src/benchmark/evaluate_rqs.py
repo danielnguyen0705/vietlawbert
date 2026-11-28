@@ -482,8 +482,9 @@ class ScientificBenchmarkRunner:
         csv_file = out_path / "rq3_architecture_ablation_latency.csv"
         rows = []
 
+        _orig_ge = getattr(config, "GRAPH_EXPANSION", True)
         for m in modes:
-            os.environ["GRAPH_EXPANSION"] = "1" if m == "hybrid_graph" else "0"
+            config.GRAPH_EXPANSION = (m == "hybrid_graph")   # retriever đọc config.GRAPH_EXPANSION (tĩnh), KHÔNG đọc os.environ
             hits, ndcgs, lats = [], [], []
             for s in test_samples:
                 t0 = time.perf_counter()
@@ -506,6 +507,8 @@ class ScientificBenchmarkRunner:
                 "Latency_P95_ms": round(p95_lat, 2),
                 "SLA_Verification": sla_status
             })
+
+        config.GRAPH_EXPANSION = _orig_ge   # khôi phục
 
         with open(csv_file, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
@@ -548,10 +551,10 @@ class ScientificBenchmarkRunner:
         ]
 
         rows, ndcg_vectors = [], {}
-        prev_env = os.environ.get("GRAPH_EXPANSION")
+        prev_ge = getattr(config, "GRAPH_EXPANSION", True)
         try:
             for label, mode, use_graph in plan:
-                os.environ["GRAPH_EXPANSION"] = "1" if use_graph else "0"
+                config.GRAPH_EXPANSION = bool(use_graph)   # retriever đọc config, KHÔNG đọc os.environ
                 acc = {f"{p}@{k}": [] for p in ("Hit", "MRR", "NDCG", "MAP") for k in ks}
                 lats, ndcg10_vec = [], []
                 for s in samples:
@@ -577,10 +580,7 @@ class ScientificBenchmarkRunner:
                 logger.info("  %-24s Hit@10=%.4f NDCG@10=%.4f MAP@10=%.4f P95=%.1fms",
                             label, row["Hit@10"], row["NDCG@10"], row["MAP@10"], p95)
         finally:
-            if prev_env is None:
-                os.environ.pop("GRAPH_EXPANSION", None)
-            else:
-                os.environ["GRAPH_EXPANSION"] = prev_env
+            config.GRAPH_EXPANSION = prev_ge
 
         def _ttest(a_label, b_label):
             a, b = ndcg_vectors.get(a_label, []), ndcg_vectors.get(b_label, [])
