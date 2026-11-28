@@ -109,7 +109,10 @@ class IngestPipelineWorker:
         vector_dim: Optional[int] = None,
         batch_size: Optional[int] = None,
         device: Optional[str] = None,
+        no_qdrant: bool = False,
     ):
+        # no_qdrant: nạp ES + Mongo + (graph đọc shard riêng), BỎ embed + Qdrant → chạy được không cần GPU (Pha A local).
+        self.no_qdrant = no_qdrant
         self.qdrant_host = qdrant_host or config.QDRANT_HOST
         self.qdrant_port = qdrant_port or config.QDRANT_PORT
         self.es_host = es_host or config.ES_HOST
@@ -135,6 +138,10 @@ class IngestPipelineWorker:
             self.mongo = None
 
         self.device = resolve_safe_device(device)
+        if self.no_qdrant:
+            self.encoder = None
+            logger.info("--no-qdrant: BỎ embed + Qdrant (chỉ nạp ES + Mongo) — không cần GPU.")
+            return
         logger.info("Đang nạp mô hình %s trên [%s]...", self.model_name, self.device)
         self.encoder = SentenceTransformer(self.model_name, device=self.device)
         try:
@@ -259,7 +266,7 @@ class IngestPipelineWorker:
                         if eff_id:
                             doc_id = eff_id
 
-                    if self.qdrant.doc_exists(doc_id):
+                    if not self.no_qdrant and self.qdrant.doc_exists(doc_id):
                         skipped_existing_docs += 1
                         continue
 
@@ -360,38 +367,36 @@ class IngestPipelineWorker:
         if not chunks:
             return
 
-        texts = [c.get("text") or c.get("content") or "" for c in chunks]
-
-        with torch.inference_mode():
-            embeddings = self.encoder.encode(
-                texts,
-                batch_size=min(len(texts), self.batch_size),
-                show_progress_bar=False,
-                normalize_embeddings=True,
-            )
+        embeddings = None
+        if not self.no_qdrant:
+            texts = [c.get("text") or c.get("content") or "" for c in chunks]
+            with torch.inference_mode():
+                embeddings = self.encoder.encode(
+                    texts,
+                    batch_size=min(len(texts), self.batch_size),
+                    show_progress_bar=False,
+                    normalize_embeddings=True,
+                )
 
         qdrant_payloads = []
         for i, chunk in enumerate(chunks):
-            chunk_copy = dict(chunk)
-            chunk_copy["embedding"] = embeddings[i][: self.vector_dim].tolist()
-
             status_str = str(chunk.get("metadata", {}).get("status", ""))
-            chunk_copy["is_effective"] = ("hết hiệu lực" not in status_str.lower())
-
+            chunk["is_effective"] = ("hết hiệu lực" not in status_str.lower())
             chunk_content = chunk.get("content") or chunk.get("text", "")
-            chunk_copy["content"] = chunk_content
-            chunk_copy["text"] = chunk_content
-            chunk["is_effective"] = chunk_copy["is_effective"]
             chunk["content"] = chunk_content
             chunk["text"] = chunk_content
-            qdrant_payloads.append(chunk_copy)
+            if not self.no_qdrant:
+                chunk_copy = dict(chunk)
+                chunk_copy["embedding"] = embeddings[i][: self.vector_dim].tolist()
+                qdrant_payloads.append(chunk_copy)
 
-        upserted = self.qdrant.upsert_batch(
-            records=qdrant_payloads,
-            collection_name=config.QDRANT_COLLECTION_NAME,
-        )
-        if upserted == 0 and len(qdrant_payloads) > 0:
-            raise RuntimeError("Qdrant nạp thất bại toàn bộ batch. Dừng tiến trình để tránh lệch pha dữ liệu!")
+        if not self.no_qdrant:
+            upserted = self.qdrant.upsert_batch(
+                records=qdrant_payloads,
+                collection_name=config.QDRANT_COLLECTION_NAME,
+            )
+            if upserted == 0 and len(qdrant_payloads) > 0:
+                raise RuntimeError("Qdrant nạp thất bại toàn bộ batch. Dừng tiến trình để tránh lệch pha dữ liệu!")
 
         try:
             self.es.bulk_index_chunks(chunks)
@@ -399,7 +404,7 @@ class IngestPipelineWorker:
             logger.error("Ngoại lệ khi nạp Elasticsearch: %s", es_err)
             raise es_err
 
-        del texts, embeddings, qdrant_payloads
+        del qdrant_payloads, embeddings
         gc.collect()
 
 
@@ -411,6 +416,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=config.EMBED_BATCH_SIZE, help="Kích thước mini-batch")
     parser.add_argument("--device", default=config.EMBED_DEVICE, help="Thiết bị tính toán (cpu/cuda)")
     parser.add_argument("--fresh", action="store_true", help="WIPE Qdrant/ES rồi nạp lại từ đầu (dựng sạch canonical)")
+    parser.add_argument("--no-qdrant", action="store_true", help="BỎ embed + Qdrant, chỉ nạp ES + Mongo (Pha A local, không cần GPU)")
     args = parser.parse_args()
 
     worker = IngestPipelineWorker(
@@ -418,13 +424,16 @@ def main():
         vector_dim=args.dim,
         batch_size=args.batch_size,
         device=args.device,
+        no_qdrant=args.no_qdrant,
     )
 
     if args.fresh:
-        logger.warning("--fresh: WIPE Qdrant [%s] + ES [%s] trước khi nạp...", config.QDRANT_COLLECTION_NAME, config.ES_INDEX_NAME)
-        try: worker.qdrant.client.delete_collection(config.QDRANT_COLLECTION_NAME)
-        except Exception as e: logger.info("Qdrant delete: %s", e)
-        worker.qdrant.init_collection()
+        logger.warning("--fresh: WIPE %sES [%s] trước khi nạp...",
+                       "" if args.no_qdrant else f"Qdrant [{config.QDRANT_COLLECTION_NAME}] + ", config.ES_INDEX_NAME)
+        if not args.no_qdrant:
+            try: worker.qdrant.client.delete_collection(config.QDRANT_COLLECTION_NAME)
+            except Exception as e: logger.info("Qdrant delete: %s", e)
+            worker.qdrant.init_collection()
         try: worker.es.client.indices.delete(index=config.ES_INDEX_NAME, ignore_unavailable=True)
         except Exception as e: logger.info("ES delete: %s", e)
         worker.es._ensure_index_and_analyzer()
