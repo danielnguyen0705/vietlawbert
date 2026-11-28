@@ -1,113 +1,126 @@
 # VietLawBERT
 
-**Hierarchy-Aware Matryoshka Representation Learning & Heterogeneous Graph-Guided Hybrid Retrieval for Vietnamese Legal Texts.**
+**Hierarchy-Aware Matryoshka Representation Learning & Heterogeneous Graph-Guided Hybrid Retrieval cho Văn bản Quy phạm Pháp luật Việt Nam.**
 
-Hệ thống nghiên cứu xây dựng mô hình nhúng ngữ nghĩa chuyên biệt cho Văn bản Quy phạm Pháp luật (VBQPPL) Việt Nam và một kiến trúc truy xuất lai (RAG) có căn cứ kiểm chứng, phát triển nối tiếp bài báo nền tảng **VNLawBERT (2020)**.
+Dự án nghiên cứu xây dựng mô hình nhúng ngữ nghĩa chuyên biệt cho VBQPPL Việt Nam và một kiến trúc truy xuất lai (RAG) có căn cứ kiểm chứng, nối tiếp bài **VNLawBERT** (Chau et al., NICS 2020 — nền BERT-Base/mBERT, trọng số không công khai).
 
-> Mục tiêu khoa học và các câu hỏi nghiên cứu (RQ1–RQ4) xem đề cương `DeCuongTN-v3.1.docx`. Trạng thái tiến độ & hạn chế hiện tại xem "Ma trận đặc tả tiến độ VietLawBERT (v3.1)".
+> Câu hỏi nghiên cứu RQ1–RQ4 xem đề cương `docs/DeCuongTN-v3.1-filan.pdf`. Kế hoạch chạy đầu-cuối và trạng thái xem `docs/QuyTrinh-RunCloud-TongThe.md` + `docs/WeeklyReport-*.md`.
 
 ---
 
 ## 1. Kiến trúc 5 giai đoạn
 
 ```
-Pha 1          Pha 2             Pha 3            Pha 4                 Pha 5
-CRAWL     →    AST PARSE &   →   ĐỒ THỊ HIN   →   HUẤN LUYỆN       →    TRUY XUẤT + SINH
-(vbpl.vn)      INGEST            Neo4j + Graph    VietLawBERT-MRL       Hybrid RAG + Guardrail
-               (Qdrant/ES)       Embedding 128d   (HIN hard negatives)  (RRF + Graph rerank)
+Pha 1          Pha 2             Pha 3          Pha 4                    Pha 5
+CRAWL     →    PARSE & INGEST →  ĐỒ THỊ HIN  →  HUẤN LUYỆN MRL      →    TRUY XUẤT + ĐÁNH GIÁ
+(vbpl.vn)      Qdrant/ES/Mongo   Neo4j          7 backbone + biến thể    Hybrid RAG + RQ1–RQ4
 ```
 
-| Giai đoạn | Module nguồn | Vai trò |
+| Giai đoạn | Module | Vai trò |
 | --- | --- | --- |
-| 1. Thu thập | `crawler/` (Scrapy + Playwright, `shard_runner`, `ocr_runner`) | Cào VBQPPL phân mảnh, ≤5 req/s, checkpoint resume |
-| 2. Tiền xử lý | `preprocess/` (`ast_parser` Lark, `text_cleaner`, `html_to_md`), `quality/` (bộ lọc chất lượng) | Bóc tách cây cú pháp Phần→Chương→Mục→Điều→Khoản→Điểm, nhúng metadata |
-| 2. Nạp đa kho | `pipeline/` (`ingest_pipeline`, `ast_batch_processor`, `neo4j_batch_loader`), `database/` (`qdrant_client`, `neo4j_client`, `build_hin_graph`) | Qdrant (dense 256d), Elasticsearch (BM25), Neo4j (HIN), MongoDB |
-| 3. Đồ thị & embedding | `database/build_hin_graph`, `training/compute_graph_embeddings` | HIN 22 quan hệ hiệu lực/dẫn chiếu + node2vec/RotatE 128d |
-| 4. Khai phá & huấn luyện | `training/` (`generate_hin_triplets`, `train_mrl`) | HIN-Guided Hard Negatives (metapath + RWR, β=0.5) + Hierarchy-Aware Matryoshka InfoNCE |
-| 5. Truy xuất & sinh | `rag/` (`retriever` hybrid, `es_retriever`, `generator` cascade) | RRF (k=60) + Graph rerank + LLM sinh có trích dẫn |
-| Đánh giá | `benchmark/` (`build_vietlawbench`, `evaluate_rrf`, `evaluate_rqs`, `llm_judge`) | VietLawBench 1000 câu, RQ1–RQ4, paired t-test |
-| Điều phối | `main.py`, `cli/`, `configs/` | CLI hợp nhất + cấu hình (hub `configs/`) |
+| 1. Thu thập | `crawler/` (Scrapy + Playwright, `shard_runner`) | Cào VBQPPL phân mảnh, khử trùng theo `doc_number`, checkpoint resume |
+| 2. Tiền xử lý | `preprocess/` (AST parser Lark, text cleaner), `quality/` | Bóc tách Phần→Chương→Mục→Điều→Khoản→Điểm, định danh 4 tầng (doc/chương/điều/khoản) |
+| 2. Nạp đa kho | `pipeline/ingest_pipeline`, `database/` | Qdrant (dense bge-m3), Elasticsearch (BM25), Neo4j (HIN), MongoDB (toàn văn + metadata) |
+| 3. Đồ thị HIN | `database/build_hin_graph` | 22 loại quan hệ (THAY_THE, SUA_DOI_BO_SUNG, DAN_CHIEU, BAI_BO…); positive/negative đúng cực tính cho khai phá mẫu âm |
+| 4. Huấn luyện | `training/` (`generate_hin_triplets`, `train_mrl`) | HIN-Guided Hard Negatives + Hierarchy-Aware Matryoshka InfoNCE, quét 6 lát cắt d {64…1024} |
+| 5. Truy xuất & đánh giá | `rag/retriever`, `benchmark/` (`evaluate_rqs`, `evaluate_rrf`, `vlqa_eval`, `build_multihop_subset`, `llm_judge`) | RRF (k=60) + graph rerank; đánh giá trên VLQA + subset multi-hop |
+| Điều phối | `main.py`, `scripts/`, `configs/` | CLI theo pha + script một mạch + deploy cloud |
+
+**Bộ đánh giá:** VLQA (VLSP DRiLL 2025 — benchmark ngoài, chỉ để đánh giá) + **subset multi-hop tự sinh** từ đồ thị HIN (đo multi-hop/completeness mà VLQA không gánh được).
+
+**Bốn câu hỏi nghiên cứu:**
+- **RQ1** — Hiệu quả chiến lược sinh mẫu âm: so `random` / `BM25 lexical` / `HIN metapath` (cùng dữ liệu, trên bge-m3).
+- **RQ2** — Năng lực Hierarchy-Aware MRL: Pareto RAM–Hit@10 qua 6 lát cắt d + Silhouette tại d=64 so với MRL phẳng (FlatMRL).
+- **RQ3** — Bóc tách kiến trúc truy xuất lai: 4 chế độ `sparse_only` / `dense_only` / `hybrid` / `hybrid + graph rerank`, kèm độ trễ P95.
+- **RQ4** — Chất lượng sinh & khử ảo giác: LLM-as-judge.
+
+Metric tất định (Hit/MRR/NDCG/MAP@k + set_recall + completeness), lưu điểm **per-query**, kiểm định **paired t-test + Wilcoxon**.
 
 ---
 
-## 2. Yêu cầu & cài đặt
+## 2. Cài đặt
 
 ```bash
 # 1. Môi trường Python
-python -m venv venv && source venv/bin/activate      # Windows: venv\Scripts\activate
+python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-playwright install chromium
+python -m playwright install chromium        # crawl dùng scrapy-playwright → cần browser
 
 # 2. Hạ tầng CSDL (Docker)
-docker compose up -d qdrant elasticsearch neo4j db redis
+docker compose up -d qdrant elasticsearch neo4j db redis    # 'db' = MongoDB
 
 # 3. Cấu hình
-cp .env.example .env     # rồi điền khoá (xem mục 4)
+cp .env.example .env     # rồi điền khoá + đường dẫn (xem mục 4)
 ```
 
-GPU: dự án chạy được trên CPU (mặc định an toàn). Nếu dùng GPU cũ (vd GTX 1050 Ti, CC 6.1) không tương thích bản `torch` mặc định, cài bản khớp: `pip install torch --index-url https://download.pytorch.org/whl/cu126`. Thí nghiệm quy mô lớn nên thuê Cloud GPU (xem `scripts/auto_cloud_runner.sh`, `scripts/cloud_entrypoint.py`).
+**GPU:** chạy được trên CPU (mặc định an toàn) nhưng **huấn luyện và nhúng corpus cần GPU**. GPU cũ (vd GTX 1050 Ti, CC 6.1) không tương thích `torch` mặc định → tự fallback CPU → không train/embed được; thí nghiệm quy mô lớn thuê Cloud GPU (mục 3.2).
 
 ---
 
-## 3. Chạy pipeline
+## 3. Chạy
+
+### 3.1. Theo từng pha (local)
 
 ```bash
-python main.py                 # menu tương tác (0–9)
-
-# hoặc theo từng pha:
-python main.py --phase check       # kiểm tra hạ tầng + health check
-python main.py --phase crawl       # Pha 1
-python main.py --phase ingest      # Pha 2 (AST + Qdrant + ES)
-python main.py --phase graph       # Pha 3 (HIN + graph embedding)
-python main.py --phase train       # Pha 4 (VietLawBERT-MRL)
-python main.py --phase benchmark   # Pha 5 (Master baseline + RQ1–RQ4)
-python main.py --phase post-ingest # Pha 3 → 5
-python main.py --phase all         # toàn trình Pha 1 → 5
-
-# Hỏi đáp RAG trực tiếp:
-python main.py --ask "Đi xe máy trên vỉa hè bị phạt bao nhiêu?" --top-k 3
+python main.py --phase check        # kiểm tra hạ tầng 4 CSDL
+python main.py --phase crawl        # Pha 1 (cào, khử trùng doc_number) — chỉ cần mạng, không GPU
+python main.py --phase ingest       # Pha 2 (nhúng → Qdrant + ES) — cần GPU
+python main.py --phase graph        # Pha 3 (dựng Neo4j HIN)
+python main.py --phase build-data   # Pha 1→3 gộp (crawl→ingest→graph, WIPE dựng lại từ đầu)
+python main.py --phase train        # Pha 4 (train MRL một backbone)
+python main.py --phase benchmark    # Pha 5 (đánh giá VLQA + RQ)
+python main.py --ask "Vượt đèn đỏ xe máy phạt bao nhiêu?" --top-k 3   # hỏi đáp RAG
 ```
 
-Chạy toàn bộ thực nghiệm (có thuê GPU): `bash scripts/run_all_experiments.sh`.
+### 3.2. Một mạch A→B (trên máy có GPU)
+
+`scripts/run_all_experiments.sh` chạy liền: crawl → ingest → graph → 2 cổng kiểm tra → nạp VLQA → sinh multi-hop → re-mine triplet → train 7 backbone + 3 biến thể bge-m3 (RQ1/RQ2) → bảng đối chứng (7 + mBERT zero-shot + 3 biến thể) → RQ1/RQ3/RQ4 + eval VLQA.
+
+```bash
+BUILD_DATA=1 ./scripts/run_all_experiments.sh cuda      # dựng lại data từ đầu rồi chạy hết
+BUILD_DATA=0 ./scripts/run_all_experiments.sh cuda      # bỏ qua pha dữ liệu, dùng graph/triplet sẵn có
+```
+
+### 3.3. Deploy lên Cloud GPU (chạy từ máy local)
+
+```bash
+bash scripts/auto_cloud_runner.sh <IP> <PORT> <USER> <PASS>
+```
+
+Script tự: đồng bộ code (rsync, loại file nặng) → vá `.env` box (`DATA_STORAGE_ROOT`, `VLQA_DIR`, `EMBED_DEVICE=cuda`) → tải VLQA từ Drive (`scripts/fetch_vlqa.sh`) → cài `requirements.txt` + Playwright → chạy `run_all_experiments.sh` trong tmux. Dữ liệu được crawl lại trên box; chỉ VLQA (nguồn ngoài repo, ~120 MB) tải từ Drive.
 
 ---
 
-## 4. Cấu hình `.env` (các biến chính)
+## 4. Cấu hình `.env`
 
-| Biến | Ý nghĩa | Mặc định |
-| --- | --- | --- |
-| `NEO4J_URI` / `NEO4J_USER` / `NEO4J_PASSWORD` | Kết nối Neo4j | `bolt://localhost:7687` / `neo4j` / `vietlawbert2026` |
-| `QDRANT_HOST` / `QDRANT_PORT` / `QDRANT_COLLECTION_NAME` | Qdrant | `localhost` / `6333` / `vietlawbert_chunks` |
-| `ES_HOST` / `ES_INDEX_NAME` | Elasticsearch | `http://localhost:9200` / `vietlaw_sparse_idx` |
-| `BASE_MODEL_NAME` | Backbone encoder | `BAAI/bge-m3` |
-| **Cascade LLM (tầng sinh)** | | |
-| `PRIMARY_LLM_MODEL` / `_API_BASE` / `_API_KEY` | Tầng 1 SOTA | `gpt-4o` / `https://hhtechapi.net/v1` / **(cần điền)** |
-| `FALLBACK_LLM_MODEL` / `_API_BASE` / `_API_KEY` | Tầng 2 nhanh | `gpt-6-sol` / `https://hhtechapi.net/v1` / **(cần điền)** |
-| `GENERATOR_MODEL` / `LLM_API_BASE` / `LLM_API_KEY` | Tầng 3 local | `qwen2.5:7b-instruct` / `http://localhost:11434/v1` / `ollama` |
-| `EVAL_MODEL` / `EVAL_API_BASE` | Judge RAGAS (RQ4) | `gpt-6-sol` / `https://hhtechapi.net/v1` |
+| Nhóm biến | Ý nghĩa |
+| --- | --- |
+| `NEO4J_URI` / `NEO4J_USER` / `NEO4J_PASSWORD` | Kết nối Neo4j |
+| `QDRANT_HOST` / `QDRANT_PORT` / `QDRANT_COLLECTION_NAME` | Qdrant (dense) |
+| `ES_HOST` / `ES_INDEX_NAME` | Elasticsearch (BM25) |
+| `MONGO_URI` / `MONGO_DB_NAME` | MongoDB (toàn văn) |
+| `DATA_STORAGE_ROOT` | Thư mục dữ liệu thô (shard, log). Trỏ sai/không tồn tại → tự fallback `/mnt/data` |
+| `EMBED_DEVICE` | `cpu` hoặc `cuda` |
+| `BASE_MODEL_NAME` | Backbone nhúng corpus (`BAAI/bge-m3`) |
+| `VLQA_DIR` | Thư mục VLQA (`train.json` + `legal_corpus.json`) |
+| `EVAL_API_KEY` / `EVAL_API_BASE` / `EVAL_MODEL` | **LLM-as-judge (RQ4) + sinh multi-hop + chấm correctness VLQA** (endpoint OpenAI-compatible) |
+| `PRIMARY_/FALLBACK_/ROUTER_LLM_*` | Cascade LLM tầng sinh (hỏi đáp RAG) |
 
-> ⚠️ Cascade **bỏ qua tầng cloud nếu API key rỗng**. Để RQ4/hỏi đáp dùng được cloud: điền khoá hhtechapi vào `PRIMARY_LLM_API_KEY` và `FALLBACK_LLM_API_KEY` (judge tự dùng lại khoá Primary). Tầng local: `ollama pull qwen2.5:7b-instruct`.
+> `.env` **bị gitignore** (chứa mật khẩu DB + nhiều API key) → **không bao giờ đẩy lên GitHub**. Lên box cloud thì scp/rsync trực tiếp (auto_cloud_runner lo việc này), không qua git.
 
 ---
 
 ## 5. Kiểm thử
 
-Hai framework: **pytest** (toàn vẹn 5 tầng) + **promptfoo** (thực nghiệm RQ), tổ chức thành `tests/system`, `tests/model` và `tests/_common` (dùng chung). Chi tiết: `tests/README.md`.
-
 ```bash
-docker compose up -d qdrant elasticsearch neo4j     # bật service cho test requires_*
-python -m pytest tests -v                           # toàn bộ (test thiếu service sẽ tự SKIP)
-python -m pytest tests/system -v                    # chỉ nhánh hệ thống RAG (dữ liệu → đồ thị → truy xuất → sinh → chatbox)
-python -m pytest tests/model -v                     # chỉ nhánh mô hình (MRL loss, khai phá mẫu âm)
-python tests/run_audit.py                           # chạy tuần tự + báo cáo
-
-# Thực nghiệm RQ (promptfoo) — mỗi nhánh chạy từ configs/ của nhánh đó:
-cd tests/model/configs
-promptfoo eval -c promptfooconfig.baselines.yaml -o ../out/eval-baselines.json      # baseline đa backbone
-cd ../../system/configs
-promptfoo eval -c promptfooconfig.rq3_retrieval.yaml -o ../out/eval-rq3_retrieval.json  # RQ3 (ablation truy xuất)
-promptfoo eval -c promptfooconfig.generation.yaml -o ../out/eval-generation.json        # RQ4 (faithfulness)
+docker compose up -d qdrant elasticsearch neo4j db redis   # bật service cho test cần CSDL
+python -m pytest tests -q                                   # 256 test (test thiếu service/GPU tự SKIP)
+python -m pytest tests/unit -q                              # unit thuần (metric, triplet, multihop, remap...)
+python -m pytest tests/system -q                            # hệ thống 5 tầng
+python -m pytest tests/model -q                             # mô hình (MRL loss, khai phá mẫu âm)
 ```
+
+Thực nghiệm RQ qua **promptfoo** chạy từ `tests/*/configs/` (vd `promptfooconfig.rq3_retrieval.yaml`, `promptfooconfig.generation.yaml`).
 
 ---
 
@@ -115,41 +128,25 @@ promptfoo eval -c promptfooconfig.generation.yaml -o ../out/eval-generation.json
 
 ```text
 vietlawbert/
-├── src/                    # Toàn bộ mã nguồn lõi (KHÔNG lẫn test hay dữ liệu runtime)
+├── src/
 │   ├── configs/            # config.py, paths.py, logging_config.py, global_id.py
 │   ├── crawler/            # Pha 1: Scrapy spider + shard runner + OCR
-│   ├── preprocess/         # Pha 2a: AST parser, text cleaner, html→md, phục hồi PDF/font
-│   ├── quality/            # Pha 2b: kiểm định corpus + kiểm toán crawl/pipeline
-│   ├── pipeline/           # Pha 2c: luồng ingest đa kho
-│   ├── database/           # Pha 3: Neo4j HIN, Qdrant client, Cypher templates
-│   ├── training/           # Pha 4: HIN triplets, train MRL, graph embeddings
-│   ├── rag/                # Pha 5a: hybrid retriever, es retriever, generator (cascade)
-│   ├── benchmark/          # Pha 5b: VietLawBench, evaluate_rrf, evaluate_rqs, llm_judge
-│   ├── artifacts/          # tiện ích đọc/chuẩn hóa/gộp shard JSONL (chỉ mã nguồn)
+│   ├── preprocess/         # Pha 2a: AST parser, text cleaner, html→md
+│   ├── quality/            # Pha 2b: kiểm định corpus + kiểm toán crawl
+│   ├── pipeline/           # Pha 2c: ingest đa kho
+│   ├── database/           # Pha 3: Neo4j HIN, Qdrant/Mongo client
+│   ├── training/           # Pha 4: HIN triplets (--neg-strategy), train MRL
+│   ├── rag/                # Pha 5a: hybrid retriever, es retriever, generator
+│   ├── benchmark/          # Pha 5b: evaluate_rqs, evaluate_rrf, vlqa_eval, build_multihop_subset, llm_judge
 │   ├── mcp_servers/        # giao thức MCP cho AI Agents
-│   ├── demo/               # giao diện web Gradio Demo
-│   └── cli/                # wrapper lệnh con (crawl, ocr, audit, verify, ...)
-├── tests/                  # Toàn bộ kiểm thử & đánh giá tự động (pytest + promptfoo)
-│   ├── unit/               # unit tests (preprocess, corpus_audit, corpus_fixes, scripts)
-│   ├── system/             # kiểm thử hệ thống 5 tầng & promptfoo RAG
-│   ├── model/              # kiểm thử mô hình MRL & HIN triplets
-│   ├── evaluation/         # cấu hình & bộ test promptfoo Tier 4/5
-│   └── _common/            # hạ tầng dùng chung (paths, datasets, assertions, providers, tools)
-├── scripts/                # Kịch bản tự động hóa (run_all_experiments.sh, auto_cloud_runner.sh, ...)
-├── outputs/                # Dữ liệu runtime, báo cáo, log, checkpoints & trọng số mô hình
-│   ├── artifacts/          # parquet triplets, graph embeddings, crawler_status
-│   ├── benchmark/          # dữ liệu VLQA & bảng kết quả (.csv, .tex)
-│   ├── checkpoints/        # checkpoint các backbone
-│   ├── models/             # mô hình VietLawBERT-MRL hoàn thiện
-│   ├── reports/            # báo cáo kiểm định corpus & manifest
-│   ├── logs/               # nhật ký thực nghiệm
-│   └── flagging/           # nhật ký tương tác & phản hồi Gradio
-├── docs/                   # Tài liệu thiết kế & phân rã công việc
-├── main.py                 # CLI điều phối toàn trình
-├── pyproject.toml          # Cấu hình package (src/ layout) & pytest
-├── docker-compose.yml      # Qdrant, Elasticsearch, Neo4j+APOC, MongoDB, Redis
-├── Dockerfile
-├── scrapy.cfg
+│   ├── demo/               # giao diện web Gradio
+│   └── cli/                # wrapper lệnh con
+├── tests/                  # unit / system / model / evaluation / _common
+├── scripts/                # run_all_experiments.sh, auto_cloud_runner.sh, fetch_vlqa.sh, run_p0_to_p4.sh
+├── outputs/                # runtime: artifacts (triplets), benchmark (VLQA + .csv/.tex), checkpoints, models, logs
+├── docs/                   # đề cương, tổng quan, quy trình, báo cáo tuần
+├── main.py                 # CLI điều phối theo pha
+├── docker-compose.yml      # Qdrant, Elasticsearch, Neo4j, MongoDB, Redis
 └── requirements.txt
 ```
 
@@ -157,9 +154,12 @@ vietlawbert/
 
 ## 7. Trạng thái & hạn chế đã biết
 
-- **GPU cũ không tương thích** `torch` mặc định → chạy CPU → chậm (cold-start cache đồ thị ~27s). Cài `torch` bản `cu126` hoặc thuê Cloud GPU cho thí nghiệm lớn.
-- **RQ4 cần khoá LLM**: điền khoá hhtechapi + `ollama pull` (mục 4). Xác nhận id model với bảng giá hhtechapi (`gpt-6-sol` đã xác nhận chạy).
-- **Chất lượng mô hình MRL**: trên một số backbone mạnh bản tinh chỉnh chưa vượt zero-shot; `phobert-base-v2` là backbone cải thiện tốt nhất hiện tại. Chi tiết & hướng xử lý: xem ma trận tiến độ.
+- **Chạy lại từ đầu:** corpus được cào mới từ vbpl.vn, khử trùng theo `doc_number`. 4 CSDL dựng lại trên box cloud.
+- **Train/embed cần Cloud GPU** — máy local (GTX 1050 Ti) chỉ validate được pha crawl; pha nhúng/huấn luyện chạy trên A100.
+- **RQ4 + sinh multi-hop cần `EVAL_API_KEY`** (hhtechapi/OpenAI-compatible). Thiếu key thì bước multi-hop và judge bị bỏ qua.
+- **Trục 2 (thích ứng thời gian):** hàm `remap_gold` (THAY_THE/BAI_BO = thay, SUA_DOI = hợp) đã có + test; cắm vào vòng chấm là bước kế trên box.
+- **Chất lượng mô hình** chỉ nghiệm thu được sau lượt chạy A100 đầu tiên; khuyến nghị smoke `--total-docs` nhỏ trước khi cào full.
 
 ## 8. Giấy phép dữ liệu
-Dữ liệu VBQPPL là tài sản công (Nghị định 47/2020/NĐ-CP), thu thập phục vụ nghiên cứu học thuật phi thương mại từ Cổng thông tin pháp luật Quốc gia (vbpl.vn).
+
+Dữ liệu VBQPPL là tài sản công (Nghị định 47/2020/NĐ-CP), thu thập phục vụ nghiên cứu học thuật phi thương mại từ Cổng thông tin pháp luật Quốc gia (vbpl.vn). VLQA trích dẫn theo biên bản VLSP DRiLL 2025.
