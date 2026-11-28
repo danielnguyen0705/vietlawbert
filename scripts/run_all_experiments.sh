@@ -108,13 +108,12 @@ else
     echo "✓ Đã có sẵn tập huấn luyện Triplet: $PARQUET_FILE"
 fi
 
-if [ ! -f "${BENCHMARK_DIR}/vietlawbench_1000.jsonl" ]; then
-    echo ">>> [BƯỚC 0.2] Chưa phát hiện VietLawBench. Tiến hành khởi tạo tập kiểm chuẩn..."
-    python3 -u -m benchmark.build_vietlawbench \
-        --total-size 1000
-    echo "✓ Đã sinh thành công tập kiểm chuẩn tại: $BENCHMARK_DIR"
+if [ ! -f "${BENCHMARK_DIR}/vietlawbench_vlqa.jsonl" ]; then
+    echo ">>> [BƯỚC 0.2] Chưa phát hiện VLQA. Nạp VLQA làm benchmark đánh giá..."
+    python3 -u -m tests._common.datasets.load_vlqa
+    echo "✓ Đã nạp VLQA tại: $BENCHMARK_DIR"
 else
-    echo "✓ Đã có sẵn tập kiểm chuẩn tại: $BENCHMARK_DIR"
+    echo "✓ Đã có sẵn tập kiểm chuẩn VLQA tại: $BENCHMARK_DIR"
 fi
 
 # Danh mục 7 Encoder có công bố khoa học chuẩn mực (findings A3): đã loại các kiến trúc Seq2Seq
