@@ -86,6 +86,11 @@ ssh -p ${CLOUD_PORT} -o StrictHostKeyChecking=no ${REMOTE} bash -c "'
   cd ${REMOTE_DIR}
   pip install -q -r requirements.txt
   python3 -m playwright install --with-deps chromium || python3 -m playwright install chromium
+  # torch phải chạy được KERNEL trên GPU (Blackwell/RTX 5080 cần cu128; torch cũ lỗi sm_120 dù is_available()=True)
+  if ! python3 -c \"import torch; x=torch.randn(8,8).cuda(); (x@x).sum().item()\" 2>/dev/null; then
+    echo \"    [!] torch chưa chạy kernel GPU -> cài lại bản cu128 (Blackwell)...\"
+    pip install -q --force-reinstall --no-cache-dir torch --index-url https://download.pytorch.org/whl/cu128
+  fi
 '"
 
 # 2. KIỂM TRA TRẠNG THÁI GPU

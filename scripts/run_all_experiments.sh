@@ -24,6 +24,13 @@ else
     DEVICE="cpu"
 fi
 
+# Batch train theo VRAM: GPU <20GB (vd RTX 5080 16GB) -> 16 tránh OOM bge-m3; else 32. Override: TRAIN_BATCH=...
+if [ -z "${TRAIN_BATCH:-}" ]; then
+    _VRAM=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -dc '0-9')
+    if [ -n "$_VRAM" ] && [ "$_VRAM" -lt 20000 ]; then TRAIN_BATCH=16; else TRAIN_BATCH=32; fi
+fi
+echo "    [cfg] VRAM=${_VRAM:-?}MB -> TRAIN_BATCH=$TRAIN_BATCH"
+
 # BỔ SUNG: Giới hạn CPU luồng để không chiếm dụng hết 64 nhân EPYC
 export OMP_NUM_THREADS=8
 export MKL_NUM_THREADS=8
@@ -172,7 +179,7 @@ for MODEL_ID in "${MODELS[@]}"; do
           --train-parquet "$PARQUET_FILE" \
           --output-dir "$CKPT_PATH" \
           --epochs 3 \
-          --batch-size 32 \
+          --batch-size "$TRAIN_BATCH" \
           --gradient-accumulation-steps 1 \
           --freeze-layers 0 \
           --lr 2e-5 \
@@ -239,7 +246,7 @@ TRIP_BM25="outputs/artifacts/triplets/triplets_bm25.parquet"
 train_variant() {  # $1=output-dir  $2=train-parquet  $3=extra-flags
     if [ ! -f "$1/best_model/vietlawbert_mrl.pt" ] && [ ! -f "$1/vietlawbert_mrl.pt" ]; then
         python3 -u -m training.train_mrl --model-name "BAAI/bge-m3" --train-parquet "$2" \
-            --output-dir "$1" --epochs 3 --batch-size 32 --gradient-accumulation-steps 1 \
+            --output-dir "$1" --epochs 3 --batch-size "$TRAIN_BATCH" --gradient-accumulation-steps 1 \
             --freeze-layers 0 --lr 2e-5 --precision bf16 --num-workers 4 $3 \
             > "${LOG_DIR}/$(basename "$1").log" 2>&1 \
             && echo "    ✓ xong biến thể: $1" || { echo "    ✗ lỗi biến thể $1 (xem log)."; return 0; }
