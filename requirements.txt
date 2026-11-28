@@ -42,6 +42,8 @@ sentence-transformers>=2.6.0
 huggingface-hub>=0.22.0
 openai>=1.20.0
 rank_bm25>=0.2.2
+sentencepiece>=0.2.0       # tokenizer PhoBERT / XLM-R / mBERT cần
+protobuf>=4.25.0
 
 # ==============================================================================
 # 5. GRAPH ALGORITHMS & SCIENTIFIC COMPUTATION (Loại bỏ gensim)
@@ -61,6 +63,8 @@ deepeval>=0.21.0
 fastapi>=0.110.0
 uvicorn>=0.28.0
 chainlit>=1.0.500
+gradio>=4.0.0              # demo UI
+gdown>=5.0.0              # tải VLQA từ Drive (scripts/fetch_vlqa.sh)
 
 # ==============================================================================
 # 7. UNIT & INTEGRATION TESTING (CI/CD Artifact Evaluation)

@@ -43,7 +43,7 @@ ssh -p ${CLOUD_PORT} -o StrictHostKeyChecking=no ${REMOTE} bash -c "'
 
   eval \$SUDO_CMD sed -i \"s|http://apt-mirror.apt-mirror.svc.cluster.local/|http://|g\" /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null || true
   eval \$SUDO_CMD apt-get update -y -qq || true
-  eval \$SUDO_CMD apt-get install -y -qq rsync tmux
+  eval \$SUDO_CMD apt-get install -y -qq rsync tmux tesseract-ocr
   pip install --quiet sentencepiece protobuf scipy pandas pyarrow
 '"
 
@@ -79,6 +79,14 @@ ssh -p ${CLOUD_PORT} -o StrictHostKeyChecking=no ${REMOTE} "sed -i 's|DATA_STORA
 # 1b. TẢI VLQA (eval) TỪ DRIVE — nguồn ngoài repo, không nằm trong rsync
 echo ">>> [1b] Tải VLQA (train.json + legal_corpus.json) từ Drive về box..."
 ssh -p ${CLOUD_PORT} -o StrictHostKeyChecking=no ${REMOTE} "cd ${REMOTE_DIR} && chmod +x scripts/fetch_vlqa.sh && VLQA_DIR=${REMOTE_DIR}/VLQA bash scripts/fetch_vlqa.sh"
+
+# 1c. CÀI PHỤ THUỘC PYTHON (requirements) + TRÌNH DUYỆT PLAYWRIGHT (crawl dùng scrapy-playwright)
+echo ">>> [1c] Cài requirements.txt + Playwright chromium trên box..."
+ssh -p ${CLOUD_PORT} -o StrictHostKeyChecking=no ${REMOTE} bash -c "'
+  cd ${REMOTE_DIR}
+  pip install -q -r requirements.txt
+  python3 -m playwright install --with-deps chromium || python3 -m playwright install chromium
+'"
 
 # 2. KIỂM TRA TRẠNG THÁI GPU
 echo ">>> [2/5] Đang kiểm tra khả năng nhận diện GPU & PyTorch..."
