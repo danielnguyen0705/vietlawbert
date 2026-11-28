@@ -26,8 +26,11 @@ if ENV_PATH.exists():
 # - Ưu tiên 2: Phân vùng /mnt/data/vietlawbert_data (nếu đang chạy trên máy chủ Ubuntu)
 # - Ưu tiên 3: Thư mục "data" ngay trong project (ROOT_DIR / "data")
 env_storage = os.getenv("DATA_STORAGE_ROOT")
-if env_storage and str(env_storage).strip():
-    DATA_STORAGE_ROOT = Path(env_storage).resolve()
+_env_path = Path(env_storage).resolve() if env_storage and str(env_storage).strip() else None
+# Chỉ dùng path từ .env khi thư mục CHA thật sự tồn tại (ghi được) — tránh .env của máy khác
+# (vd /home/admin/... trên cloud) làm vỡ mọi lần chạy ở máy này. Không thì fallback /mnt/data → ROOT/data.
+if _env_path is not None and _env_path.parent.exists():
+    DATA_STORAGE_ROOT = _env_path
 elif Path("/mnt/data/vietlawbert_data").exists():
     DATA_STORAGE_ROOT = Path("/mnt/data/vietlawbert_data").resolve()
 else:

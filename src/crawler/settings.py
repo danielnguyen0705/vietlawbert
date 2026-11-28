@@ -29,7 +29,7 @@ USER_AGENT = (
 active_jobdir = os.getenv("SCRAPY_JOBDIR") or os.getenv("JOBDIR")
 if active_jobdir:
     JOBDIR = active_jobdir
-    SCHEDULER_DISK_QUEUE = "scrapy.squeues.FifoDiskQueue"
+    SCHEDULER_DISK_QUEUE = "scrapy.squeues.PickleFifoDiskQueue"  # Scrapy 2.17: FifoDiskQueue đã bỏ khỏi squeues
     SCHEDULER_MEMORY_QUEUE = "scrapy.squeues.FifoMemoryQueue"
     SCHEDULER_PRIORITY_QUEUE = "scrapy.pqueues.DownloaderAwarePriorityQueue"
 
