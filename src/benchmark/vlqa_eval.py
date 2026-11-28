@@ -243,6 +243,31 @@ def label_drift(gold_docnums: Set[str], status_map: Dict[str, Dict[str, Any]]) -
     }
 
 
+_REPLACE_REL = frozenset({"THAY_THE", "BAI_BO", "DINH_CHI_THI_HANH"})
+_UNION_REL = frozenset({"SUA_DOI_BO_SUNG"})
+
+
+def remap_gold(gold_docnums: Set[str], successor_map: Dict[str, List[Tuple[str, str]]]) -> Set[str]:
+    """TRỤC 2 (tất định) — mở rộng nhãn vàng theo ĐÚNG bản chất quan hệ.
+    successor_map: {old_docnum(norm) -> [(successor_docnum(norm), rel_type), ...]} (inject được → test).
+    - THAY_THE / BAI_BO / DINH_CHI_THI_HANH: THAY — bỏ old, thêm successor (bản cũ hết hiệu lực hoàn toàn).
+    - SUA_DOI_BO_SUNG: HỢP {old, successor} — giữ old (các điều khác của old còn hiệu lực song song),
+      tránh phạt oan set_recall/completeness.
+    - Không có successor hợp lệ: giữ nguyên old.
+    """
+    expanded: Set[str] = set()
+    for g in gold_docnums:
+        succs = [(s, (rel or "").upper()) for s, rel in (successor_map.get(g) or [])]
+        rels = {rel for _, rel in succs}
+        for s, rel in succs:
+            if rel in _REPLACE_REL or rel in _UNION_REL:
+                expanded.add(s)
+        full_replace = bool(rels & _REPLACE_REL) and not (rels & _UNION_REL)
+        if not full_replace:
+            expanded.add(g)
+    return expanded
+
+
 # ───────────────────────── LLM Judges ─────────────────────────
 
 JUDGE1_HOP_PROMPT = """Bạn là thẩm phán pháp lý đánh giá năng lực TRUY XUẤT THEO ĐỒ THỊ HIỆU LỰC.

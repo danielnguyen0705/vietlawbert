@@ -116,6 +116,23 @@ else
     echo "✓ Đã có sẵn tập kiểm chuẩn VLQA tại: $BENCHMARK_DIR"
 fi
 
+# BƯỚC 0.3: Sinh subset MULTI-HOP (TEMPORAL + REFERENCE) qua API — đo multi-hop/completeness mà VLQA không gánh.
+# Cần EVAL_API_KEY (hhtechapi). Cổng 0 đối chiếu triplet đã re-mine → chống rò rỉ với tập train.
+if [ -z "$EVAL_API_KEY" ]; then
+    echo "[!] [BƯỚC 0.3] Bỏ qua sinh multi-hop — chưa đặt EVAL_API_KEY."
+else
+    for B in TEMPORAL REFERENCE; do
+        MH_OUT="${BENCHMARK_DIR}/multihop_$(echo "$B" | tr 'A-Z' 'a-z').jsonl"
+        if [ -f "$MH_OUT" ]; then
+            echo "✓ Đã có multi-hop $B tại: $MH_OUT"
+        else
+            echo ">>> [BƯỚC 0.3] Sinh multi-hop $B (target 200)..."
+            python3 -u -m benchmark.build_multihop_subset --bucket "$B" --target 200 \
+                --out "$MH_OUT" --triplets "$PARQUET_FILE" || echo "  [!] Sinh multi-hop $B lỗi (xem log)."
+        fi
+    done
+fi
+
 # Danh mục 7 Encoder có công bố khoa học chuẩn mực (findings A3): đã loại các kiến trúc Seq2Seq
 # không tương thích (ViT5, BARTpho), model lỗi tokenizer (vi-electra, videberta) và định danh đã bị
 # gỡ khỏi HuggingFace (Chau/VNLawBERT), bert-base-multilingual-cased (không phải bi-encoder).
@@ -209,6 +226,30 @@ if [ "$SUCCESS_COUNT" -eq 0 ]; then
     echo "=================================================================="
     exit 1
 fi
+
+# ==============================================================================
+# BƯỚC 2.5: 3 BIẾN THỂ ĐỐI CHỨNG bge-m3 — RQ1 (random/bm25-neg) & RQ2 (FlatMRL)
+#   Checkpoint khớp tên trong evaluate_rqs.raw_backbones → tự lên bảng Master.
+# ==============================================================================
+TRIP_RANDOM="outputs/artifacts/triplets/triplets_random.parquet"
+TRIP_BM25="outputs/artifacts/triplets/triplets_bm25.parquet"
+[ -f "$TRIP_RANDOM" ] || python3 -u -m training.generate_hin_triplets --neg-strategy random --output "$TRIP_RANDOM" --limit 50000
+[ -f "$TRIP_BM25" ]   || python3 -u -m training.generate_hin_triplets --neg-strategy bm25   --output "$TRIP_BM25"   --limit 50000
+
+train_variant() {  # $1=output-dir  $2=train-parquet  $3=extra-flags
+    if [ -f "$1/vietlawbert_mrl.pt" ] || [ -f "$1/best_model/vietlawbert_mrl.pt" ]; then
+        echo "    -> [RESUME] biến thể đã có: $1"; return 0
+    fi
+    python3 -u -m training.train_mrl --model-name "BAAI/bge-m3" --train-parquet "$2" \
+        --output-dir "$1" --epochs 3 --batch-size 32 --gradient-accumulation-steps 1 \
+        --freeze-layers 0 --lr 2e-5 --precision bf16 --num-workers 4 $3 \
+        > "${LOG_DIR}/$(basename "$1").log" 2>&1 \
+        && echo "    ✓ xong biến thể: $1" || echo "    ✗ lỗi biến thể $1 (xem log)."
+}
+echo ">>> [BƯỚC 2.5] Train 3 biến thể bge-m3 (RQ1 random, RQ1 bm25, RQ2 FlatMRL)..."
+train_variant "${CHECKPOINTS_DIR}/bge-m3_rq1_random"  "$TRIP_RANDOM"  ""
+train_variant "${CHECKPOINTS_DIR}/bge-m3_rq1_bm25"    "$TRIP_BM25"    ""
+train_variant "${CHECKPOINTS_DIR}/bge-m3_rq2_flatmrl" "$PARQUET_FILE" "--hierarchy-weight 0"
 
 echo "=================================================================="
 echo "BƯỚC 3: CHẠY BẢNG ĐỐI ĐẦU MASTER BENCHMARK TRÊN TOÀN BỘ MA TRẬN"

@@ -161,3 +161,16 @@ def test_coverage_vlqa_that_khop_94_phan_tram():
     cov = V.coverage(train, idx, all_dn)
     assert cov["questions_with_gold"] >= 2000
     assert cov["question_coverage"] >= 0.99    # gold của VLQA tất nhiên nằm trong corpus VLQA
+
+
+def test_remap_gold_truc2():
+    # THAY_THE: thay A→B (bỏ A)
+    assert V.remap_gold({"A"}, {"A": [("B", "THAY_THE")]}) == {"B"}
+    # SUA_DOI_BO_SUNG: hợp {A, B} (giữ A)
+    assert V.remap_gold({"A"}, {"A": [("B", "SUA_DOI_BO_SUNG")]}) == {"A", "B"}
+    # không có successor → giữ nguyên
+    assert V.remap_gold({"A"}, {}) == {"A"}
+    # quan hệ không thuộc remap (DAN_CHIEU) → giữ A, không thêm B
+    assert V.remap_gold({"A"}, {"A": [("B", "DAN_CHIEU")]}) == {"A"}
+    # vừa thay vừa sửa đổi → giữ A + thêm cả hai successor
+    assert V.remap_gold({"A"}, {"A": [("B", "THAY_THE"), ("C", "SUA_DOI_BO_SUNG")]}) == {"A", "B", "C"}

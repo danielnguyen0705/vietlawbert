@@ -238,7 +238,11 @@ def fetch_content_chunks(client, doc_id: str, cap: int = 30) -> List[Dict[str, s
         body = strip_headers(rec["content"])      # cắt header [META]/[HIERARCHY], giữ thân điều
         if len(body) < 120 or is_procedural(title) or is_procedural(body[:220]):
             continue
-        out.append({"chunk_id": rec["cid"], "content": clean_content(body)[:1200]})
+        body = clean_content(body)[:1200]
+        # content: thân sạch (dùng Jaccard/procedural). gen_content: GIỮ tiêu đề điều ([HIERARCHY], có "Điều X"
+        # nhưng KHÔNG có số hiệu văn bản) để generator trích đúng số điều — chống lỗi mơ hồ 6-8%.
+        gen = f"[{title}]\n{body}" if title.strip() else body
+        out.append({"chunk_id": rec["cid"], "content": body, "gen_content": gen})
     return out
 
 
@@ -292,7 +296,9 @@ def build(bucket: str, target: int, gen_model: str, ver_model: str, out_path: st
         ca, cb, _ = best
 
         gen = _parse_json(_chat(gen_client, gen_model, _GEN_SYS.format(rel=p["rel"]),
-                                _GEN_USER.format(a=ca["content"], b=cb["content"], a_dn=p["a_dn"], b_dn=p["b_dn"])))
+                                _GEN_USER.format(a=ca.get("gen_content", ca["content"]),
+                                                 b=cb.get("gen_content", cb["content"]),
+                                                 a_dn=p["a_dn"], b_dn=p["b_dn"])))
         q, ans = gen.get("question", ""), gen.get("answer", "")
         if not q or not ans:
             stats["gen_err"] += 1

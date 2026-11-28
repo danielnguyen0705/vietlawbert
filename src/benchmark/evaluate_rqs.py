@@ -154,6 +154,12 @@ class MultiModelBaselineComparator:
 
         _, p_val = stats.ttest_rel(proposed_scores, baseline_scores)
         p_val = float(p_val) if not np.isnan(p_val) else 1.0
+        # Wilcoxon signed-rank (phi tham số) — hợp điểm xếp hạng không chuẩn; báo kèm t-test.
+        try:
+            _, p_wil = stats.wilcoxon(proposed_scores, baseline_scores)
+            p_wil = float(p_wil) if not np.isnan(p_wil) else 1.0
+        except Exception:
+            p_wil = 1.0
 
         if p_val < 0.01:
             sig = "Tăng vượt trội (p < 0.01)" if mean_diff > 0 else "Giảm sút (p < 0.01)"
@@ -161,6 +167,7 @@ class MultiModelBaselineComparator:
             sig = "Tăng có ý nghĩa (p < 0.05)" if mean_diff > 0 else "Giảm sút (p < 0.05)"
         else:
             sig = "Chênh lệch không đáng kể"
+        sig = f"{sig} [Wilcoxon p={p_wil:.2e}]"
         return p_val, sig
 
     @staticmethod
@@ -205,9 +212,15 @@ class MultiModelBaselineComparator:
             ("bkai-foundation-models/vietnamese-bi-encoder", "bkai-foundation-models/vietnamese-bi-encoder", False, 768),
             ("xlm-roberta-base", "xlm-roberta-base", False, 768),
             ("mBERT (VNLawBERT-base)", "bert-base-multilingual-cased", False, 768),
+            # Biến thể đối chứng RQ1/RQ2 trên bge-m3 (fine-tune-only, checkpoint riêng — train ở run_all_experiments.sh).
+            # Phần tử thứ 5 = đường dẫn checkpoint ghi đè; có nó → bỏ qua đo zero-shot (đã có bge-m3 zero-shot).
+            ("bge-m3 (RQ1 random-neg)", "BAAI/bge-m3", False, 1024, str(self.checkpoints_dir / "bge-m3_rq1_random")),
+            ("bge-m3 (RQ1 BM25-neg)", "BAAI/bge-m3", False, 1024, str(self.checkpoints_dir / "bge-m3_rq1_bm25")),
+            ("bge-m3 (RQ2 FlatMRL)", "BAAI/bge-m3", False, 1024, str(self.checkpoints_dir / "bge-m3_rq2_flatmrl")),
         ]
 
         summary_rows = []
+        per_query_rows = []  # NDCG@10 TỪNG câu (per-query) cho kiểm định t-test/Wilcoxon khi viết báo cáo
 
         for ds_name, samples in self.datasets.items():
             if ds_name == "vietlawbench_1000" and len(self.datasets) > 1:
@@ -237,19 +250,21 @@ class MultiModelBaselineComparator:
 
             # 2. Quét 6 lát cắt d cho CẢ bản gốc (Zero-shot) VÀ bản Fine-tuned trên cùng pool khó
             #    → chọn (model, bản, d) tốt nhất & ổn định nhất (findings C2 mở rộng).
-            for display_name, model_id, is_e5, full_dim in raw_backbones:
+            for _entry in raw_backbones:
+                display_name, model_id, is_e5, full_dim = _entry[0], _entry[1], _entry[2], _entry[3]
+                ckpt_override = _entry[4] if len(_entry) > 4 else None
                 dims = [d for d in ALL_DIMS if d <= full_dim]
-                try:
-                    wrap_zero = UniversalEncoderWrapper(model_id, device=self.device, is_e5=is_e5)
-                    for d, (agg, vec) in self._sweep_dims(wrap_zero, test_samples, candidate_pool_dicts, candidate_texts, dims).items():
-                        lbl = f"{display_name} (Zero-shot @ d={d})"
-                        eval_results[lbl] = agg; ndcg_vectors[lbl] = vec
-                        meta[lbl] = {"backbone": display_name, "variant": "Zero-shot", "d": d}
-                except Exception as ex:
-                    logger.warning("Bỏ qua bản gốc [%s]: %s", display_name, ex)
+                if ckpt_override is None:   # biến thể fine-tune-only bỏ qua zero-shot (bge-m3 zero-shot đã có)
+                    try:
+                        wrap_zero = UniversalEncoderWrapper(model_id, device=self.device, is_e5=is_e5)
+                        for d, (agg, vec) in self._sweep_dims(wrap_zero, test_samples, candidate_pool_dicts, candidate_texts, dims).items():
+                            lbl = f"{display_name} (Zero-shot @ d={d})"
+                            eval_results[lbl] = agg; ndcg_vectors[lbl] = vec
+                            meta[lbl] = {"backbone": display_name, "variant": "Zero-shot", "d": d}
+                    except Exception as ex:
+                        logger.warning("Bỏ qua bản gốc [%s]: %s", display_name, ex)
 
-                safe_name = model_id.replace("/", "_")
-                ckpt_path = self.checkpoints_dir / safe_name
+                ckpt_path = Path(ckpt_override) if ckpt_override else (self.checkpoints_dir / model_id.replace("/", "_"))
                 if ckpt_path.exists():
                     try:
                         wrap_ft = UniversalEncoderWrapper(str(ckpt_path), device=self.device, is_e5=is_e5)
@@ -290,6 +305,10 @@ class MultiModelBaselineComparator:
                     "Kiem_Dinh_Y_Nghia": sig
                 })
 
+            for _k, _vec in ndcg_vectors.items():
+                per_query_rows.append({"Dataset": ds_name, "Label": _k,
+                                       "ndcg10_per_query": [round(float(x), 4) for x in _vec]})
+
         sum_file = out_path / "master_baseline_comparison.csv"
         with open(sum_file, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.DictWriter(f, fieldnames=[
@@ -301,6 +320,12 @@ class MultiModelBaselineComparator:
             w.writeheader()
             w.writerows(summary_rows)
         logger.info("✓ Đã lưu bảng tổng hợp Master Benchmark tại: %s", sum_file.resolve())
+
+        pq_file = out_path / "master_per_query_ndcg10.jsonl"
+        with open(pq_file, "w", encoding="utf-8") as f:
+            for r in per_query_rows:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        logger.info("✓ Đã lưu điểm per-query (t-test/Wilcoxon) tại: %s", pq_file.resolve())
 
 
 # Tạo alias để tương thích benchmark/__init__.py
@@ -452,11 +477,13 @@ class ScientificBenchmarkRunner:
         encoder = SentenceTransformer(config.BASE_MODEL_NAME, device=self.device)
         retriever = LegalHybridRetriever(qdrant_wrapper=qdrant, es_retriever=es, encoder_model=encoder)
 
-        modes = ["sparse_only", "dense_only", "hybrid"]
+        # 4 chế độ RQ3: thêm 'hybrid_graph' (bật graph rerank qua env GRAPH_EXPANSION) để lộ giá trị tầng đồ thị.
+        modes = ["sparse_only", "dense_only", "hybrid", "hybrid_graph"]
         csv_file = out_path / "rq3_architecture_ablation_latency.csv"
         rows = []
 
         for m in modes:
+            os.environ["GRAPH_EXPANSION"] = "1" if m == "hybrid_graph" else "0"
             hits, ndcgs, lats = [], [], []
             for s in test_samples:
                 t0 = time.perf_counter()

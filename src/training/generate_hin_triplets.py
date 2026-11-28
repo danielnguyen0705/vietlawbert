@@ -367,16 +367,37 @@ class HINTripletMiner:
         return df_triplets
 
 
-def mine_and_export_hin_triplets(output_path: str, limit: int = 50000, beta: float = 0.5):
+def mine_and_export_hin_triplets(output_path: str, limit: int = 50000, beta: float = 0.5,
+                                 strategy: str = "hin"):
+    """strategy (RQ1 — 3 chiến lược mẫu âm trên cùng tập positive):
+    - 'hin'   : BM25-hardness + hard-negative đối kháng HIN (THAY_THE/BAI_BO) — ĐỀ XUẤT.
+    - 'bm25'  : CHỈ BM25 lexical (beta=1.0, KHÔNG thêm đối kháng HIN) — baseline-2.
+    - 'random': negative là chunk NGẪU NHIÊN (in-batch random) — baseline-1.
+    """
     miner = HINTripletMiner()
     try:
         raw_pairs = miner.fetch_positive_pairs_from_neo4j(limit=limit)
         valid_pairs = [p for p in raw_pairs if len(p["anchor_text"].strip()) >= 30 and len(p["positive_text"].strip()) >= 30]
         miner.load_graph_embeddings()
-        df_bm25 = miner.mine_triplets(pairs=valid_pairs, beta=beta, max_triplets=limit)
-        # Bổ sung hard-negative theo CỰC TÍNH đối kháng (THAY_THE/BAI_BO) — chất lượng cao hơn BM25
-        antagonistic = miner.fetch_antagonistic_triplets(limit=max(5000, limit // 5))
-        df_triplets = pd.concat([df_bm25, pd.DataFrame(antagonistic)], ignore_index=True) if antagonistic else df_bm25
+        if strategy == "random":
+            pos_texts = [p["positive_text"] for p in valid_pairs]
+            rows = []
+            for p in valid_pairs:
+                neg = random.choice(pos_texts)
+                if neg == p["positive_text"]:
+                    continue
+                rows.append({"anchor": p["anchor_text"], "positive": p["positive_text"], "negative": neg,
+                             "anchor_id": p["anchor_id"], "positive_id": p["positive_id"],
+                             "negative_id": "random", "neg_source": "random", "hardness_score": 0.0})
+            df_triplets = pd.DataFrame(rows[:limit])
+        else:
+            df_bm25 = miner.mine_triplets(pairs=valid_pairs, beta=(1.0 if strategy == "bm25" else beta), max_triplets=limit)
+            if strategy == "hin":
+                # Bổ sung hard-negative theo CỰC TÍNH đối kháng (THAY_THE/BAI_BO) — chất lượng cao hơn BM25
+                antagonistic = miner.fetch_antagonistic_triplets(limit=max(5000, limit // 5))
+                df_triplets = pd.concat([df_bm25, pd.DataFrame(antagonistic)], ignore_index=True) if antagonistic else df_bm25
+            else:  # 'bm25': chỉ lexical, không thêm đối kháng HIN
+                df_triplets = df_bm25
 
         out_file = Path(output_path)
         out_file.parent.mkdir(parents=True, exist_ok=True)
@@ -391,9 +412,12 @@ def main():
     parser.add_argument("--output", default=str(ARTIFACTS_DIR / "triplets" / "hin_triplets.parquet"))
     parser.add_argument("--limit", type=int, default=50000)
     parser.add_argument("--beta", type=float, default=0.5)
+    parser.add_argument("--neg-strategy", choices=["hin", "bm25", "random"], default="hin",
+                        help="Chiến lược mẫu âm cho RQ1 (hin=đề xuất, bm25=lexical, random=in-batch)")
     args = parser.parse_args()
 
-    mine_and_export_hin_triplets(output_path=args.output, limit=args.limit, beta=args.beta)
+    mine_and_export_hin_triplets(output_path=args.output, limit=args.limit, beta=args.beta,
+                                 strategy=args.neg_strategy)
 
 
 if __name__ == "__main__":
