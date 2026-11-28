@@ -68,10 +68,17 @@ rsync -avP -e "ssh -p ${CLOUD_PORT} -o StrictHostKeyChecking=no" \
   --exclude "outputs/artifacts/triplets" \
   --exclude "outputs/artifacts/graph_embeddings_128d.parquet" \
   --exclude "outputs/artifacts/triplets/dry_run_triplets.parquet" \
+  --exclude "graphify-out" \
+  --exclude "*.pdf" \
   ${LOCAL_DIR}/ ${REMOTE}:${REMOTE_DIR}/
 
-# Khử lỗi đường dẫn lưu trữ trên Cloud VM
-ssh -p ${CLOUD_PORT} -o StrictHostKeyChecking=no ${REMOTE} "sed -i 's|DATA_STORAGE_ROOT=.*|DATA_STORAGE_ROOT=/home/${CLOUD_USER}/vietlawbert/data|g' ${REMOTE_DIR}/.env 2>/dev/null || true"
+# Khử lỗi đường dẫn + thiết bị + VLQA_DIR trong .env của box (DATA_STORAGE_ROOT dùng REMOTE_DIR,
+# đúng cho cả user=root lẫn user thường; EMBED_DEVICE=cuda; VLQA_DIR trỏ thư mục tải VLQA bên dưới).
+ssh -p ${CLOUD_PORT} -o StrictHostKeyChecking=no ${REMOTE} "sed -i 's|DATA_STORAGE_ROOT=.*|DATA_STORAGE_ROOT=${REMOTE_DIR}/data|g; s|VLQA_DIR=.*|VLQA_DIR=${REMOTE_DIR}/VLQA|g; s|EMBED_DEVICE=.*|EMBED_DEVICE=cuda|g' ${REMOTE_DIR}/.env 2>/dev/null || true"
+
+# 1b. TẢI VLQA (eval) TỪ DRIVE — nguồn ngoài repo, không nằm trong rsync
+echo ">>> [1b] Tải VLQA (train.json + legal_corpus.json) từ Drive về box..."
+ssh -p ${CLOUD_PORT} -o StrictHostKeyChecking=no ${REMOTE} "cd ${REMOTE_DIR} && chmod +x scripts/fetch_vlqa.sh && VLQA_DIR=${REMOTE_DIR}/VLQA bash scripts/fetch_vlqa.sh"
 
 # 2. KIỂM TRA TRẠNG THÁI GPU
 echo ">>> [2/5] Đang kiểm tra khả năng nhận diện GPU & PyTorch..."
